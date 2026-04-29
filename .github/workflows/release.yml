@@ -17,7 +17,7 @@ jobs:
     name: Build (Linux / Android)
     runs-on: ubuntu-22.04
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
         with:
           fetch-depth: 0
           submodules: recursive
@@ -38,7 +38,7 @@ jobs:
           scons --version
 
       - name: Cache Steam Audio SDK
-        uses: actions/cache@v4
+        uses: actions/cache@v5
         with:
           path: src/lib/steamaudio
           key: steamaudio-${{ hashFiles('scripts/install_steam_audio.py') }}
@@ -50,7 +50,7 @@ jobs:
         run: echo "::add-matcher::${{ github.workspace }}/.github/gcc-problem-matcher.json"
 
       - name: Cache SCons build
-        uses: actions/cache@v4
+        uses: actions/cache@v5
         with:
           path: .scons-cache
           key: scons-Linux-all-v1-${{ hashFiles('src/lib/godot-cpp/SConstruct', 'SConstruct') }}
@@ -91,7 +91,7 @@ jobs:
           scons platform=android arch=x86_64 target=template_release build_tests=0 ndk_version=23.2.8568313 -j$(nproc)
 
       - name: Upload artifacts
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v5
         with:
           name: bin-linux-android
           path: audio_resonance_tool/addons/nexus_resonance/bin/
@@ -115,7 +115,7 @@ jobs:
           scons --version
 
       - name: Cache Steam Audio SDK
-        uses: actions/cache@v4
+        uses: actions/cache@v5
         with:
           path: src/lib/steamaudio
           key: steamaudio-${{ hashFiles('scripts/install_steam_audio.py') }}
@@ -159,7 +159,7 @@ jobs:
           rm -f "$BIN"/*.exp "$BIN"/*.lib
 
       - name: Upload artifacts
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v5
         with:
           name: bin-windows
           path: audio_resonance_tool/addons/nexus_resonance/bin/
@@ -168,7 +168,7 @@ jobs:
     name: Build (macOS / iOS)
     runs-on: macos-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
         with:
           fetch-depth: 0
           submodules: recursive
@@ -179,7 +179,7 @@ jobs:
           scons --version
 
       - name: Cache Steam Audio SDK
-        uses: actions/cache@v4
+        uses: actions/cache@v5
         with:
           path: src/lib/steamaudio
           key: steamaudio-${{ hashFiles('scripts/install_steam_audio.py') }}
@@ -188,7 +188,7 @@ jobs:
         run: bash .github/scripts/install_steam_audio_ci.sh
 
       - name: Cache SCons build
-        uses: actions/cache@v4
+        uses: actions/cache@v5
         with:
           path: .scons-cache
           key: scons-macOS-all-v1-${{ hashFiles('src/lib/godot-cpp/SConstruct', 'SConstruct') }}

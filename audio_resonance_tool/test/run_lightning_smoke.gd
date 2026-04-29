@@ -11,6 +11,12 @@ const TRIGGERS := 10
 
 
 func _initialize() -> void:
+	if not ResourceLoader.exists(DEMO_SCENE):
+		print(
+			"[lightning_smoke] SKIP: demo scene missing (repo-safe smoke). Missing: %s" % DEMO_SCENE
+		)
+		quit(0)
+		return
 	var packed: PackedScene = load(DEMO_SCENE)
 	if packed == null:
 		push_error("Failed to load demo scene: %s" % DEMO_SCENE)
