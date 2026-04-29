@@ -23,12 +23,38 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Detect changed GDScript files
+        id: changed
+        uses: dorny/paths-filter@v4
+        with:
+          list-files: shell
+          filters: |
+            gd:
+              - 'audio_resonance_tool/addons/nexus_resonance/**/*.gd'
+              - 'audio_resonance_tool/test/**/*.gd'
 
       - name: Setup GDScript Toolkit
         uses: Scony/godot-gdscript-toolkit@4.5.0
 
-      - name: Check GDScript format
-        run: gdformat --check addons/nexus_resonance/ test/
+      - name: Check GDScript format (changed files only)
+        if: steps.changed.outputs.gd == 'true'
+        run: |
+          while IFS= read -r file; do
+            rel="${file#audio_resonance_tool/}"
+            [ -n "$rel" ] && gdformat --check "$rel"
+          done <<< "${{ steps.changed.outputs.gd_files }}"
 
-      - name: Lint GDScript
-        run: gdlint addons/nexus_resonance/ test/
+      - name: Lint GDScript (changed files only)
+        if: steps.changed.outputs.gd == 'true'
+        run: |
+          while IFS= read -r file; do
+            rel="${file#audio_resonance_tool/}"
+            [ -n "$rel" ] && gdlint "$rel"
+          done <<< "${{ steps.changed.outputs.gd_files }}"
+
+      - name: Skip (no changed GDScript files)
+        if: steps.changed.outputs.gd != 'true'
+        run: echo "No GDScript changes detected; skipping lint."

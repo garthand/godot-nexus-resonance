@@ -1,0 +1,25 @@
+name: GDScript Lint (Full Scan)
+
+on:
+  workflow_dispatch:
+
+jobs:
+  lint-full:
+    name: GDScript format & lint (full repository)
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: audio_resonance_tool
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+
+      - name: Setup GDScript Toolkit
+        uses: Scony/godot-gdscript-toolkit@4.5.0
+
+      - name: Check GDScript format (full)
+        run: gdformat --check addons/nexus_resonance/ test/
+
+      - name: Lint GDScript (full)
+        run: gdlint addons/nexus_resonance/ test/
