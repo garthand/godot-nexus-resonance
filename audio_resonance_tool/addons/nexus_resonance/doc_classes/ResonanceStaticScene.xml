@@ -5,6 +5,7 @@
 	</brief_description>
 	<description>
 		ResonanceStaticScene holds the merged static geometry asset produced by Export Meshes to Steam Audio. The bake uses only this asset (excluding dynamic objects). At runtime, the static scene is loaded from this asset; static ResonanceGeometry nodes skip adding themselves when a valid asset is present.
+		Multiple ResonanceStaticScene nodes in one level are supported: [ResonanceRuntime] loads each valid asset additively (same set again after [method ResonanceServer.reinit_audio_engine]). Probe bake invalidation hashes combine every such node’s asset and global transform so changing any pack can mark data outdated.
 	</description>
 	<tutorials>
 	</tutorials>

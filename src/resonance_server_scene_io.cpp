@@ -56,6 +56,12 @@ void ResonanceServer::mark_scene_commit_pending_assume_locked() {
     scene_dirty.store(true, std::memory_order_release);
 }
 
+void ResonanceServer::mark_scene_commit_pending() {
+    if (!_ctx())
+        return;
+    scene_dirty.store(true, std::memory_order_release);
+}
+
 void ResonanceServer::save_scene_data(String filename) {
     if (_scene_type() == IPL_SCENETYPE_CUSTOM) {
         UtilityFunctions::push_warning(

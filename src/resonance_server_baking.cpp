@@ -447,6 +447,15 @@ int32_t ResonanceServer::load_probe_batch(Ref<ResonanceProbeData> data) {
 
     uint64_t data_hash = _hash_probe_data(pba);
     int32_t handle = probe_batch_registry_.load_batch(_ctx(), simulator, &simulation_mutex, data, data_hash);
+    // Baked-only (max_rays==0): tick() only arms reflection heavy when batches exist. After reinit or first load,
+    // without this the worker can skip RunReflections until the next interval, leaving reflections_have_run_once
+    // false and fetch_reverb_params failing for parametric/hybrid (no wet). Request heavy immediately.
+    if (handle >= 0) {
+        reflection_sim_heavy_requested.store(true, std::memory_order_release);
+        if (pathing_enabled) {
+            pathing_sim_heavy_requested.store(true, std::memory_order_release);
+        }
+    }
     return handle;
 }
 

@@ -22,6 +22,11 @@ func _init(runner: Object) -> void:
 	_runner = runner
 
 
+func shutdown() -> void:
+	# Break RefCounted reference cycles (runner <-> pipeline).
+	_runner = null
+
+
 func run_bake_pipeline_main_thread(volumes: Array[Node]) -> void:
 	var progress_ui = _runner._progress_ui
 	progress_ui.clear_details()
@@ -205,12 +210,10 @@ func _bake_reflections(ctx: Variant) -> bool:
 		ctx.probe_data.set_static_listener_params_hash(0)
 	if ctx.bc.pathing_enabled:
 		ctx.need_pathing = true
-	if (
-		ctx.static_asset
-		and ctx.probe_data.has_method("set_static_scene_params_hash")
-		and srv.has_method("get_geometry_asset_hash")
-	):
-		ctx.probe_data.set_static_scene_params_hash(srv.get_geometry_asset_hash(ctx.static_asset))
+	if ctx.probe_data.has_method("set_static_scene_params_hash"):
+		var uhash: int = _BakeHashes.compute_all_resonance_static_scenes_params_hash(ctx.root)
+		if uhash != 0:
+			ctx.probe_data.set_static_scene_params_hash(uhash)
 	return true
 
 
@@ -245,28 +248,70 @@ func _bake_pathing(ctx: Variant) -> void:
 
 func _bake_static_source(ctx: Variant) -> void:
 	var srv = ResonanceServerAccess.get_server()
-	var do_static_source = func() -> bool:
-		return srv.bake_static_source(ctx.probe_data, ctx.player_pos, ctx.player_radius)
-	await _run_bake_step(
-		ctx,
-		tr(UIStrings.PROGRESS_BAKING_STATIC_SOURCE),
-		do_static_source,
-		"set_static_source_params_hash",
-		_BakeHashes.compute_position_radius_hash(ctx.player_pos, ctx.player_radius)
-	)
+	# Iterate over every outdoor emitter in ResonanceProbeVolume.bake_sources. Each bake_static_source
+	# call adds a distinct STATICSOURCE IR layer to the probe batch so the runtime can resolve the IR
+	# matching the player's current_baked_source position (fixed outdoor emitters).
+	var entries: Array = ctx.static_source_entries
+	if entries.is_empty():
+		# Legacy single-source fallback when no bake_sources were resolved but the flag is on.
+		entries = [{"pos": ctx.player_pos, "radius": ctx.player_radius}]
+	var progress_ui = _runner._progress_ui
+	var total: int = entries.size()
+	var all_ok: bool = true
+	for i in total:
+		var e = entries[i]
+		var pos: Vector3 = e.pos
+		var radius: float = e.radius
+		progress_ui.set_bake_status(
+			tr(UIStrings.PROGRESS_BAKING_STATIC_SOURCE) + ctx.vol_info + (" [%d/%d]" % [i + 1, total] if total > 1 else "")
+		)
+		var do_static_source = func() -> bool:
+			return srv.bake_static_source(ctx.probe_data, pos, radius)
+		var ok = await _run_in_thread_with_cancel_poll(do_static_source)
+		if not ok:
+			all_ok = false
+		ctx.probe_data = ctx.vol.get_probe_data()
+		if progress_ui.cancel_requested:
+			return
+	if all_ok and ctx.probe_data and ctx.probe_data.has_method("set_static_source_params_hash"):
+		var hash_value: int = (
+			_BakeHashes.compute_position_radius_list_hash(ctx.static_source_entries)
+			if ctx.static_source_entries.size() > 1
+			else _BakeHashes.compute_position_radius_hash(ctx.player_pos, ctx.player_radius)
+		)
+		ctx.probe_data.set_static_source_params_hash(hash_value)
 
 
 func _bake_static_listener(ctx: Variant) -> void:
 	var srv = ResonanceServerAccess.get_server()
-	var do_static_listener = func() -> bool:
-		return srv.bake_static_listener(ctx.probe_data, ctx.listener_pos, ctx.listener_radius)
-	await _run_bake_step(
-		ctx,
-		tr(UIStrings.PROGRESS_BAKING_STATIC_LISTENER),
-		do_static_listener,
-		"set_static_listener_params_hash",
-		_BakeHashes.compute_position_radius_hash(ctx.listener_pos, ctx.listener_radius)
-	)
+	var entries: Array = ctx.static_listener_entries
+	if entries.is_empty():
+		entries = [{"pos": ctx.listener_pos, "radius": ctx.listener_radius}]
+	var progress_ui = _runner._progress_ui
+	var total: int = entries.size()
+	var all_ok: bool = true
+	for i in total:
+		var e = entries[i]
+		var pos: Vector3 = e.pos
+		var radius: float = e.radius
+		progress_ui.set_bake_status(
+			tr(UIStrings.PROGRESS_BAKING_STATIC_LISTENER) + ctx.vol_info + (" [%d/%d]" % [i + 1, total] if total > 1 else "")
+		)
+		var do_static_listener = func() -> bool:
+			return srv.bake_static_listener(ctx.probe_data, pos, radius)
+		var ok = await _run_in_thread_with_cancel_poll(do_static_listener)
+		if not ok:
+			all_ok = false
+		ctx.probe_data = ctx.vol.get_probe_data()
+		if progress_ui.cancel_requested:
+			return
+	if all_ok and ctx.probe_data and ctx.probe_data.has_method("set_static_listener_params_hash"):
+		var hash_value: int = (
+			_BakeHashes.compute_position_radius_list_hash(ctx.static_listener_entries)
+			if ctx.static_listener_entries.size() > 1
+			else _BakeHashes.compute_position_radius_hash(ctx.listener_pos, ctx.listener_radius)
+		)
+		ctx.probe_data.set_static_listener_params_hash(hash_value)
 
 
 func _run_bake_for_volume(ctx: Variant) -> bool:

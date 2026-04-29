@@ -101,6 +101,7 @@ var _context_validation: bool = false
 var _enable_debug: bool = false
 var _debug_overlay_visible: bool = false
 var _performance_overlay_visible: bool = false
+var _static_scene_reload_pending: bool = false
 ## Effective source/reflection debug draw (was debug_sources bool).
 var _player_overlay_visible: bool = false
 
@@ -134,6 +135,17 @@ var runtime_physics_viewport_usec: int = 0
 var runtime_physics_server_tick_usec: int = 0
 ## Last [method _physics_process] (Custom tracer): [method ResonanceServer.flush_pending_source_updates] if present.
 var runtime_physics_flush_usec: int = 0
+
+## Audio-thread aggregates across all living [ResonancePlayer] nodes. Refreshed from
+## [method _sample_audio_aggregates] every [code]AUDIO_AGGREGATE_SAMPLE_PERIOD_SEC[/code]; queried by the
+## audio-dropout custom monitors. Cumulative counters are per-player-lifetime (calling
+## [method ResonancePlayer.reset_audio_instrumentation] resets them).
+var _audio_agg_output_underruns_total: int = 0
+var _audio_agg_late_mix_total: int = 0
+var _audio_agg_max_block_time_us: int = 0
+var _audio_agg_voice_count: int = 0
+var _audio_agg_last_sample_sec: float = -1.0
+const AUDIO_AGGREGATE_SAMPLE_PERIOD_SEC: float = 0.25
 
 ## Cached viewport sync: skip redundant [code]set_physics_world[/code] / exclude RIDs / camera [code]update_listener[/code] when unchanged.
 var _vp_sync_cache_valid: bool = false
@@ -489,6 +501,7 @@ func _process(delta: float) -> void:
 					srv.flush_pending_source_updates()
 	var dt_usec := Time.get_ticks_usec() - t0_usec
 	main_thread_last_tick_usec = dt_usec if dt_usec > 0 else 0
+	_sample_audio_aggregates_if_due()
 
 
 func _physics_process(delta: float) -> void:
@@ -529,6 +542,53 @@ func _physics_process(delta: float) -> void:
 	runtime_physics_tick_usec = dt_usec if dt_usec > 0 else 0
 
 
+## Public: rebuilds the IPL static-scene set from the current scene tree. Use after a
+## [member ResonanceStaticScene.static_scene_asset] is swapped at runtime. Debounced to one
+## reload per frame so multiple simultaneous swaps (e.g. level streaming) batch into a single
+## [code]clear_static_scenes[/code] + [code]add_static_scene_from_asset[/code] pass.
+func request_static_scene_reload() -> void:
+	if not is_inside_tree():
+		return
+	if _static_scene_reload_pending:
+		return
+	_static_scene_reload_pending = true
+	call_deferred("_perform_deferred_static_scene_reload")
+
+
+func _perform_deferred_static_scene_reload() -> void:
+	_static_scene_reload_pending = false
+	if not is_inside_tree():
+		return
+	var srv: Variant = ResonanceServerAccess.get_server_if_initialized()
+	if srv == null:
+		return
+	_reload_static_scenes_from_tree(srv, get_tree().get_root())
+
+
+## Loads every [ResonanceStaticScene] under [param tree_root] into the server (additive API), or legacy single-scene load.
+func _reload_static_scenes_from_tree(srv: Variant, tree_root: Node) -> void:
+	if srv == null or tree_root == null:
+		return
+	var static_scenes: Array[Node] = []
+	ResonanceSceneUtils.collect_resonance_static_scenes(tree_root, static_scenes)
+	if static_scenes.is_empty():
+		return
+	if srv.has_method("clear_static_scenes") and srv.has_method("add_static_scene_from_asset"):
+		srv.clear_static_scenes()
+		for ss in static_scenes:
+			if ss.static_scene_asset and ss.has_valid_asset():
+				srv.add_static_scene_from_asset(ss.static_scene_asset, ss.get_global_transform())
+	elif srv.has_method("load_static_scene_from_asset"):
+		if static_scenes.size() == 1:
+			var only = static_scenes[0]
+			if only.static_scene_asset and only.has_valid_asset():
+				srv.load_static_scene_from_asset(only.static_scene_asset, only.get_global_transform())
+		else:
+			push_error(
+				"Nexus Resonance: Multiple ResonanceStaticScene nodes require clear_static_scenes and add_static_scene_from_asset on ResonanceServer; this build only supports load_static_scene_from_asset (single scene)."
+			)
+
+
 func _initialize_server() -> void:
 	# In editor, probe_toolbar inits when needed for bake. Avoid Steam Audio init on scene load (can crash).
 	if Engine.is_editor_hint():
@@ -561,22 +621,8 @@ func _initialize_server() -> void:
 	if fmod_bridge_enabled:
 		_init_fmod_bridge()
 	# Unity-style: load static scene(s) from ResonanceStaticScene nodes. Additive: one per scene.
-	var static_scenes: Array[Node] = []
-	ResonanceSceneUtils.collect_resonance_static_scenes(get_tree().get_root(), static_scenes)
-	if not static_scenes.is_empty():
-		if srv.has_method("clear_static_scenes") and srv.has_method("add_static_scene_from_asset"):
-			srv.clear_static_scenes()
-			for ss in static_scenes:
-				if ss.static_scene_asset and ss.has_valid_asset():
-					srv.add_static_scene_from_asset(
-						ss.static_scene_asset, ss.get_global_transform()
-					)
-		# Legacy single-scene API; prefer add_static_scene_from_asset when multiple scenes.
-		elif srv.has_method("load_static_scene_from_asset") and static_scenes.size() == 1:
-			if static_scenes[0].static_scene_asset and static_scenes[0].has_valid_asset():
-				srv.load_static_scene_from_asset(
-					static_scenes[0].static_scene_asset, static_scenes[0].get_global_transform()
-				)
+	if is_inside_tree():
+		_reload_static_scenes_from_tree(srv, get_tree().get_root())
 	# add_static_scene_from_asset / load_static_scene_from_asset commit the IPL scene and set scene_dirty;
 	# the simulation worker runs iplSceneCommit + RunDirect on the next tick. Deferred refresh re-runs
 	# ResonanceGeometry::_create_meshes for nodes that missed server init during _ready (same as reinit path).
@@ -613,6 +659,8 @@ func _apply_perspective_correction() -> void:
 		srv.set_perspective_correction_enabled(runtime.perspective_correction_enabled)
 		srv.set_perspective_correction_factor(runtime.perspective_correction_factor)
 		srv.set_reverb_transmission_amount(runtime.reverb_transmission_amount)
+		srv.set_apply_occlusion_to_baked_reflections(runtime.apply_occlusion_to_baked_reflections)
+		srv.set_apply_distance_curve_to_reflections(runtime.apply_distance_curve_to_reflections)
 
 
 func _get_bus_effective() -> StringName:
@@ -626,7 +674,7 @@ func _get_reverb_bus_name() -> StringName:
 
 
 func _get_reverb_bus_send() -> StringName:
-	## Reverb output goes to same bus as Direct+Pathing. No separate send bus.
+	## Reverb bus send follows runtime dry bus (same as Steam Audio Unity indirect routing model).
 	return _get_bus_effective()
 
 
@@ -667,18 +715,13 @@ func _reload_after_reinit() -> void:
 	if not is_inside_tree():
 		return
 	var tree = get_tree()
-	var static_scene = ResonanceSceneUtils.find_resonance_static_scene(tree.get_root())
-	if static_scene and static_scene.static_scene_asset and static_scene.has_valid_asset():
-		var srv: Variant = ResonanceServerAccess.get_server()
-		if srv and srv.has_method("load_static_scene_from_asset"):
-			srv.load_static_scene_from_asset(
-				static_scene.static_scene_asset, static_scene.get_global_transform()
-			)
-	tree.call_group_flags(
-		SceneTree.GROUP_CALL_DEFERRED,
-		"resonance_probe_volume",
-		"_reload_probe_batch_after_reinit"
-	)
+	var srv: Variant = ResonanceServerAccess.get_server()
+	_reload_static_scenes_from_tree(srv, tree.get_root())
+	# Same frame: re-register probe batches after reinit (deferred was one frame late). Baked-only needs batches
+	# before RunReflections so parametric/hybrid/pathing outputs are valid (see load_probe_batch heavy request).
+	for n in tree.get_nodes_in_group("resonance_probe_volume"):
+		if n.has_method("reload_probe_batch"):
+			n.reload_probe_batch()
 	tree.call_group_flags(
 		SceneTree.GROUP_CALL_DEFERRED, "resonance_geometry", "refresh_geometry"
 	)
@@ -686,8 +729,12 @@ func _reload_after_reinit() -> void:
 	_sync_physics_process_for_custom_tracer()
 
 
+## Connects to `ResonanceRuntimeConfig` change signals so live tweaks (settings menus,
+## debug overlays, GDScript scripting, etc.) trigger an audio engine reinit. The connect
+## path runs in BOTH editor and play mode; `_disconnect_runtime_signals` below is also
+## play-mode-active, so symmetry is required to avoid stuck connections after reinit.
 func _connect_runtime_signals() -> void:
-	if not Engine.is_editor_hint() or not _runtime:
+	if not _runtime:
 		return
 	if (
 		_runtime.has_signal("reflection_type_changed")
@@ -897,6 +944,73 @@ func _nexus_perf_read_mixer_sanitize_stereo_last_us() -> int:
 		return 0
 	var t: Dictionary = srv.get_convolution_audio_timing()
 	return int(t.get("us_mixer_sanitize_stereo_last", 0))
+
+
+## Re-scan all living [ResonancePlayer]s and refresh the cached audio-thread aggregates. Throttled to at most
+## [constant AUDIO_AGGREGATE_SAMPLE_PERIOD_SEC] to avoid iterating the scene every frame — the aggregates feed
+## ~Hz-rate Performance monitors, so higher update rates have no UI benefit.
+func _sample_audio_aggregates_if_due() -> void:
+	var now_sec := float(Time.get_ticks_msec()) * 0.001
+	if _audio_agg_last_sample_sec >= 0.0 and (now_sec - _audio_agg_last_sample_sec) < AUDIO_AGGREGATE_SAMPLE_PERIOD_SEC:
+		return
+	_audio_agg_last_sample_sec = now_sec
+	var tree := get_tree()
+	if tree == null:
+		_audio_agg_output_underruns_total = 0
+		_audio_agg_late_mix_total = 0
+		_audio_agg_max_block_time_us = 0
+		_audio_agg_voice_count = 0
+		return
+	var sum_underrun: int = 0
+	var sum_late_mix: int = 0
+	var max_block: int = 0
+	var sum_voices: int = 0
+	for p in tree.get_nodes_in_group("resonance_player"):
+		if p == null or not p.has_method("get_audio_instrumentation"):
+			continue
+		var d: Dictionary = p.get_audio_instrumentation()
+		if d.is_empty():
+			continue
+		sum_underrun += int(d.get("output_underrun", 0))
+		sum_late_mix += int(d.get("late_mix_count", 0))
+		var mb: int = int(d.get("max_block_time_us", 0))
+		if mb > max_block:
+			max_block = mb
+		sum_voices += int(d.get("polyphony_voice_count", 0))
+	_audio_agg_output_underruns_total = sum_underrun
+	_audio_agg_late_mix_total = sum_late_mix
+	_audio_agg_max_block_time_us = max_block
+	_audio_agg_voice_count = sum_voices
+
+
+func _nexus_perf_read_audio_output_underruns_total() -> int:
+	return _audio_agg_output_underruns_total
+
+
+func _nexus_perf_read_audio_late_mix_total() -> int:
+	return _audio_agg_late_mix_total
+
+
+func _nexus_perf_read_audio_max_block_time_us() -> int:
+	return _audio_agg_max_block_time_us
+
+
+func _nexus_perf_read_audio_active_voice_count() -> int:
+	return _audio_agg_voice_count
+
+
+func _nexus_perf_read_server_active_source_count() -> int:
+	var srv: Variant = ResonanceServerAccess.get_server_if_initialized()
+	if srv == null or not srv.has_method("get_active_source_count"):
+		return 0
+	return int(srv.get_active_source_count())
+
+
+func _nexus_perf_read_server_active_probe_batch_count() -> int:
+	var srv: Variant = ResonanceServerAccess.get_server_if_initialized()
+	if srv == null or not srv.has_method("get_active_probe_batch_count"):
+		return 0
+	return int(srv.get_active_probe_batch_count())
 
 
 func _update_debug_overlay_visibility() -> void:

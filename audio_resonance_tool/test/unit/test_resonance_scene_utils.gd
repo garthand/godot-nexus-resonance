@@ -38,6 +38,28 @@ func test_collect_resonance_static_scenes_empty():
 	assert_eq(collected.size(), 0, "empty tree should collect 0 static scenes")
 
 
+## collect_resonance_static_scenes: depth-first, first child first (same order as find_resonance_static_scene would pick the first).
+func test_collect_resonance_static_scenes_two_nodes_dfs_order():
+	if not ClassDB.class_exists("ResonanceStaticScene"):
+		pass_test("ResonanceStaticScene not available (GDExtension not loaded)")
+		return
+	var root = Node3D.new()
+	var rss_first = ClassDB.instantiate("ResonanceStaticScene")
+	rss_first.name = &"RSS_First"
+	var mid = Node3D.new()
+	var rss_second = ClassDB.instantiate("ResonanceStaticScene")
+	rss_second.name = &"RSS_Second"
+	root.add_child(rss_first)
+	root.add_child(mid)
+	mid.add_child(rss_second)
+	var collected: Array[Node] = []
+	ResonanceSceneUtils.collect_resonance_static_scenes(root, collected)
+	assert_eq(collected.size(), 2, "should collect both ResonanceStaticScene nodes")
+	assert_eq(collected[0].name, &"RSS_First", "DFS: first root child branch before sibling subtree")
+	assert_eq(collected[1].name, &"RSS_Second", "DFS: nested ResonanceStaticScene after first branch")
+	root.free()
+
+
 ## scene_has_exportable_resonance_content
 
 func test_scene_has_exportable_resonance_content_null_returns_false():

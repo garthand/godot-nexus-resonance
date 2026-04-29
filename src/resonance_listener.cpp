@@ -31,11 +31,14 @@ void ResonanceListener::_process(double delta) {
     // Only update when this listener is in the active viewport path (descendant of viewport's camera).
     // With multiple listeners (e.g. split-screen), only the one under the active camera drives the server.
     Viewport* vp = get_viewport();
-    if (vp) {
-        Camera3D* cam = vp->get_camera_3d();
-        if (!cam || !cam->is_ancestor_of(this)) {
-            return;
-        }
+    Camera3D* cam = vp ? vp->get_camera_3d() : nullptr;
+    const bool drives_server = cam && cam->is_ancestor_of(this);
+    if (!drives_server) {
+        // Do not call update_listener when inactive — it would overwrite the active listener pose
+        // (camera-driven fallback in ResonanceRuntime, or another listener under the active camera).
+        // Clear validity so pathing does not run against stale pending_listener_valid state.
+        server->set_listener_valid(false);
+        return;
     }
 
     server->set_listener_valid(listener_valid);

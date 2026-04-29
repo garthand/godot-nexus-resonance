@@ -120,14 +120,20 @@ if env["platform"] == "windows":
             print("WARNING: Steam Audio lib not found at %s. Run: python scripts/install_steam_audio.py" % steam_src)
             return 0
         dst = os.path.join(target_base, "windows")
-        os.makedirs(dst, exist_ok=True)
-        for dll in steam_dlls:
-            src_path = os.path.join(steam_src, dll)
-            if os.path.isfile(src_path):
-                shutil.copy2(src_path, dst)
-                print("Copied %s -> %s" % (dll, dst))
-            else:
-                print("WARNING: %s not found in %s" % (dll, steam_src))
+        try:
+            os.makedirs(dst, exist_ok=True)
+            for dll in steam_dlls:
+                src_path = os.path.join(steam_src, dll)
+                if not os.path.isfile(src_path):
+                    print("WARNING: %s not found in %s" % (dll, steam_src))
+                    continue
+                try:
+                    shutil.copy2(src_path, dst)
+                    print("Copied %s -> %s" % (dll, dst))
+                except OSError as e:
+                    print("WARNING: Could not copy %s into addon bin (file in use?). %s" % (dll, e))
+        except OSError as e:
+            print("WARNING: Steam Audio runtime copy step failed. %s" % e)
         return 0
 
     env.AddPostAction(library, env.Action(copy_steam_dlls))
@@ -139,7 +145,7 @@ if build_tests:
     env_test = env.Clone()
     env_test.Replace(LIBS=[], LIBPATH=[])
     env_test.Append(CPPPATH=["src", "src/lib/catch2/single_include/catch2", "src/lib/steamaudio/include"])
-    test_sources = ["src/test/test_main.cpp", "src/test/test_ring_buffer.cpp", "src/test/test_volume_ramp.cpp", "src/test/test_resonance_math_more.cpp", "src/test/test_resonance_hash.cpp", "src/test/test_bake_ambisonics_order.cpp", "src/test/test_handle_manager.cpp", "src/test/test_ipl_guard.cpp", "src/test/test_custom_scene_invariants.cpp", "src/test/test_constants_helpers.cpp", "src/test/test_ray_trace_debug_intersect.cpp", "src/test/test_physics_ray_batch.cpp"]
+    test_sources = ["src/test/test_main.cpp", "src/test/test_ring_buffer.cpp", "src/test/test_volume_ramp.cpp", "src/test/test_resonance_math_more.cpp", "src/test/test_resonance_hash.cpp", "src/test/test_bake_ambisonics_order.cpp", "src/test/test_handle_manager.cpp", "src/test/test_ipl_guard.cpp", "src/test/test_custom_scene_invariants.cpp", "src/test/test_constants_helpers.cpp", "src/test/test_ray_trace_debug_intersect.cpp", "src/test/test_physics_ray_batch.cpp", "src/test/test_baked_reflection_occlusion.cpp", "src/test/test_wet_distance_attenuation.cpp"]
     test_dir = "build/tests"
     test_exe = env_test.Program(os.path.join(test_dir, "nexus_resonance_tests"), test_sources)
     env.Alias("test", test_exe)

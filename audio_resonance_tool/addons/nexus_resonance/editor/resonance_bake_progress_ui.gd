@@ -123,6 +123,12 @@ func hide_ui() -> void:
 	_details_panel = null
 
 
+func shutdown() -> void:
+	# Ensure we always disconnect signals and free dialog on editor shutdown.
+	hide_ui()
+	editor_interface = null
+
+
 func set_bake_status(text: String) -> void:
 	if _status_label:
 		_status_label.call_deferred("set_text", text)

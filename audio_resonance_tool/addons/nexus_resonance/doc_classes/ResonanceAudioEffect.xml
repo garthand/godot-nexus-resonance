@@ -4,9 +4,9 @@
 		Audio bus effect for reverb output. Auto-configured by ResonanceRuntime.
 	</brief_description>
 	<description>
-		ResonanceAudioEffect is an [AudioEffect] that processes the reverb bus. It is added to the configured reverb bus (see [url=#ResonanceRuntimeConfig]ResonanceRuntimeConfig[/url] [member ResonanceRuntimeConfig.reverb_bus_name], Project Settings nexus/resonance/reverb_bus_name) when the plugin or [url=#ResonanceRuntime]ResonanceRuntime[/url] initializes.
-		For Convolution reflection type, it reads from the Steam Audio reflection mixer. For Parametric/Hybrid, reverb is applied per-source in [ResonancePlayer]; when bus != reverb_bus (split output), reverb is routed to a separate child player on reverb_bus.
-		Adjust [member gain_db] for reverb bus volume. Bus name and send target are configurable via [url=#ResonanceRuntimeConfig]ResonanceRuntimeConfig[/url] or Project Settings.
+		ResonanceAudioEffect is an [AudioEffect] that processes the reverb bus. It is added to [member ResonanceRuntimeConfig.reverb_bus_name] when the plugin or [url=#ResonanceRuntime]ResonanceRuntime[/url] initializes.
+		For Convolution reflection type, it reads from the Steam Audio reflection mixer. For Parametric/Hybrid, reverb is applied per-source in [ResonancePlayer]; when dry and wet buses differ, wet is routed to a separate child player on the effective reverb bus.
+		Adjust [member gain_db] for reverb bus volume. After this bus, Godot routes output to the same target as [method ResonanceRuntimeConfig.get_bus_effective] (runtime [member ResonanceRuntimeConfig.bus]).
 	</description>
 	<tutorials>
 	</tutorials>

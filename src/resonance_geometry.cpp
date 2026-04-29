@@ -677,13 +677,14 @@ void ResonanceGeometry::flush_dynamic_acoustic_transform() {
     if (!server)
         return;
     dynamic_transform_notify_count_ = 0;
-    server->cancel_pending_dynamic_instanced_mesh_transform(instanced_mesh);
+    // Phase 1: do not take simulation_mutex on the main thread. The dynamic instanced mesh transform queue
+    // drained by the worker in _apply_queued_dynamic_instanced_mesh_transforms_assume_locked already covers
+    // this transform; the synchronous iplInstancedMeshUpdateTransform here was redundant with the queue and
+    // caused main-thread stalls up to 200ms when the worker was mid-RunReflections. scene_dirty is atomic,
+    // no lock required to request a scene commit.
     IPLMatrix4x4 mat = ResonanceUtils::to_ipl_matrix(get_mesh_bake_transform());
-    {
-        auto lock = server->scoped_simulation_lock();
-        iplInstancedMeshUpdateTransform(instanced_mesh, server->get_scene_handle(), mat);
-        server->mark_scene_commit_pending_assume_locked();
-    }
+    server->enqueue_dynamic_instanced_mesh_transform(instanced_mesh, mat);
+    server->mark_scene_commit_pending();
 }
 
 static void _propagate_recursive(Node* from, const Ref<ResonanceMaterial>& mat, const Ref<Mesh>& geom_override) {
@@ -710,7 +711,16 @@ void ResonanceGeometry::_propagate_material_and_geometry_to_descendants() {
     _propagate_recursive(this, material, geometry_override);
 }
 
-void ResonanceGeometry::set_material(const Ref<ResonanceMaterial>& p_material) { material = p_material; }
+void ResonanceGeometry::set_material(const Ref<ResonanceMaterial>& p_material) {
+    if (material == p_material)
+        return;
+    material = p_material;
+    // Material is baked into IPL static / instanced meshes at creation time. Without rebuilding the
+    // mesh, swapping a ResonanceMaterial keeps Steam Audio on the previous absorption / scattering /
+    // transmission coefficients - audibly stale for occlusion, reverb tone, and pathing transmission.
+    if (is_inside_tree())
+        _create_meshes();
+}
 Ref<ResonanceMaterial> ResonanceGeometry::get_material() const { return material; }
 
 Error ResonanceGeometry::export_dynamic_mesh_to_asset(const String& p_path) {

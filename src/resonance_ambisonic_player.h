@@ -44,6 +44,7 @@ class ResonanceAmbisonicInternalPlayback : public AudioStreamPlayback {
     AmbisonicPlaybackParameters params_current;
 
     bool is_initialized = false;
+    std::atomic<bool> stop_requested = false;
     int current_sample_rate = 48000;
     IPLContext context = nullptr;
 
@@ -63,6 +64,8 @@ class ResonanceAmbisonicInternalPlayback : public AudioStreamPlayback {
     // Temp buffers for batch read from output ring buffers (avoids per-sample memcpy)
     std::vector<float> temp_output_l;
     std::vector<float> temp_output_r;
+
+    bool _has_pending_output() const;
 
     void _lazy_init_steam_audio();
     void _cleanup_steam_audio();

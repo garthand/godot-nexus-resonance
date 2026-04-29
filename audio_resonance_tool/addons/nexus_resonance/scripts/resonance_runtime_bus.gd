@@ -5,8 +5,25 @@ class_name ResonanceRuntimeBus
 
 const EFFECT_CLASS := "ResonanceAudioEffect"
 
+## Ensures [ResonanceAudioEffect] is on the bus at index 0 (before EQ/compressor chain).
+## Call when the reverb bus already exists from [AudioBusLayout] but the effect was stripped or failed to load.
+static func ensure_resonance_reverb_effect_on_bus(bus_idx: int) -> void:
+	if bus_idx < 0:
+		return
+	if not ClassDB.class_exists(EFFECT_CLASS):
+		return
+	var n := AudioServer.get_bus_effect_count(bus_idx)
+	for i in range(n):
+		var eff: AudioEffect = AudioServer.get_bus_effect(bus_idx, i)
+		if eff != null and eff.get_class() == EFFECT_CLASS:
+			return
+	var effect: AudioEffect = ClassDB.instantiate(EFFECT_CLASS)
+	effect.resource_name = "Resonance Reverb"
+	AudioServer.add_bus_effect(bus_idx, effect, 0)
+
 var _get_bus_effective: Callable
 var _get_reverb_bus_name: Callable
+## Callable → Godot send target for the runtime reverb effect bus (matches dry [code]bus[/code]).
 var _get_reverb_bus_send: Callable
 
 
@@ -41,12 +58,9 @@ func ensure_reverb_bus_exists() -> bool:
 		if idx > 1:
 			AudioServer.move_bus(idx, 1)
 			idx = 1
-		if ClassDB.class_exists(EFFECT_CLASS):
-			var effect = ClassDB.instantiate(EFFECT_CLASS)
-			effect.resource_name = "Resonance Reverb"
-			AudioServer.add_bus_effect(idx, effect)
 	if idx >= 0:
 		AudioServer.set_bus_send(idx, send_name)
+		ensure_resonance_reverb_effect_on_bus(idx)
 	return idx >= 0
 
 
@@ -54,7 +68,7 @@ func apply_bus_to_players(tree: SceneTree) -> void:
 	if tree == null:
 		return
 	var global_bus := get_bus_effective()
-	var reverb_bus := get_reverb_bus_send()
+	var global_reverb_bus := get_reverb_bus_name()
 	var reflection_type := -1
 	var srv: Variant = ResonanceServerAccess.get_server_if_initialized()
 	if srv != null and srv.has_method("get_reflection_type"):
@@ -69,6 +83,11 @@ func apply_bus_to_players(tree: SceneTree) -> void:
 			effective_bus = global_bus
 		if p.has_method("set_bus"):
 			p.set_bus(effective_bus)
-		var reverb_split := (reflection_type == 1 or reflection_type == 2) and effective_bus != reverb_bus
+		var effective_reverb_bus: StringName
+		if cfg and cfg.has_method("get_reverb_bus_name_effective"):
+			effective_reverb_bus = cfg.get_reverb_bus_name_effective(global_reverb_bus)
+		else:
+			effective_reverb_bus = global_reverb_bus
+		var reverb_split := (reflection_type == 1 or reflection_type == 2) and effective_bus != effective_reverb_bus
 		if p.has_method("set_reverb_split_output"):
-			p.set_reverb_split_output(reverb_split, reverb_bus)
+			p.set_reverb_split_output(reverb_split, effective_reverb_bus)

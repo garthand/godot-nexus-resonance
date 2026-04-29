@@ -8,7 +8,7 @@ namespace resonance {
 
 /// Version string (centralized; override via NEXUS_RESONANCE_VERSION when building)
 #ifndef NEXUS_RESONANCE_VERSION
-#define NEXUS_RESONANCE_VERSION "0.9.12"
+#define NEXUS_RESONANCE_VERSION "0.9.13"
 #endif
 constexpr const char* kVersion = NEXUS_RESONANCE_VERSION;
 
@@ -96,8 +96,6 @@ constexpr float kPathEQCoeffMax = 1.0f;
 
 /// Instrumentation: RMS threshold below which output is considered "silent" for dropout stats
 constexpr float kInstrumentationSilentBlockThreshold = 0.0001f;
-/// ResonancePlayer reverb distance falloff: fade starts at this fraction of reverb_max_distance (0.5 = 50%)
-constexpr float kPlayerReverbFalloffFadeStart = 0.5f;
 /// ResonancePlayer perspective_correction_factor clamp (matches Property hint)
 constexpr float kPlayerPerspectiveFactorMin = 0.5f;
 constexpr float kPlayerPerspectiveFactorMax = 2.0f;

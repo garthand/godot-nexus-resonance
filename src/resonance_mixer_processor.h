@@ -4,6 +4,7 @@
 #include "resonance_constants.h"
 #include <godot_cpp/classes/audio_frame.hpp>
 #include <phonon.h>
+#include <vector>
 
 namespace godot {
 
@@ -35,8 +36,11 @@ class ResonanceMixerProcessor {
     IPLAudioBuffer sa_ambisonic_buffer{}; // Mixer -> Decode
     IPLAudioBuffer sa_stereo_buffer{};    // Decode -> Godot (or VirtualSurround -> Godot)
     IPLAudioBuffer sa_7_1_buffer{};       // Decode 7.1 intermediate when use_virtual_surround
+    std::vector<float> pending_stereo_left{};
+    std::vector<float> pending_stereo_right{};
+    size_t pending_read_index = 0;
 
-    void _write_stereo_to_audio_frames(float* left, float* right, AudioFrame* out_frames, int frame_count);
+    void _write_stereo_to_audio_frames_with_carry(AudioFrame* out_frames, int frame_count);
     void _decode_ambisonic_to_stereo_buffer(IPLAudioBuffer* ambi_in, const IPLCoordinateSpace3& listener_coords);
     bool _can_decode() const;
 

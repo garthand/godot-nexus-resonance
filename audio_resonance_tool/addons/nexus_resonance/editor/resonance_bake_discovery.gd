@@ -60,3 +60,26 @@ static func resolve_bake_node_for_volume(
 			if n and n.is_class(target_class):
 				return n
 	return null
+
+
+## Resolve all NodePaths in [param vol].[param property] to live Node3D instances of [param target_class].
+## Used by the bake pipeline to issue one STATICSOURCE/STATICLISTENER pass per outdoor emitter so that
+## multiple fixed sources (rain, thunder, HVAC, ...) produce position-dependent baked IRs instead of a
+## single listener-only REVERB IR.
+static func resolve_bake_nodes_for_volume(
+	vol: Node, root: Node, property: String, target_class: String
+) -> Array:
+	var out: Array = []
+	var arr = vol.get(property) if property in vol else []
+	if not (arr is Array):
+		return out
+	for path_val in arr:
+		var path = NodePath(str(path_val)) if path_val else NodePath()
+		if path.is_empty():
+			continue
+		var n = vol.get_node_or_null(path) if vol.is_inside_tree() else null
+		if not n and root:
+			n = root.get_node_or_null(path)
+		if n and n.is_class(target_class):
+			out.append(n)
+	return out

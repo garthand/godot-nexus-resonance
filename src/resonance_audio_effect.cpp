@@ -1,5 +1,6 @@
 #include "resonance_audio_effect.h"
 #include "resonance_log.h"
+#include "resonance_math.h"
 #include "resonance_server.h"
 #include <algorithm>
 #include <chrono>
@@ -130,8 +131,10 @@ void ResonanceAudioEffectInstance::_process(const void* src_buffer, AudioFrame* 
 
         // --- SAFETY: Apply gain, then output limiter to prevent ear damage from overflow/NaN
         for (int i = 0; i < frame_count; i++) {
-            dst_buffer[i].left = std::clamp(dst_buffer[i].left * gain, -1.0f, 1.0f);
-            dst_buffer[i].right = std::clamp(dst_buffer[i].right * gain, -1.0f, 1.0f);
+            const float left = resonance::sanitize_audio_float(dst_buffer[i].left * gain);
+            const float right = resonance::sanitize_audio_float(dst_buffer[i].right * gain);
+            dst_buffer[i].left = std::clamp(left, -1.0f, 1.0f);
+            dst_buffer[i].right = std::clamp(right, -1.0f, 1.0f);
             float v = std::max(std::abs(dst_buffer[i].left), std::abs(dst_buffer[i].right));
             if (v > peak)
                 peak = v;

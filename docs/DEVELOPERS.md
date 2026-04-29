@@ -30,15 +30,16 @@ nexus-resonance/
 
 ## Architecture
 
+- **Editor plugin vs GDExtension:** Toggling the addon under **Project Settings → Plugins** only affects [`plugin.gd`](../audio_resonance_tool/addons/nexus_resonance/plugin.gd). Native classes and `ResonanceServer` come from the **.gdextension** and stay loaded until editor restart. See **[EDITOR_PLUGIN_VS_GDEXTENSION.md](EDITOR_PLUGIN_VS_GDEXTENSION.md)**.
 - **ResonanceServer** (C++): Singleton, owns Steam Audio context, simulator, scene, HRTF.
 - **ResonanceRuntime** (GDScript): Scene node, drives init, listener fallback, reverb bus.
 - **ResonanceRuntimeConfig** (GDScript): Resource with all runtime settings (sample rate, frame size, reflection type, etc.).
 - **ResonancePlayer** / **ResonanceAmbisonicPlayer** (C++): Audio sources with direct, reverb, pathing.
-- **ResonancePlayer polyphony:** When `player_config` is set, Godot may run several `ResonanceInternalPlayback` instances (`max_polyphony` > 1). The node keeps a mutex-protected registry; `_process` **broadcasts** the same `PlaybackParameters` (and shared `source_handle`) to every active voice so none fall back to dry passthrough. **Reverb split** sums `read_reverb_frames` across all registered voices (with clamp). `ResonancePlayer::~` orphans playbacks so their destructors never touch a freed owner. `ResonanceServer::record_convolution_feed` is instrumentation-only (tracks min/max gain/RMS); convolution still runs per voice via the reflection mixer — multiple feeds per frame from overlapping voices are normal.
+- **ResonancePlayer polyphony:** When `player_config` is set, Godot may run several `ResonanceInternalPlayback` instances (`max_polyphony` > 1). The node keeps a mutex-protected registry; `_process` **broadcasts** the same `PlaybackParameters` (and shared `source_handle`) to every active voice so none fall back to dry passthrough. **Reverb split** sums `read_reverb_frames` across all registered voices (with clamp). `ResonancePlayer::~` orphans playbacks so their destructors never touch a freed owner. `ResonanceServer::record_convolution_feed` is instrumentation-only (tracks min/max gain/RMS); convolution still runs per voice via the reflection mixer - multiple feeds per frame from overlapping voices are normal.
 - **ResonancePlayer vs `AudioStreamPlayer3D` (with `player_config`):**
   - `**set_stream` / `get_stream`:** Overridden so the serialized/inspector stream is the user’s `AudioStream`; the engine plays `ResonanceInternalStream`. Clearing `player_config` unwraps to the plain parent stream slot.
   - **Volume:** `owner_effective_volume_linear` applies `min(volume_db, max_db)` → linear (Godot-style ceiling); the engine does not apply node volume to GDExtension `_mix` output.
-  - **Ignored for distance (use `ResonancePlayerConfig`):** Godot `attenuation_model`, `unit_size`, `max_distance` — `_ready` sets `ATTENUATION_DISABLED`.
+  - **Ignored for distance (use `ResonancePlayerConfig`):** Godot `attenuation_model`, `unit_size`, `max_distance` - `_ready` sets `ATTENUATION_DISABLED`.
   - **Weak / no Steam wiring:** `emission_angle`*, `attenuation_filter*`, `panning_strength`.
   - `**get_audio_instrumentation`:** Adds `godot_`* snapshot keys for the fields above plus pitch/max_db/unit_size.
   - **Reverb split child:** Separate `AudioStreamPlayer` bus; not auto-synced to parent bus/mute.
@@ -93,27 +94,27 @@ Run via Godot with GUT addon or CLI.
 
 | Was                           | Wie                                                                                                                                                                                                         |
 | ----------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| **C++-Format (wie Linux-CI)** | `[scripts/check_clang_format.sh](scripts/check_clang_format.sh)` — bei Fehlern `[scripts/format_cpp.sh](scripts/format_cpp.sh)`, dann erneut prüfen.                                                        |
+| **C++-Format (wie Linux-CI)** | `[scripts/check_clang_format.sh](scripts/check_clang_format.sh)` - bei Fehlern `[scripts/format_cpp.sh](scripts/format_cpp.sh)`, dann erneut prüfen.                                                        |
 | **Alles in einem (lokal)**    | `[scripts/prep_push.sh](scripts/prep_push.sh)` (Bash / Git Bash) oder `[scripts/prep_push.ps1](scripts/prep_push.ps1)` (PowerShell; `CLANG_FORMAT_BIN` oder `.tools\LLVM-14-extract\bin\clang-format.exe`). |
 | **C++-Unit-Tests**            | `scons` (baut Tests standardmäßig), dann `build/tests/nexus_resonance_tests` bzw. `.exe`.                                                                                                                   |
 | **GDScript**                  | GUT läuft in **tests.yml** auf geänderten Pfaden; bei relevanten `.gd`-Änderungen lokal GUT ausführen oder auf CI vertrauen.                                                                                |
 | **Version sichtbar**          | Bei Release: `CHANGELOG` + `NEXUS_RESONANCE_VERSION` in `src/resonance_constants.h`.                                                                                                                        |
 
 
-Cursor: Regel `[.cursor/rules/before-push.mdc](.cursor/rules/before-push.mdc)` — Assistent soll bei „will pushen“ / Release-Vorhaben Format-Check und C++-Tests ausführen.
+Cursor: Regel `[.cursor/rules/before-push.mdc](.cursor/rules/before-push.mdc)` - Assistent soll bei „will pushen“ / Release-Vorhaben Format-Check und C++-Tests ausführen.
 
 ## CI/CD
 
 - **build.yml** - Builds all platforms on push/PR to main (Linux/Windows/Android on ubuntu, macOS/iOS on macos-latest)
 - **release.yml** - Full build + GitHub Release on version tags (`v`*)
-- **tests.yml** - C++unit tests + GDScript GUT tests on push/PR; **clang-format-14** check via `[scripts/check_clang_format.sh](scripts/check_clang_format.sh)` (`--dry-run -Werror` — no in-tree edits, no `git diff` drift). Those `**.sh` files must be committed** with the workflow; if they are missing on GitHub, the format step fails with **exit 127** (script/binary not found). Before pushing C++ changes, run `[scripts/format_cpp.sh](scripts/format_cpp.sh)` (or `CLANG_FORMAT_BIN=…` if your binary is not named `clang-format-14`). **clang-tidy** (first 80 `src` units, `bugprone-`* / `cert-`* / `clang-analyzer-*`) runs with warnings as errors but **excludes** `bugprone-easily-swappable-parameters`, which is too noisy for multi-`float` / multi-`int` engine callbacks.
+- **tests.yml** - C++unit tests + GDScript GUT tests on push/PR; **clang-format-14** check via `[scripts/check_clang_format.sh](scripts/check_clang_format.sh)` (`--dry-run -Werror` - no in-tree edits, no `git diff` drift). Those `**.sh` files must be committed** with the workflow; if they are missing on GitHub, the format step fails with **exit 127** (script/binary not found). Before pushing C++ changes, run `[scripts/format_cpp.sh](scripts/format_cpp.sh)` (or `CLANG_FORMAT_BIN=…` if your binary is not named `clang-format-14`). **clang-tidy** (first 80 `src` units, `bugprone-`* / `cert-`* / `clang-analyzer-*`) runs with warnings as errors but **excludes** `bugprone-easily-swappable-parameters`, which is too noisy for multi-`float` / multi-`int` engine callbacks.
 - **codeql.yml** - CodeQL security analysis (manual trigger)
 
 ## Known Limits and Workarounds
 
-- **ResonancePlayer sounds dry (no reverb/occlusion)** — Often was: child `ResonancePlayer` `_ready` ran before parent `ResonanceServer` init, so `create_source_handle` never ran again. Fixed by retrying handle creation from `play()` / `_process` when the server becomes ready. If you still hear dry audio, check `ResonanceServer.is_simulating()`, probe batches / geometry, and mix levels—not only `_ready` ordering.
+- **ResonancePlayer sounds dry (no reverb/occlusion)** - Often was: child `ResonancePlayer` `_ready` ran before parent `ResonanceServer` init, so `create_source_handle` never ran again. Fixed by retrying handle creation from `play()` / `_process` when the server becomes ready. If you still hear dry audio, check `ResonanceServer.is_simulating()`, probe batches / geometry, and mix levels-not only `_ready` ordering.
 - **Editor shutdown**: Do not call `ResourceSaver.remove_resource_format_saver` / `ResourceLoader.remove_resource_format_loader` in plugin `_exit_tree`; Godot may tear these down before the plugin, causing SIGSEGV.
-- **GDExtension unload**: `clear_probe_batches` is now called in `_disable_plugin` only when `Engine.has_singleton("ResonanceServer")` is true. On editor close the GDExtension may be unloaded first—then the singleton is gone and we skip safely. When the user disables the plugin from project settings, we clean up.
+- **GDExtension unload**: `clear_probe_batches` is now called in `_disable_plugin` only when `Engine.has_singleton("ResonanceServer")` is true. On editor close the GDExtension may be unloaded first-then the singleton is gone and we skip safely. When the user disables the plugin from project settings, we clean up.
 - **Probe volume deletion**: Probe Volume clears refs on EXIT_TREE; ResonancePlayer auto-clears `pathing_probe_volume` when the target node is gone. If the error still occurs, use Tools > Unlink Probe Volume References before deleting.
 
 ## Coding Conventions

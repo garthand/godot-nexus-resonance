@@ -45,8 +45,8 @@ void initialize_nexus_resonance_module(godot::ModuleInitializationLevel p_level)
 
         // Player & Internal DSP
         ClassDB::register_class<ResonancePlayer>();
-        ClassDB::register_internal_class<ResonanceInternalStream>();
-        ClassDB::register_internal_class<ResonanceInternalPlayback>();
+        ClassDB::register_internal_class<ResonanceStream>();
+        ClassDB::register_internal_class<ResonanceStreamPlayback>();
         ClassDB::register_class<ResonanceReverbStream>();
         ClassDB::register_internal_class<ResonanceReverbPlayback>();
 

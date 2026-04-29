@@ -20,6 +20,13 @@ var player_pos: Vector3
 var player_radius: float
 var listener_pos: Vector3
 var listener_radius: float
+## Every outdoor emitter listed in [member ResonanceProbeVolume.bake_sources]. Each entry is
+## [code]{pos: Vector3, radius: float, node: Node3D}[/code]. The pipeline iterates this list and
+## issues one [code]bake_static_source[/code] pass per entry so multiple fixed sources (e.g. rain,
+## thunder) produce position-dependent baked IRs instead of a single listener-only REVERB IR.
+var static_source_entries: Array = []
+## As [member static_source_entries] but for [member ResonanceProbeVolume.bake_listeners].
+var static_listener_entries: Array = []
 var bc: Resource
 var vol_info: String
 var static_asset = null  # ResonanceGeometryAsset used for bake; for static_scene_params_hash
@@ -58,17 +65,28 @@ static func build(
 		else default_influence_radius
 	)
 	if ctx.add_flags.static_source:
-		var src = _BakeDiscovery.resolve_bake_node_for_volume(
+		var src_nodes: Array = _BakeDiscovery.resolve_bake_nodes_for_volume(
 			vol, root, "bake_sources", "ResonancePlayer"
 		)
-		if src and src is Node3D:
-			ctx.player_pos = src.global_position
+		for n in src_nodes:
+			if n is Node3D:
+				ctx.static_source_entries.append(
+					{"pos": n.global_position, "radius": ctx.player_radius, "node": n}
+				)
+		# Keep legacy single-value fields populated for status UI / debug that still read them.
+		if ctx.static_source_entries.size() > 0:
+			ctx.player_pos = ctx.static_source_entries[0].pos
 	if ctx.add_flags.static_listener:
-		var lst = _BakeDiscovery.resolve_bake_node_for_volume(
+		var lst_nodes: Array = _BakeDiscovery.resolve_bake_nodes_for_volume(
 			vol, root, "bake_listeners", "ResonanceListener"
 		)
-		if lst and lst is Node3D:
-			ctx.listener_pos = lst.global_position
+		for n in lst_nodes:
+			if n is Node3D:
+				ctx.static_listener_entries.append(
+					{"pos": n.global_position, "radius": ctx.listener_radius, "node": n}
+				)
+		if ctx.static_listener_entries.size() > 0:
+			ctx.listener_pos = ctx.static_listener_entries[0].pos
 	var want_path = ctx.bc.pathing_enabled
 	var path_hash = _BakeHashes.compute_pathing_hash(ctx.bc) if want_path else 0
 	var probe_data = vol.get_probe_data() if vol.has_method("get_probe_data") else null
@@ -94,16 +112,11 @@ static func build(
 		else false
 	)
 	ctx.need_reflections = not has_data or not hash_matches or not refl_matches
-	if static_asset and ResonanceServerAccess.has_server():
-		var srv = ResonanceServerAccess.get_server()
-		if (
-			srv.has_method("get_geometry_asset_hash")
-			and probe_data.has_method("get_static_scene_params_hash")
-		):
-			var current_hash: int = srv.get_geometry_asset_hash(static_asset)
-			var stored: int = probe_data.get_static_scene_params_hash()
-			if stored == 0 or stored != current_hash:
-				ctx.need_reflections = true
+	var union_static_hash: int = _BakeHashes.compute_all_resonance_static_scenes_params_hash(root)
+	if union_static_hash != 0 and probe_data.has_method("get_static_scene_params_hash"):
+		var stored_union: int = probe_data.get_static_scene_params_hash()
+		if stored_union == 0 or stored_union != union_static_hash:
+			ctx.need_reflections = true
 	if not want_path and ph > 0:
 		ctx.need_reflections = true
 	ctx.need_pathing = want_path and (ph == 0 or ph != path_hash)
@@ -112,7 +125,11 @@ static func build(
 	ctx.need_static_source = false
 	ctx.need_static_listener = false
 	if ctx.add_flags.static_source:
-		var sh = _BakeHashes.compute_position_radius_hash(ctx.player_pos, ctx.player_radius)
+		var sh := 0
+		if ctx.static_source_entries.size() > 1:
+			sh = _BakeHashes.compute_position_radius_list_hash(ctx.static_source_entries)
+		else:
+			sh = _BakeHashes.compute_position_radius_hash(ctx.player_pos, ctx.player_radius)
 		var ssh = (
 			probe_data.get_static_source_params_hash()
 			if probe_data.has_method("get_static_source_params_hash")
@@ -120,7 +137,11 @@ static func build(
 		)
 		ctx.need_static_source = ssh == 0 or ssh != sh
 	if ctx.add_flags.static_listener:
-		var lh = _BakeHashes.compute_position_radius_hash(ctx.listener_pos, ctx.listener_radius)
+		var lh := 0
+		if ctx.static_listener_entries.size() > 1:
+			lh = _BakeHashes.compute_position_radius_list_hash(ctx.static_listener_entries)
+		else:
+			lh = _BakeHashes.compute_position_radius_hash(ctx.listener_pos, ctx.listener_radius)
 		var lsh = (
 			probe_data.get_static_listener_params_hash()
 			if probe_data.has_method("get_static_listener_params_hash")

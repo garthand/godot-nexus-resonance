@@ -4,7 +4,7 @@
 		Runtime configuration resource for Nexus Resonance. Structure aligned with Steam Audio Settings.
 	</brief_description>
 	<description>
-		Nexus Resonance runtime configuration resource. Create or link in ResonanceRuntime node (Add Child Node > ResonanceRuntime). Structure and group order follow Steam Audio Settings: HRTF Settings, Ray Tracer Settings, Occlusion Settings, Real-time Reflections, Baked Reverb, Baked Pathing, Simulation Update, Reflection Effect, Hybrid Reverb, Reverb Output, Physics. Emits reflection_type_changed, pathing_enabled_changed, and audio_frame_size_changed when those settings change.
+		Nexus Resonance runtime configuration resource. Create or link in ResonanceRuntime node (Add Child Node > ResonanceRuntime). Structure and group order follow Steam Audio Settings: HRTF Settings, Ray Tracer Settings, Occlusion Settings, Real-time Reflections, Baked Reverb, Baked Pathing, Simulation Update, Reflection Effect, Hybrid Reverb, Reverb Output, Physics. Emits reflection_type_changed, pathing_enabled_changed, and audio_frame_size_changed when those settings change. Godot routing: [member bus] and [member reverb_bus_name]; the reverb effect bus sends to the same target as [method get_bus_effective].
 	</description>
 	<tutorials>
 	</tutorials>
@@ -112,7 +112,7 @@
 			Diffuse samples per reflection point (8–64).
 		</member>
 		<member name="default_reflections_mode" type="int" default="0">
-			Applies only to [ResonancePlayer] sources with reflections type Use Global. Other players can override per source. [code]0[/code] = Baked (probes); [code]1[/code] = Realtime (set [member realtime_rays] &gt; 0 for useful simulation). Each source uses one path per update.
+			Applies only to [ResonancePlayer] sources with reflections type Use Global. Other players can override per source. [code]0[/code] = Baked (probe reverbs): indirect energy is stored per probe and is not the same as per-source ray occlusion through walls. [code]1[/code] = Realtime (set [member realtime_rays] &gt; 0): ray-traced reflections follow the acoustic scene (Embree/Default/Radeon) or Godot physics (Custom), so sealed rooms and geometry affect indirect paths like Steam Audio realtime. Each source uses one path per update.
 		</member>
 		<member name="reflection_type" type="int" default="0">
 			Reverb algorithm: Convolution (0), Parametric (1), Hybrid (2), TrueAudio Next (3, AMD GPU only).
@@ -151,16 +151,22 @@
 			Baked reverb influence radius in meters.
 		</member>
 		<member name="reverb_max_distance" type="float" default="0.0">
-			Max reverb distance (0 = unlimited).
+			Extra wet attenuation by distance (meters). [code]0[/code] = off (no extra scale on reflections/pathing wet beyond simulation). When &gt; [code]0[/code], wet gain is full at or below this distance and fades linearly to [code]0[/code] by [code]2 ×[/code] this distance (convolution/TAN mixer feed, parametric/hybrid wet, pathing stereo). Does not replace per-source [member ResonancePlayerConfig.max_distance] for the direct path.
 		</member>
 		<member name="bus" type="StringName" default="Master">
 			Target bus for Direct + Pathing (player output). Empty = Master. Fallback when players use Global bus override.
 		</member>
 		<member name="reverb_bus_name" type="StringName" default="ResonanceReverb">
-			Bus for convolution reverb (effect and activator). Empty = use Project Settings default. Reverb output is sent to [member bus].
+			Bus that hosts [ResonanceAudioEffect] for convolution / TAN wet and the reverb activator. Empty = ResonanceReverb. Godot send for this bus follows [method get_bus_effective] (same as Direct + Pathing runtime bus).
 		</member>
 		<member name="reverb_transmission_amount" type="float" default="1.0">
-			How much transmission damps reverb (0–1). 0 = no damping, 1 = full damping (reverb scaled by material transmission).
+			How much transmission damps reverb (0–1). 0 = no damping, 1 = full damping (reverb scaled by material transmission). Only consulted for baked REVERB paths when the wet-path occlusion damping is on (see [member apply_occlusion_to_baked_reflections] and [member ResonancePlayerConfig.apply_occlusion_to_baked_reflections_override]). Realtime reflections and STATICSOURCE/STATICLISTENER already encode source→listener occlusion in the IR. A per-source value can be set via [member ResonancePlayerConfig.reverb_transmission_amount_input].
+		</member>
+		<member name="apply_occlusion_to_baked_reflections" type="bool" default="false">
+			When on, baked REVERB reflections also scale their wet input by the direct-path occlusion/transmission factor. Default is off: direct-line occlusion cannot distinguish "source around a corner in the same open room" (listener room still excited via openings/diffraction; realtime convolution stays loud) from "source truly sealed away". Turning this on dampens both cases uniformly, making baked REVERB sound less plausible than realtime for the common "around the corner" case. Prefer per-source [code]reflections_type = Realtime[/code] or the STATICSOURCE bake workflow for accurate outdoor-to-indoor reflections. Can be overridden per source via [member ResonancePlayerConfig.apply_occlusion_to_baked_reflections_override] (e.g. enable it just for outdoor thunder / rain sources while indoor sources keep plausible wet feeds). Has no effect on realtime, STATICSOURCE or STATICLISTENER paths.
+		</member>
+		<member name="apply_distance_curve_to_reflections" type="bool" default="true">
+			When on (default), the reflection-effect input gain is multiplied by the per-source 3D distance attenuation factor so baked/realtime reverb fades with distance. Matches Steam Audio Unity's Spatialize pipeline, where the AudioSource rolloff is baked into the inBuffer before [code]iplReflectionEffectApply[/code]. Turn this off only for projects that want constant-gain wet feeds (e.g. 2D ambience beds or custom distance handling). Per-source override via [member ResonancePlayerConfig.apply_distance_curve_to_reflections_override] beats this global flag.
 		</member>
 		<member name="pathing_enabled" type="bool" default="false">
 			Enable pathing (multi-path sound propagation). Requires baked pathing in Probe Volumes.

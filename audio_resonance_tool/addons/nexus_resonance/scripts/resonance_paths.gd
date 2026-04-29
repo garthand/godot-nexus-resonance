@@ -13,9 +13,7 @@ const _PROBE_DATA_FORMAT_SETTING := "nexus/resonance/export/probe_data_format"
 
 
 static func _export_setting_use_res(setting_key: String) -> bool:
-	if not ProjectSettings.has_setting(setting_key):
-		return false
-	var v: Variant = ProjectSettings.get_setting(setting_key)
+	var v: Variant = ProjectSettings.get_setting(setting_key, 0)
 	if v == null:
 		return false
 	var t := typeof(v)

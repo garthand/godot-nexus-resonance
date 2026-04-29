@@ -92,8 +92,9 @@ resonance/logger/file_path="user://nexus_resonance_log.ndjson"
 resonance/logger/output_to_debug=true
 resonance/logger/output_to_file=false
 resonance/logger/steam_audio_verbose=false
-resonance/export/probe_data_format=1
+resonance/editor/auto_convert_animation_audio_on_save=true
 resonance/export/static_scene_asset_format=1
+resonance/export/probe_data_format=1
 
 [physics]
 

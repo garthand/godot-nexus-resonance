@@ -38,11 +38,13 @@ func test_monitor_ids_core_minimal() -> void:
 	var ids: Array = ResonanceRuntimePerfMonitors.monitor_ids_for_level(
 		ResonanceRuntimePerfMonitors.PERF_MONITORS_CORE
 	)
-	assert_eq(ids.size(), 4)
+	assert_eq(ids.size(), 6)
 	assert_true(ids.has("Nexus Resonance/Main/runtime_last_tick_us"))
 	assert_true(ids.has("Nexus Resonance/Worker/last_tick_sum_us"))
 	assert_true(ids.has("Nexus Resonance/Worker/reflections_us"))
-	assert_true(ids.has("Nexus Resonance/Worker/last_wake_heavy"))
+	assert_true(ids.has("Nexus Resonance/Worker/heavy_tick_flag"))
+	assert_true(ids.has("Nexus Resonance/Audio/output_underruns_total"))
+	assert_true(ids.has("Nexus Resonance/Server/active_source_count"))
 
 
 func test_monitor_ids_standard_smaller_than_full() -> void:
@@ -53,18 +55,27 @@ func test_monitor_ids_standard_smaller_than_full() -> void:
 		ResonanceRuntimePerfMonitors.PERF_MONITORS_FULL
 	)
 	assert_gt(full.size(), st.size())
-	assert_eq(st.size(), 12)
-	assert_eq(full.size(), 26)
+	assert_eq(st.size(), 17)
+	assert_eq(full.size(), 32)
 
 
-func test_monitor_ids_standard_has_server_tick_and_convolution() -> void:
+func test_monitor_ids_standard_has_actionable_diagnostics() -> void:
 	var ids: Array = ResonanceRuntimePerfMonitors.monitor_ids_for_level(
 		ResonanceRuntimePerfMonitors.PERF_MONITORS_STANDARD
 	)
-	assert_true(ids.has("Nexus Resonance/Main/runtime_server_tick_us"))
+	assert_true(ids.has("Nexus Resonance/Worker/sync_fetch_reflections_us"))
+	assert_true(ids.has("Nexus Resonance/Main/last_dynamic_transform_enqueue_us"))
 	assert_true(ids.has("Nexus Resonance/Audio/convolution_reflection_apply_last_us"))
 	assert_true(ids.has("Nexus Resonance/Audio/convolution_reverb_bus_last_us"))
+	assert_true(ids.has("Nexus Resonance/Audio/late_mix_total"))
+	assert_true(ids.has("Nexus Resonance/Audio/max_block_time_us"))
+	assert_true(ids.has("Nexus Resonance/Audio/active_voice_count"))
+	# runtime_server_tick / runtime_physics_tick are FULL-only because they
+	# only receive a value when full-frame timing is active.
+	assert_false(ids.has("Nexus Resonance/Main/runtime_server_tick_us"))
+	assert_false(ids.has("Nexus Resonance/Main/runtime_physics_tick_us"))
 	assert_false(ids.has("Nexus Resonance/Main/runtime_viewport_sync_us"))
+	assert_false(ids.has("Nexus Resonance/Server/active_probe_batch_count"))
 
 
 func test_monitor_ids_full_matches_legacy_monitor_ids() -> void:

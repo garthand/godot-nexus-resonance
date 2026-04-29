@@ -1,18 +1,20 @@
 @tool
 extends EditorPlugin
 
-## This EditorPlugin registers gizmos, inspectors, menus, and probe resource I/O. Disabling it in
-## Project Settings only tears that down. Native node types (ResonanceProbeVolume, etc.) come from
-## GDExtension (nexus_resonance.gdextension) and stay in ClassDB for the rest of the editor session,
-## so Add Node can still offer them until the editor is restarted.
+## This EditorPlugin registers gizmos, inspectors, menus, and probe resource I/O. Disabling it removes
+## that editor integration (menus, custom gizmos, inspector extensions, import/export hooks, autoload).
+## Native node types (ResonanceProbeVolume, etc.) come from GDExtension (nexus_resonance.gdextension)
+## and stay in ClassDB until the editor is restarted, so existing nodes remain movable like any Node3D.
 
 const LOGGER_AUTOLOAD_PATH = "res://addons/nexus_resonance/scripts/resonance_logger.tscn"
 const GIZMO_SCRIPT = "res://addons/nexus_resonance/editor/resonance_probe_gizmo.gd"
+const PLAYER_GIZMO_SCRIPT = "res://addons/nexus_resonance/editor/resonance_player_gizmo.gd"
+const PLAYER_GIZMO_CLASS_NAME = "ResonancePlayer"
 
 const BUS_NAME = "ResonanceReverb"
 const EFFECT_CLASS = "ResonanceAudioEffect"
-const PROBE_DATA_SAVER_SCRIPT = "res://addons/nexus_resonance/editor/resonance_probe_data_saver.gd"
-const PROBE_DATA_LOADER_SCRIPT = "res://addons/nexus_resonance/editor/resonance_probe_data_loader.gd"
+## After plugin re-enable, GDExtension can register native classes a frame later; retry bus effect + gizmo refresh.
+const _DEFERRED_EDITOR_INTEGRATION_MAX_FRAMES := 10
 const SOFA_IMPORTER_SCRIPT = "res://addons/nexus_resonance/editor/sofa_importer.gd"
 const RESONANCE_GEOMETRY_INSPECTOR_SCRIPT = "res://addons/nexus_resonance/editor/resonance_geometry_inspector.gd"
 const RESONANCE_BAKE_RUNNER_SCRIPT = "res://addons/nexus_resonance/editor/resonance_bake_runner.gd"
@@ -26,6 +28,9 @@ const ResonanceLoggerScript = preload("res://addons/nexus_resonance/scripts/reso
 const ResonanceEditorDialogs = preload(
 	"res://addons/nexus_resonance/editor/resonance_editor_dialogs.gd"
 )
+const ResonanceAnimationAudioConverter = preload(
+	"res://addons/nexus_resonance/editor/resonance_animation_audio_converter.gd"
+)
 
 enum ToolMenuId {
 	EXPORT_ACTIVE_SCENE,
@@ -38,18 +43,19 @@ enum ToolMenuId {
 	CLEAR_PROBE_BATCHES,
 	CLEAR_UNREFERENCED_PROBE_DATA,
 	UNLINK_PROBE_VOLUME_REFS,
+	CONVERT_ANIMATION_AUDIO_RESONANCE,
+	CONVERT_ANIMATION_AUDIO_ALL_SCENES,
 }
 
 var gizmo_instance: EditorNode3DGizmoPlugin = null
-## False during/after _exit_tree so deferred gizmo registration does not run after the plugin is off.
+var player_gizmo_instance: EditorNode3DGizmoPlugin = null
+## False during/after _exit_tree so gizmo registration does not run after the plugin is off.
 var _editor_plugin_ui_active: bool = false
 var resonance_geometry_inspector: EditorInspectorPlugin = null
 var resonance_fmod_event_emitter_inspector: EditorInspectorPlugin = null
 var resonance_probe_volume_inspector: EditorInspectorPlugin = null
 var bake_runner = null  # ResonanceBakeRunner
 var sofa_importer: EditorImportPlugin = null
-var probe_data_saver: ResourceFormatSaver = null
-var probe_data_loader: ResourceFormatLoader = null
 var export_handler = null  # ResonanceExportHandler
 var steam_audio_export_plugin: EditorExportPlugin = null
 const _tool_submenu_name := "Nexus Resonance"
@@ -62,11 +68,15 @@ const LEGACY_SETTINGS_PREFIX := "audio/nexus_resonance/"
 
 func _enter_tree() -> void:
 	_editor_plugin_ui_active = true
+	# Export format keys before any other registration (avoids "nonexistent project setting" if the engine
+	# touches keys during later steps). Idempotent with _register_export_project_settings.
+	_ensure_export_format_project_settings()
 	_migrate_legacy_project_settings()
 	_migrate_nexus_bake_output_dir()
 	_clear_obsolete_resonance_project_settings()
 	_clear_bus_project_settings()
 	_register_logger_project_settings()
+	_register_editor_project_settings()
 	_register_bake_project_settings()
 	_register_export_project_settings()
 	_init_editor_plugin_ui()
@@ -144,19 +154,11 @@ func _clear_bus_project_settings() -> void:
 
 
 func _init_editor_plugin_ui() -> void:
-	var saver_script: Script = load(PROBE_DATA_SAVER_SCRIPT) as Script
-	if saver_script:
-		var saver: ResourceFormatSaver = saver_script.new()
-		if saver:
-			ResourceSaver.add_resource_format_saver(saver, true)
-			probe_data_saver = saver
-
-	var loader_script: Script = load(PROBE_DATA_LOADER_SCRIPT) as Script
-	if loader_script:
-		var loader: ResourceFormatLoader = loader_script.new()
-		if loader:
-			ResourceLoader.add_resource_format_loader(loader, true)
-			probe_data_loader = loader
+	# ResonanceProbeDataSaver / ResonanceProbeDataLoader: do not call add_resource_format_* here.
+	# Global classes that extend ResourceFormatSaver/Loader are registered by the engine
+	# (ResourceSaver.add_custom_savers / ResourceLoader.add_custom_loaders). A second manual
+	# registration duplicates handlers; remove_resource_format_* in _exit_tree then hits
+	# "i >= saver_count" when the engine has already removed the custom instances.
 
 	var export_handler_script: Script = load(RESONANCE_EXPORT_HANDLER_SCRIPT) as Script
 	if export_handler_script:
@@ -178,9 +180,8 @@ func _init_editor_plugin_ui() -> void:
 		resonance_probe_volume_inspector.editor_interface = get_editor_interface()
 		add_inspector_plugin(resonance_probe_volume_inspector)
 
-	# Deferred so the 3D editor viewport has finished updating; then refresh existing probe volumes
-	# (otherwise gizmos can stay missing after disable → enable without restarting the editor).
-	call_deferred("_register_probe_volume_gizmo_deferred")
+	_register_probe_volume_gizmo()
+	_register_player_gizmo()
 
 	_tool_submenu = PopupMenu.new()
 	var base: Control = get_editor_interface().get_base_control()
@@ -227,6 +228,14 @@ func _init_editor_plugin_ui() -> void:
 	_tool_submenu.add_item(
 		tr(UIStrings.MENU_UNLINK_PROBE_VOLUME_REFS), ToolMenuId.UNLINK_PROBE_VOLUME_REFS
 	)
+	_tool_submenu.add_item(
+		tr(UIStrings.MENU_CONVERT_ANIMATION_AUDIO_RESONANCE),
+		ToolMenuId.CONVERT_ANIMATION_AUDIO_RESONANCE
+	)
+	_tool_submenu.add_item(
+		tr(UIStrings.MENU_CONVERT_ANIMATION_AUDIO_ALL_SCENES),
+		ToolMenuId.CONVERT_ANIMATION_AUDIO_ALL_SCENES
+	)
 	_tool_submenu.id_pressed.connect(_on_tool_submenu_id_pressed)
 	_register_tool_shortcuts()
 	add_tool_submenu_item(_tool_submenu_name, _tool_submenu)
@@ -262,12 +271,13 @@ func _init_editor_plugin_ui() -> void:
 
 
 func _on_editor_scene_changed_refresh_probe_gizmos(_scene_root: Node) -> void:
-	if gizmo_instance == null:
-		return
-	call_deferred("_refresh_resonance_probe_volume_gizmos_in_edited_scene")
+	if gizmo_instance != null:
+		call_deferred("_refresh_resonance_probe_volume_gizmos_in_edited_scene")
+	if player_gizmo_instance != null:
+		call_deferred("_refresh_resonance_player_gizmos_in_edited_scene")
 
 
-func _register_probe_volume_gizmo_deferred() -> void:
+func _register_probe_volume_gizmo() -> void:
 	if not _editor_plugin_ui_active:
 		return
 	if gizmo_instance != null:
@@ -308,27 +318,52 @@ func _refresh_probe_gizmos_recursive(n: Node) -> void:
 		_refresh_probe_gizmos_recursive(c)
 
 
-## Unregisters custom probe [.tres]/[.bak] I/O so toggling the plugin does not stack duplicate savers/loaders.
-## Skips removal while the editor is quitting (ResourceSaver/Loader teardown order can be fragile then).
-func _unregister_probe_resource_io_if_safe() -> void:
-	var base: Control = get_editor_interface().get_base_control()
-	var st: SceneTree = base.get_tree() if base else null
-	if st and st.has_method("is_quitting") and st.is_quitting():
+func _register_player_gizmo() -> void:
+	if not _editor_plugin_ui_active:
 		return
-	if probe_data_saver:
-		ResourceSaver.remove_resource_format_saver(probe_data_saver)
-	if probe_data_loader:
-		ResourceLoader.remove_resource_format_loader(probe_data_loader)
+	if player_gizmo_instance != null:
+		return
+	if not FileAccess.file_exists(PLAYER_GIZMO_SCRIPT):
+		return
+	var script: Script = load(PLAYER_GIZMO_SCRIPT) as Script
+	if script == null:
+		return
+	var inst: EditorNode3DGizmoPlugin = script.new()
+	if inst == null:
+		return
+	player_gizmo_instance = inst
+	add_node_3d_gizmo_plugin(player_gizmo_instance)
+	_refresh_resonance_player_gizmos_in_edited_scene()
+
+
+func _refresh_resonance_player_gizmos_in_edited_scene() -> void:
+	var scene_root: Node = get_editor_interface().get_edited_scene_root()
+	if scene_root == null:
+		return
+	_refresh_player_gizmos_recursive(scene_root)
+
+
+func _refresh_player_gizmos_recursive(n: Node) -> void:
+	if n is Node3D:
+		var n3 := n as Node3D
+		if n3.is_class(PLAYER_GIZMO_CLASS_NAME):
+			n3.update_gizmos()
+	for c in n.get_children():
+		_refresh_player_gizmos_recursive(c)
 
 
 func _exit_tree() -> void:
+	# Mirrors _init_editor_plugin_ui: inspectors, import/export plugins, 3D gizmo, tool submenu,
+	# scene_changed. (Autoload is removed in _disable_plugin; ProjectSettings.add_property_info persists.)
 	_editor_plugin_ui_active = false
 	if scene_changed.is_connected(_on_editor_scene_changed_refresh_probe_gizmos):
 		scene_changed.disconnect(_on_editor_scene_changed_refresh_probe_gizmos)
 	_detach_reverb_effect()
-	_unregister_probe_resource_io_if_safe()
-	probe_data_saver = null
-	probe_data_loader = null
+	# Break RefCounted reference cycles in bake system (prevents exit leak warnings).
+	if resonance_probe_volume_inspector and "bake_runner" in resonance_probe_volume_inspector:
+		resonance_probe_volume_inspector.bake_runner = null
+	if bake_runner and bake_runner.has_method("shutdown"):
+		bake_runner.shutdown()
 	if resonance_geometry_inspector:
 		remove_inspector_plugin(resonance_geometry_inspector)
 		resonance_geometry_inspector = null
@@ -355,11 +390,51 @@ func _exit_tree() -> void:
 	if gizmo_instance:
 		remove_node_3d_gizmo_plugin(gizmo_instance)
 		gizmo_instance = null
+	if player_gizmo_instance:
+		remove_node_3d_gizmo_plugin(player_gizmo_instance)
+		player_gizmo_instance = null
 
 
 func _enable_plugin() -> void:
+	# Before autoload / editor subsystems read export format keys (avoids "nonexistent project setting").
+	_ensure_export_format_project_settings()
+	# No ProjectSettings.save() here; [_register_export_project_settings] persists when the editor loads the plugin.
 	add_autoload_singleton("ResonanceLogger", LOGGER_AUTOLOAD_PATH)
-	Callable(self, "_setup_audio_bus").call_deferred()
+	# Defer bus + gizmo follow-up: ClassDB may not list ResonanceAudioEffect until the next frame(s) after re-enable.
+	call_deferred("_deferred_finish_editor_integration", 0)
+
+
+func _deferred_finish_editor_integration(attempt: int = 0) -> void:
+	if not _editor_plugin_ui_active:
+		return
+	if ClassDB.class_exists(EFFECT_CLASS):
+		_setup_audio_bus()
+		_finish_editor_probe_gizmo_integration()
+		return
+	if attempt + 1 < _DEFERRED_EDITOR_INTEGRATION_MAX_FRAMES:
+		call_deferred("_deferred_finish_editor_integration", attempt + 1)
+		return
+	push_warning(
+		(
+			"Nexus Resonance: ResonanceAudioEffect did not appear in ClassDB after "
+			+ str(_DEFERRED_EDITOR_INTEGRATION_MAX_FRAMES)
+			+ " deferred attempts. The reverb bus may lack the effect until the editor is restarted. "
+			+ "Check that addons/nexus_resonance/bin matches your platform and see the Output panel for GDExtension errors."
+		)
+	)
+	_setup_audio_bus()
+	_finish_editor_probe_gizmo_integration()
+
+
+func _finish_editor_probe_gizmo_integration() -> void:
+	if gizmo_instance == null:
+		_register_probe_volume_gizmo()
+	else:
+		_refresh_resonance_probe_volume_gizmos_in_edited_scene()
+	if player_gizmo_instance == null:
+		_register_player_gizmo()
+	else:
+		_refresh_resonance_player_gizmos_in_edited_scene()
 
 
 func _disable_plugin() -> void:
@@ -402,12 +477,9 @@ func _setup_audio_bus() -> void:
 		if idx > 1:
 			AudioServer.move_bus(idx, 1)
 			idx = 1
-		if ClassDB.class_exists(EFFECT_CLASS):
-			var effect: AudioEffect = ClassDB.instantiate(EFFECT_CLASS)
-			effect.resource_name = "Resonance Reverb"
-			AudioServer.add_bus_effect(idx, effect)
 	if idx >= 0:
 		AudioServer.set_bus_send(idx, send_name)
+		ResonanceRuntimeBus.ensure_resonance_reverb_effect_on_bus(idx)
 
 
 func _has_main_screen() -> bool:
@@ -428,56 +500,90 @@ func _register_logger_project_settings() -> void:
 	const PREFIX := SETTINGS_PREFIX + "logger/"
 	if not ProjectSettings.has_setting(PREFIX + "categories_enabled"):
 		ProjectSettings.set_setting(
-			PREFIX + "categories_enabled", ResonanceLoggerScript.get_default_categories_enabled_dict()
+			PREFIX + "categories_enabled",
+			ResonanceLoggerScript.get_default_categories_enabled_dict()
 		)
 	else:
 		var ce: Variant = ProjectSettings.get_setting(PREFIX + "categories_enabled")
 		if ce is Dictionary and (ce as Dictionary).is_empty():
 			ProjectSettings.set_setting(
-				PREFIX + "categories_enabled", ResonanceLoggerScript.get_default_categories_enabled_dict()
+				PREFIX + "categories_enabled",
+				ResonanceLoggerScript.get_default_categories_enabled_dict()
 			)
-	ProjectSettings.add_property_info(
-		{
-			"name": PREFIX + "categories_enabled",
-			"type": TYPE_DICTIONARY,
-			"hint": PROPERTY_HINT_NONE,
-		}
+	(
+		ProjectSettings
+		. add_property_info(
+			{
+				"name": PREFIX + "categories_enabled",
+				"type": TYPE_DICTIONARY,
+				"hint": PROPERTY_HINT_NONE,
+			}
+		)
 	)
 	if not ProjectSettings.has_setting(PREFIX + "output_to_debug"):
 		ProjectSettings.set_setting(PREFIX + "output_to_debug", true)
-	ProjectSettings.add_property_info(
-		{
-			"name": PREFIX + "output_to_debug",
-			"type": TYPE_BOOL,
-			"hint": PROPERTY_HINT_NONE,
-		}
+	(
+		ProjectSettings
+		. add_property_info(
+			{
+				"name": PREFIX + "output_to_debug",
+				"type": TYPE_BOOL,
+				"hint": PROPERTY_HINT_NONE,
+			}
+		)
 	)
 	if not ProjectSettings.has_setting(PREFIX + "output_to_file"):
 		ProjectSettings.set_setting(PREFIX + "output_to_file", false)
-	ProjectSettings.add_property_info(
-		{
-			"name": PREFIX + "output_to_file",
-			"type": TYPE_BOOL,
-			"hint": PROPERTY_HINT_NONE,
-		}
+	(
+		ProjectSettings
+		. add_property_info(
+			{
+				"name": PREFIX + "output_to_file",
+				"type": TYPE_BOOL,
+				"hint": PROPERTY_HINT_NONE,
+			}
+		)
 	)
 	if not ProjectSettings.has_setting(PREFIX + "file_path"):
 		ProjectSettings.set_setting(PREFIX + "file_path", "user://nexus_resonance_log.ndjson")
-	ProjectSettings.add_property_info(
-		{
-			"name": PREFIX + "file_path",
-			"type": TYPE_STRING,
-			"hint": PROPERTY_HINT_NONE,
-		}
+	(
+		ProjectSettings
+		. add_property_info(
+			{
+				"name": PREFIX + "file_path",
+				"type": TYPE_STRING,
+				"hint": PROPERTY_HINT_NONE,
+			}
+		)
 	)
 	if not ProjectSettings.has_setting(PREFIX + "steam_audio_verbose"):
 		ProjectSettings.set_setting(PREFIX + "steam_audio_verbose", false)
-	ProjectSettings.add_property_info(
-		{
-			"name": PREFIX + "steam_audio_verbose",
-			"type": TYPE_BOOL,
-			"hint": PROPERTY_HINT_NONE,
-		}
+	(
+		ProjectSettings
+		. add_property_info(
+			{
+				"name": PREFIX + "steam_audio_verbose",
+				"type": TYPE_BOOL,
+				"hint": PROPERTY_HINT_NONE,
+			}
+		)
+	)
+
+
+func _register_editor_project_settings() -> void:
+	const EDITOR_PREFIX := SETTINGS_PREFIX + "editor/"
+	var k := EDITOR_PREFIX + "auto_convert_animation_audio_on_save"
+	if not ProjectSettings.has_setting(k):
+		ProjectSettings.set_setting(k, false)
+	(
+		ProjectSettings
+		. add_property_info(
+			{
+				"name": k,
+				"type": TYPE_BOOL,
+				"hint": PROPERTY_HINT_NONE,
+			}
+		)
 	)
 
 
@@ -486,35 +592,55 @@ func _register_bake_project_settings() -> void:
 	const KEY := "default_output_directory"
 	if not ProjectSettings.has_setting(BAKE_PREFIX + KEY):
 		ProjectSettings.set_setting(BAKE_PREFIX + KEY, "res://audio_data/")
-	ProjectSettings.add_property_info(
-		{
-			"name": BAKE_PREFIX + KEY,
-			"type": TYPE_STRING,
-			"hint": PROPERTY_HINT_DIR,
-		}
+	(
+		ProjectSettings
+		. add_property_info(
+			{
+				"name": BAKE_PREFIX + KEY,
+				"type": TYPE_STRING,
+				"hint": PROPERTY_HINT_DIR,
+			}
+		)
 	)
 
 
+## Ensures export asset format keys exist with defaults (no save). Returns whether [method ProjectSettings.save] is recommended.
+func _ensure_export_format_project_settings() -> bool:
+	const EXPORT_PREFIX := SETTINGS_PREFIX + "export/"
+	var save_needed := false
+	save_needed = (
+		_ensure_int_enum_project_setting(EXPORT_PREFIX + "static_scene_asset_format", 0)
+		or save_needed
+	)
+	save_needed = (
+		_ensure_int_enum_project_setting(EXPORT_PREFIX + "probe_data_format", 0) or save_needed
+	)
+	return save_needed
+
+
 func _ensure_int_enum_project_setting(key: String, default_value: int) -> bool:
-	# set_initial_value + normalized int so the inspector shows "Text (.tres)" instead of raw null.
-	ProjectSettings.set_initial_value(key, default_value)
+	# set_initial_value must run only after the key exists via set_setting; otherwise Godot can log
+	# "Request for nonexistent project setting" when enabling the plugin.
 	var needs_save := false
 	if not ProjectSettings.has_setting(key):
 		ProjectSettings.set_setting(key, default_value)
-		return true
-	var cur: Variant = ProjectSettings.get_setting(key)
-	var t := typeof(cur)
-	if cur == null or (t != TYPE_INT and t != TYPE_FLOAT):
-		ProjectSettings.set_setting(key, default_value)
-		needs_save = true
-	elif t == TYPE_FLOAT:
-		ProjectSettings.set_setting(key, clampi(int(round(cur)), 0, 1))
 		needs_save = true
 	else:
-		var iv := int(cur)
-		if iv != 0 and iv != 1:
+		var cur: Variant = ProjectSettings.get_setting(key)
+		var t := typeof(cur)
+		if cur == null or (t != TYPE_INT and t != TYPE_FLOAT):
 			ProjectSettings.set_setting(key, default_value)
 			needs_save = true
+		elif t == TYPE_FLOAT:
+			ProjectSettings.set_setting(key, clampi(int(round(cur)), 0, 1))
+			needs_save = true
+		else:
+			var iv := int(cur)
+			if iv != 0 and iv != 1:
+				ProjectSettings.set_setting(key, default_value)
+				needs_save = true
+	var effective := clampi(int(ProjectSettings.get_setting(key)), 0, 1)
+	ProjectSettings.set_initial_value(key, effective)
 	return needs_save
 
 
@@ -522,24 +648,28 @@ func _register_export_project_settings() -> void:
 	const EXPORT_PREFIX := SETTINGS_PREFIX + "export/"
 	const KEY_STATIC := "static_scene_asset_format"
 	const KEY_PROBE := "probe_data_format"
-	var save_needed := false
-	save_needed = _ensure_int_enum_project_setting(EXPORT_PREFIX + KEY_STATIC, 0) or save_needed
-	save_needed = _ensure_int_enum_project_setting(EXPORT_PREFIX + KEY_PROBE, 0) or save_needed
-	ProjectSettings.add_property_info(
-		{
-			"name": EXPORT_PREFIX + KEY_STATIC,
-			"type": TYPE_INT,
-			"hint": PROPERTY_HINT_ENUM,
-			"hint_string": "Text (.tres),Binary (.res)",
-		}
+	var save_needed := _ensure_export_format_project_settings()
+	(
+		ProjectSettings
+		. add_property_info(
+			{
+				"name": EXPORT_PREFIX + KEY_STATIC,
+				"type": TYPE_INT,
+				"hint": PROPERTY_HINT_ENUM,
+				"hint_string": "Text (.tres),Binary (.res)",
+			}
+		)
 	)
-	ProjectSettings.add_property_info(
-		{
-			"name": EXPORT_PREFIX + KEY_PROBE,
-			"type": TYPE_INT,
-			"hint": PROPERTY_HINT_ENUM,
-			"hint_string": "Text (.tres),Binary (.res)",
-		}
+	(
+		ProjectSettings
+		. add_property_info(
+			{
+				"name": EXPORT_PREFIX + KEY_PROBE,
+				"type": TYPE_INT,
+				"hint": PROPERTY_HINT_ENUM,
+				"hint_string": "Text (.tres),Binary (.res)",
+			}
+		)
 	)
 	if save_needed:
 		ProjectSettings.save()
@@ -603,6 +733,124 @@ func _on_tool_submenu_id_pressed(id: int) -> void:
 				export_handler.clear_unreferenced_probe_data(null)
 		ToolMenuId.UNLINK_PROBE_VOLUME_REFS:
 			_on_tool_unlink_probe_refs(null)
+		ToolMenuId.CONVERT_ANIMATION_AUDIO_RESONANCE:
+			_on_tool_convert_animation_audio_resonance()
+		ToolMenuId.CONVERT_ANIMATION_AUDIO_ALL_SCENES:
+			_on_tool_convert_animation_audio_all_scenes()
+
+
+func _on_tool_convert_animation_audio_resonance() -> void:
+	var root: Node = get_editor_interface().get_edited_scene_root()
+	if root == null:
+		ResonanceEditorDialogs.show_warning(get_editor_interface(), UIStrings.WARN_NO_SCENE)
+		return
+	var r: Dictionary = ResonanceAnimationAudioConverter.convert_all_animation_players(root)
+	var msg := (
+		"Converted %d audio track(s) on ResonancePlayer (%d AnimationPlayer node(s) scanned)."
+		% [int(r.get("tracks_converted", 0)), int(r.get("animation_players", 0))]
+	)
+	if int(r.get("skipped_blend", 0)) > 0:
+		msg += tr(UIStrings.INFO_CONVERT_SKIPPED_BLEND) % int(r.get("skipped_blend", 0))
+	if int(r.get("skipped_target", 0)) > 0:
+		msg += " Skipped %d non-ResonancePlayer target(s)." % int(r.get("skipped_target", 0))
+	get_editor_interface().mark_scene_as_unsaved()
+	ResonanceEditorDialogs.show_success_toast(get_editor_interface(), msg)
+
+
+func _on_tool_convert_animation_audio_all_scenes() -> void:
+	ResonanceEditorDialogs.show_confirm_dialog(
+		get_editor_interface(),
+		tr(UIStrings.DIALOG_CONVERT_ALL_SCENES_TITLE),
+		tr(UIStrings.DIALOG_CONVERT_ALL_SCENES_MESSAGE),
+		Callable(self, "_run_convert_animation_audio_all_scenes_confirmed")
+	)
+
+
+func _run_convert_animation_audio_all_scenes_confirmed() -> void:
+	var fs: EditorFileSystem = get_editor_interface().get_resource_filesystem()
+	if fs == null:
+		ResonanceEditorDialogs.show_warning(
+			get_editor_interface(), tr(UIStrings.ERR_EDITOR_FILESYSTEM_UNAVAILABLE)
+		)
+		return
+	var root_dir: EditorFileSystemDirectory = fs.get_filesystem_root()
+	if root_dir == null:
+		ResonanceEditorDialogs.show_warning(
+			get_editor_interface(), tr(UIStrings.ERR_EDITOR_FILESYSTEM_ROOT)
+		)
+		return
+	var paths: PackedStringArray = (
+		ResonanceAnimationAudioConverter.collect_tscn_paths_from_filesystem(root_dir)
+	)
+	var total_tracks := 0
+	var total_saved := 0
+	var total_failed := 0
+	var total_blend := 0
+	var total_target := 0
+	for p in paths:
+		var one: Dictionary = ResonanceAnimationAudioConverter.convert_packed_scene_file_on_disk(
+			String(p)
+		)
+		if not String(one.get("error", "")).is_empty():
+			total_failed += 1
+			push_warning(
+				(
+					UIStrings.PREFIX
+					+ "Convert scene failed (%s): %s" % [String(p), String(one.get("error", ""))]
+				)
+			)
+			continue
+		total_tracks += int(one.get("tracks_converted", 0))
+		total_blend += int(one.get("skipped_blend", 0))
+		total_target += int(one.get("skipped_target", 0))
+		if one.get("saved", false):
+			total_saved += 1
+	var summary: String = (
+		tr(UIStrings.INFO_CONVERT_ALL_SCENES_SUMMARY)
+		% [
+			total_tracks,
+			total_saved,
+			total_failed,
+			total_blend,
+			total_target,
+		]
+	)
+	ResonanceEditorDialogs.show_success_toast(get_editor_interface(), summary)
+	fs.scan()
+
+
+func _notification(what: int) -> void:
+	if what == NOTIFICATION_EDITOR_PRE_SAVE:
+		_on_editor_pre_save_animation_audio()
+	# NOTE: In GDScript, calling super on virtual callbacks is only valid if the parent is a script
+	# that defines the method. EditorPlugin's native implementation is not callable via super here.
+
+
+func _on_editor_pre_save_animation_audio() -> void:
+	if not _editor_plugin_ui_active:
+		return
+	var key := SETTINGS_PREFIX + "editor/auto_convert_animation_audio_on_save"
+	if not bool(ProjectSettings.get_setting(key, false)):
+		return
+	var root: Node = get_editor_interface().get_edited_scene_root()
+	if root == null:
+		return
+	var r: Dictionary = ResonanceAnimationAudioConverter.convert_all_animation_players(root)
+	var n: int = int(r.get("tracks_converted", 0))
+	if n <= 0:
+		return
+	var msg: String = tr(UIStrings.INFO_AUTO_CONVERT_ANIMATION_PRE_SAVE) % n
+	ResonanceEditorDialogs.show_success_toast(get_editor_interface(), msg)
+	if int(r.get("skipped_blend", 0)) > 0:
+		push_warning(
+			(
+				(
+					UIStrings.PREFIX
+					+ "Auto-convert skipped %d blend track(s); convert manually for Steam Audio."
+				)
+				% int(r.get("skipped_blend", 0))
+			)
+		)
 
 
 func _on_tool_bake_all_probe_volumes(_unused: Variant = null) -> void:

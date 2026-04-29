@@ -52,10 +52,6 @@ func _add_probe_batch_edit_section(vol: Object) -> void:
 	if pd == null:
 		return
 	var has_data: bool = not pd.get_data().is_empty()
-	if bake_runner and vol is Node:
-		var vol_nodes: Array[Node] = []
-		vol_nodes.append(vol as Node)
-		bake_runner.ensure_resonance_server_for_volumes(vol_nodes)
 	var srv = ResonanceServerAccess.get_server()
 	var server_ready: bool = srv != null and srv.is_initialized()
 	var fold := FoldableContainer.new()

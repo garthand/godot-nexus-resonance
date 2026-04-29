@@ -1,5 +1,10 @@
 #include "resonance_static_scene.h"
+#include <godot_cpp/classes/engine.hpp>
+#include <godot_cpp/classes/scene_tree.hpp>
 #include <godot_cpp/core/class_db.hpp>
+#include <godot_cpp/variant/array.hpp>
+#include <godot_cpp/variant/string_name.hpp>
+#include <godot_cpp/variant/typed_array.hpp>
 
 using namespace godot;
 
@@ -8,7 +13,28 @@ ResonanceStaticScene::ResonanceStaticScene() {}
 ResonanceStaticScene::~ResonanceStaticScene() {}
 
 void ResonanceStaticScene::set_static_scene_asset(const Ref<ResonanceGeometryAsset>& p_asset) {
+    if (static_scene_asset == p_asset)
+        return;
     static_scene_asset = p_asset;
+    // Play-mode hot-swap: the live IPLScene is rebuilt from all ResonanceStaticScene nodes during
+    // ResonanceRuntime init/reinit; without this trigger, swapping the asset at runtime (level streaming,
+    // dynamic level loaders) leaves Steam Audio on the previous merged static mesh until the next reinit.
+    // Editor sets are ignored - the editor never holds a live IPLScene tied to property edits.
+    Engine* eng = Engine::get_singleton();
+    if (!eng || eng->is_editor_hint())
+        return;
+    if (!is_inside_tree())
+        return;
+    SceneTree* tree = get_tree();
+    if (!tree)
+        return;
+    TypedArray<Node> runtime_nodes = tree->get_nodes_in_group(StringName("resonance_runtime"));
+    if (runtime_nodes.is_empty())
+        return;
+    Node* runtime_node = Object::cast_to<Node>(runtime_nodes[0]);
+    if (!runtime_node || !runtime_node->has_method(StringName("request_static_scene_reload")))
+        return;
+    runtime_node->call_deferred(StringName("request_static_scene_reload"));
 }
 
 Ref<ResonanceGeometryAsset> ResonanceStaticScene::get_static_scene_asset() const {

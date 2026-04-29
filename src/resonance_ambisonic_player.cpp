@@ -72,6 +72,11 @@ void ResonanceAmbisonicInternalPlayback::_sync_params() {
     }
 }
 
+bool ResonanceAmbisonicInternalPlayback::_has_pending_output() const {
+    return output_ring_l.get_available_read() > 0 || output_ring_r.get_available_read() > 0 ||
+           input_ring.get_available_read() > 0;
+}
+
 void ResonanceAmbisonicInternalPlayback::_cleanup_steam_audio() {
     if (ResonanceServer* reg_srv = ResonanceServer::get_singleton())
         reg_srv->unregister_ipl_context_client(this);
@@ -166,19 +171,27 @@ int32_t ResonanceAmbisonicInternalPlayback::_mix(AudioFrame* buffer, float rate_
     int num_channels = resonance::ambisonic_num_channels_for_order(ambisonic_order);
     size_t block_samples = static_cast<size_t>(frame_size_) * static_cast<size_t>(num_channels);
 
-    // 1. Mix first stream to get sample count
-    PackedVector2Array buf_0 = channel_playbacks[0]->mix_audio(rate_scale, frames);
-    int32_t samples_read = buf_0.size();
-
-    if (samples_read == 0)
-        return 0;
+    int32_t samples_read = 0;
+    const bool stopping = stop_requested.load(std::memory_order_acquire);
+    if (!stopping) {
+        // 1. Mix first stream to get sample count
+        PackedVector2Array buf_0 = channel_playbacks[0]->mix_audio(rate_scale, frames);
+        samples_read = buf_0.size();
+        if (samples_read == 0)
+            return 0;
+    } else {
+        // Keep mixer alive while input/output rings drain after stop().
+        samples_read = frames;
+    }
 
     // 2. Collect all channel data (pad missing with 0)
     std::vector<PackedVector2Array> channel_bufs;
     channel_bufs.resize(num_channels);
-    for (int c = 0; c < num_channels; c++) {
-        if (c < (int)channel_playbacks.size() && channel_playbacks[c].is_valid()) {
-            channel_bufs[c] = channel_playbacks[c]->mix_audio(rate_scale, frames);
+    if (!stopping) {
+        for (int c = 0; c < num_channels; c++) {
+            if (c < (int)channel_playbacks.size() && channel_playbacks[c].is_valid()) {
+                channel_bufs[c] = channel_playbacks[c]->mix_audio(rate_scale, frames);
+            }
         }
     }
 
@@ -198,21 +211,23 @@ int32_t ResonanceAmbisonicInternalPlayback::_mix(AudioFrame* buffer, float rate_
     }
 
     // 3. Interleave all channels and push to Input Ring (batch write for efficiency)
-    size_t interleaved_count = static_cast<size_t>(samples_read) * static_cast<size_t>(num_channels);
-    if (temp_interleaved_input.size() < interleaved_count) {
-        temp_interleaved_input.resize(interleaved_count);
-    }
-    for (int i = 0; i < samples_read; i++) {
-        for (int c = 0; c < num_channels; c++) {
-            float sample = (c < (int)channel_bufs.size() && (int)channel_bufs[c].size() > i)
-                               ? channel_bufs[c][i].x
-                               : 0.0f;
-            temp_interleaved_input[static_cast<size_t>(i) * static_cast<size_t>(num_channels) + static_cast<size_t>(c)] = sample;
+    if (!stopping) {
+        size_t interleaved_count = static_cast<size_t>(samples_read) * static_cast<size_t>(num_channels);
+        if (temp_interleaved_input.size() < interleaved_count) {
+            temp_interleaved_input.resize(interleaved_count);
         }
-    }
-    size_t to_write = std::min(interleaved_count, input_ring.get_available_write());
-    if (to_write > 0) {
-        input_ring.write(temp_interleaved_input.data(), to_write);
+        for (int i = 0; i < samples_read; i++) {
+            for (int c = 0; c < num_channels; c++) {
+                float sample = (c < (int)channel_bufs.size() && (int)channel_bufs[c].size() > i)
+                                   ? channel_bufs[c][i].x
+                                   : 0.0f;
+                temp_interleaved_input[static_cast<size_t>(i) * static_cast<size_t>(num_channels) + static_cast<size_t>(c)] = sample;
+            }
+        }
+        size_t to_write = std::min(interleaved_count, input_ring.get_available_write());
+        if (to_write > 0) {
+            input_ring.write(temp_interleaved_input.data(), to_write);
+        }
     }
 
     // 4. Process Steam Audio Blocks
@@ -247,22 +262,30 @@ int32_t ResonanceAmbisonicInternalPlayback::_mix(AudioFrame* buffer, float rate_
         buffer[i].right = 0.0f;
     }
 
+    if (stopping && !_has_pending_output()) {
+        stop_requested.store(false, std::memory_order_release);
+    }
+
     return samples_read;
 }
 
 void ResonanceAmbisonicInternalPlayback::_start(double from_pos) {
+    stop_requested.store(false, std::memory_order_release);
     for (size_t i = 0; i < channel_playbacks.size(); i++) {
         if (channel_playbacks[i].is_valid())
             channel_playbacks[i]->start(from_pos);
     }
 }
 void ResonanceAmbisonicInternalPlayback::_stop() {
+    stop_requested.store(true, std::memory_order_release);
     for (size_t i = 0; i < channel_playbacks.size(); i++) {
         if (channel_playbacks[i].is_valid())
             channel_playbacks[i]->stop();
     }
 }
 bool ResonanceAmbisonicInternalPlayback::_is_playing() const {
+    if (stop_requested.load(std::memory_order_acquire) && _has_pending_output())
+        return true;
     return !channel_playbacks.empty() && channel_playbacks[0].is_valid() && channel_playbacks[0]->is_playing();
 }
 int ResonanceAmbisonicInternalPlayback::_get_loop_count() const {

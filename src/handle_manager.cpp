@@ -21,6 +21,7 @@ int32_t SourceManager::add_source(IPLSource source) {
         return -1;
     }
     items[handle] = retained_source;
+    item_count_.store((int32_t)items.size(), std::memory_order_relaxed);
     return handle;
 }
 
@@ -30,6 +31,7 @@ void SourceManager::remove_source(int32_t handle) {
     if (it != items.end()) {
         _handle_release_source(&(it->second));
         items.erase(it);
+        item_count_.store((int32_t)items.size(), std::memory_order_relaxed);
         recycle_handle(handle);
     }
 }
@@ -75,6 +77,7 @@ int32_t ProbeBatchManager::add_batch(IPLProbeBatch batch) {
         return -1;
     }
     items[handle] = batch;
+    item_count_.store((int32_t)items.size(), std::memory_order_relaxed);
     return handle;
 }
 
@@ -84,6 +87,7 @@ IPLProbeBatch ProbeBatchManager::take_batch(int32_t handle) {
     if (it != items.end()) {
         IPLProbeBatch batch = it->second;
         items.erase(it);
+        item_count_.store((int32_t)items.size(), std::memory_order_relaxed);
         recycle_handle(handle);
         return batch;
     }

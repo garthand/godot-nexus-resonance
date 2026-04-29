@@ -29,8 +29,6 @@ jobs:
 
       - name: Check GDScript format
         run: gdformat --check addons/nexus_resonance/ test/
-        continue-on-error: true
 
       - name: Lint GDScript
-        run: gdlint addons/nexus_resonance/ test/ 2>/dev/null || true
-        continue-on-error: true
+        run: gdlint addons/nexus_resonance/ test/

@@ -11,8 +11,14 @@ const PERF_MONITORS_FULL := 3
 
 const MON_MAIN := "Nexus Resonance/Main/runtime_last_tick_us"
 const MON_MAIN_VP := "Nexus Resonance/Main/runtime_viewport_sync_us"
+## Sub-timing of the server tick inside [code]_process[/code]. Only populated when
+## full-frame timing is active (level [constant PERF_MONITORS_FULL]); a subset of
+## [constant MON_MAIN], so at lower tiers it would always read 0.
 const MON_MAIN_TICK := "Nexus Resonance/Main/runtime_server_tick_us"
 const MON_MAIN_FLUSH := "Nexus Resonance/Main/runtime_flush_sources_us"
+## [code]_physics_process[/code] timing. Only active with the Custom ray tracer
+## ([code]SCENETYPE_CUSTOM[/code]); for Embree/Radeon scenes these monitors never
+## receive values and are therefore FULL-only.
 const MON_PHYS := "Nexus Resonance/Main/runtime_physics_tick_us"
 const MON_PHYS_VP := "Nexus Resonance/Main/runtime_physics_viewport_us"
 const MON_PHYS_TICK := "Nexus Resonance/Main/runtime_physics_server_tick_us"
@@ -23,9 +29,9 @@ const MON_W_SUM := "Nexus Resonance/Worker/last_tick_sum_us"
 const _MAIN_PHYS_MONITORS: Array[Dictionary] = [
 	{"id": MON_MAIN, "callable": "_nexus_perf_read_main_usec", "min_level": PERF_MONITORS_CORE},
 	{"id": MON_MAIN_VP, "callable": "_nexus_perf_read_main_viewport_usec", "min_level": PERF_MONITORS_FULL},
-	{"id": MON_MAIN_TICK, "callable": "_nexus_perf_read_main_tick_usec", "min_level": PERF_MONITORS_STANDARD},
+	{"id": MON_MAIN_TICK, "callable": "_nexus_perf_read_main_tick_usec", "min_level": PERF_MONITORS_FULL},
 	{"id": MON_MAIN_FLUSH, "callable": "_nexus_perf_read_main_flush_usec", "min_level": PERF_MONITORS_FULL},
-	{"id": MON_PHYS, "callable": "_nexus_perf_read_physics_tick_usec", "min_level": PERF_MONITORS_STANDARD},
+	{"id": MON_PHYS, "callable": "_nexus_perf_read_physics_tick_usec", "min_level": PERF_MONITORS_FULL},
 	{"id": MON_PHYS_VP, "callable": "_nexus_perf_read_physics_viewport_usec", "min_level": PERF_MONITORS_FULL},
 	{"id": MON_PHYS_TICK, "callable": "_nexus_perf_read_physics_server_tick_usec", "min_level": PERF_MONITORS_FULL},
 	{"id": MON_PHYS_FLUSH, "callable": "_nexus_perf_read_physics_flush_usec", "min_level": PERF_MONITORS_FULL},
@@ -50,7 +56,7 @@ const _WORKER_US_MONITORS: Array[Dictionary] = [
 	{
 		"id": "Nexus Resonance/Worker/sync_fetch_reflections_us",
 		"key": "us_sync_fetch_reflections",
-		"min_level": PERF_MONITORS_FULL,
+		"min_level": PERF_MONITORS_STANDARD,
 	},
 	{
 		"id": "Nexus Resonance/Worker/sync_fetch_pathing_us",
@@ -71,9 +77,12 @@ const _WORKER_US_MONITORS: Array[Dictionary] = [
 	{
 		"id": "Nexus Resonance/Main/last_dynamic_transform_enqueue_us",
 		"key": "main_last_dynamic_transform_enqueue_us",
-		"min_level": PERF_MONITORS_FULL,
+		"min_level": PERF_MONITORS_STANDARD,
 	},
-	{"id": "Nexus Resonance/Worker/last_wake_heavy", "key": "worker_last_wake_heavy", "min_level": PERF_MONITORS_CORE},
+	## 0/1 flag (not microseconds) — set by the worker when its last wake did
+	## heavy work (reflections/pathing/commit). Kept under the legacy id to stay
+	## backwards compatible with existing dashboards.
+	{"id": "Nexus Resonance/Worker/heavy_tick_flag", "key": "worker_last_wake_heavy", "min_level": PERF_MONITORS_CORE},
 ]
 
 const MON_PATHING_RAN := "Nexus Resonance/Worker/pathing_ran_last_tick"
@@ -81,6 +90,18 @@ const MON_AUDIO_CONV_APPLY := "Nexus Resonance/Audio/convolution_reflection_appl
 const MON_AUDIO_CONV_BUS := "Nexus Resonance/Audio/convolution_reverb_bus_last_us"
 const MON_AUDIO_MIXER_SANITIZE_AMBI := "Nexus Resonance/Audio/mixer_sanitize_ambi_last_us"
 const MON_AUDIO_MIXER_SANITIZE_STEREO := "Nexus Resonance/Audio/mixer_sanitize_stereo_last_us"
+## Aggregated audio-thread health. See [ResonanceRuntime]
+## [code]_sample_audio_aggregates_if_due[/code] — summed across all living [code]resonance_player[/code]s at
+## ~4 Hz. Cumulative counters are per-player-lifetime; call [method ResonancePlayer.reset_audio_instrumentation]
+## to restart the sums.
+const MON_AUDIO_OUTPUT_UNDERRUNS := "Nexus Resonance/Audio/output_underruns_total"
+const MON_AUDIO_LATE_MIX := "Nexus Resonance/Audio/late_mix_total"
+const MON_AUDIO_MAX_BLOCK := "Nexus Resonance/Audio/max_block_time_us"
+const MON_AUDIO_VOICE_COUNT := "Nexus Resonance/Audio/active_voice_count"
+## Registered [code]IPLSource[/code] handles on the server — one per active
+## [ResonancePlayer] / [code]ResonanceSource[/code] with a valid config.
+const MON_SERVER_SOURCE_COUNT := "Nexus Resonance/Server/active_source_count"
+const MON_SERVER_PROBE_BATCH_COUNT := "Nexus Resonance/Server/active_probe_batch_count"
 
 ## Extra monitors after worker rows: id, callable on [param owner], min_level.
 const _EXTRA_MONITORS: Array[Dictionary] = [
@@ -103,6 +124,36 @@ const _EXTRA_MONITORS: Array[Dictionary] = [
 	{
 		"id": MON_AUDIO_MIXER_SANITIZE_STEREO,
 		"callable": "_nexus_perf_read_mixer_sanitize_stereo_last_us",
+		"min_level": PERF_MONITORS_FULL,
+	},
+	{
+		"id": MON_AUDIO_OUTPUT_UNDERRUNS,
+		"callable": "_nexus_perf_read_audio_output_underruns_total",
+		"min_level": PERF_MONITORS_CORE,
+	},
+	{
+		"id": MON_AUDIO_LATE_MIX,
+		"callable": "_nexus_perf_read_audio_late_mix_total",
+		"min_level": PERF_MONITORS_STANDARD,
+	},
+	{
+		"id": MON_AUDIO_MAX_BLOCK,
+		"callable": "_nexus_perf_read_audio_max_block_time_us",
+		"min_level": PERF_MONITORS_STANDARD,
+	},
+	{
+		"id": MON_AUDIO_VOICE_COUNT,
+		"callable": "_nexus_perf_read_audio_active_voice_count",
+		"min_level": PERF_MONITORS_STANDARD,
+	},
+	{
+		"id": MON_SERVER_SOURCE_COUNT,
+		"callable": "_nexus_perf_read_server_active_source_count",
+		"min_level": PERF_MONITORS_CORE,
+	},
+	{
+		"id": MON_SERVER_PROBE_BATCH_COUNT,
+		"callable": "_nexus_perf_read_server_active_probe_batch_count",
 		"min_level": PERF_MONITORS_FULL,
 	},
 ]

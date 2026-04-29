@@ -65,3 +65,7 @@ func _copy_probe_data_properties(dst: Resource, src: Resource) -> void:
 	]:
 		if prop in src and prop in dst:
 			dst.set(prop, src.get(prop))
+
+
+func shutdown() -> void:
+	_backup_paths.clear()

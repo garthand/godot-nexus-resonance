@@ -133,8 +133,14 @@ Dictionary ResonanceServer::get_simulation_worker_timing() const {
     d["main_us_dynamic_transform_enqueue"] = (int64_t)instrumentation_main_us_dynamic_transform_enqueue_.load(std::memory_order_relaxed);
     d["main_last_dynamic_transform_enqueue_us"] = (int64_t)instrumentation_main_us_last_dynamic_transform_enqueue_.load(std::memory_order_relaxed);
     d["dynamic_transform_enqueue_events"] = (int64_t)instrumentation_dynamic_transform_enqueue_events_.load(std::memory_order_relaxed);
+    d["active_source_count"] = (int64_t)source_manager.size_approx();
+    d["active_probe_batch_count"] = (int64_t)probe_batch_registry_.get_manager().size_approx();
     return d;
 }
+
+int32_t ResonanceServer::get_active_source_count() const { return source_manager.size_approx(); }
+
+int32_t ResonanceServer::get_active_probe_batch_count() const { return probe_batch_registry_.get_manager().size_approx(); }
 
 Dictionary ResonanceServer::get_convolution_audio_timing() const {
     Dictionary d;
@@ -278,6 +284,10 @@ void ResonanceServer::set_reverb_max_distance(float p_dist) { reverb_max_distanc
 float ResonanceServer::get_reverb_max_distance() const { return reverb_max_distance; }
 void ResonanceServer::set_reverb_transmission_amount(float p_amount) { reverb_transmission_amount = std::max(0.0f, std::min(1.0f, p_amount)); }
 float ResonanceServer::get_reverb_transmission_amount() const { return reverb_transmission_amount; }
+void ResonanceServer::set_apply_occlusion_to_baked_reflections(bool p_enabled) { apply_occlusion_to_baked_reflections = p_enabled; }
+bool ResonanceServer::get_apply_occlusion_to_baked_reflections() const { return apply_occlusion_to_baked_reflections; }
+void ResonanceServer::set_apply_distance_curve_to_reflections(bool p_enabled) { apply_distance_curve_to_reflections = p_enabled; }
+bool ResonanceServer::get_apply_distance_curve_to_reflections() const { return apply_distance_curve_to_reflections; }
 void ResonanceServer::set_perspective_correction_enabled(bool p_enabled) { perspective_correction_enabled.store(p_enabled, std::memory_order_release); }
 bool ResonanceServer::is_perspective_correction_enabled() const { return perspective_correction_enabled.load(std::memory_order_acquire); }
 void ResonanceServer::set_perspective_correction_factor(float p_factor) {
@@ -379,6 +389,10 @@ void ResonanceServer::_bind_methods() {
     ClassDB::bind_method(D_METHOD("get_reverb_max_distance"), &ResonanceServer::get_reverb_max_distance);
     ClassDB::bind_method(D_METHOD("set_reverb_transmission_amount", "p_amount"), &ResonanceServer::set_reverb_transmission_amount);
     ClassDB::bind_method(D_METHOD("get_reverb_transmission_amount"), &ResonanceServer::get_reverb_transmission_amount);
+    ClassDB::bind_method(D_METHOD("set_apply_occlusion_to_baked_reflections", "p_enabled"), &ResonanceServer::set_apply_occlusion_to_baked_reflections);
+    ClassDB::bind_method(D_METHOD("get_apply_occlusion_to_baked_reflections"), &ResonanceServer::get_apply_occlusion_to_baked_reflections);
+    ClassDB::bind_method(D_METHOD("set_apply_distance_curve_to_reflections", "p_enabled"), &ResonanceServer::set_apply_distance_curve_to_reflections);
+    ClassDB::bind_method(D_METHOD("get_apply_distance_curve_to_reflections"), &ResonanceServer::get_apply_distance_curve_to_reflections);
     ClassDB::bind_method(D_METHOD("set_perspective_correction_enabled", "p_enabled"), &ResonanceServer::set_perspective_correction_enabled);
     ClassDB::bind_method(D_METHOD("is_perspective_correction_enabled"), &ResonanceServer::is_perspective_correction_enabled);
     ClassDB::bind_method(D_METHOD("set_perspective_correction_factor", "p_factor"), &ResonanceServer::set_perspective_correction_factor);
@@ -392,6 +406,8 @@ void ResonanceServer::_bind_methods() {
     ClassDB::bind_method(D_METHOD("get_pathing_instrumentation"), &ResonanceServer::get_pathing_instrumentation);
     ClassDB::bind_method(D_METHOD("reset_pathing_instrumentation"), &ResonanceServer::reset_pathing_instrumentation);
     ClassDB::bind_method(D_METHOD("get_simulation_worker_timing"), &ResonanceServer::get_simulation_worker_timing);
+    ClassDB::bind_method(D_METHOD("get_active_source_count"), &ResonanceServer::get_active_source_count);
+    ClassDB::bind_method(D_METHOD("get_active_probe_batch_count"), &ResonanceServer::get_active_probe_batch_count);
     ClassDB::bind_method(D_METHOD("peek_reverb_params_likely_available", "source_handle"), &ResonanceServer::peek_reverb_params_likely_available);
     ClassDB::bind_method(D_METHOD("get_convolution_audio_timing"), &ResonanceServer::get_convolution_audio_timing);
     ClassDB::bind_method(D_METHOD("get_simulation_tracer_profile"), &ResonanceServer::get_simulation_tracer_profile);
@@ -405,6 +421,8 @@ void ResonanceServer::_bind_methods() {
     ADD_PROPERTY(PropertyInfo(Variant::FLOAT, "reverb_influence_radius", PROPERTY_HINT_RANGE, "1,50000,1"), "set_reverb_influence_radius", "get_reverb_influence_radius");
     ADD_PROPERTY(PropertyInfo(Variant::FLOAT, "reverb_max_distance", PROPERTY_HINT_RANGE, "0,5000,1"), "set_reverb_max_distance", "get_reverb_max_distance");
     ADD_PROPERTY(PropertyInfo(Variant::FLOAT, "reverb_transmission_amount", PROPERTY_HINT_RANGE, "0,1,0.01"), "set_reverb_transmission_amount", "get_reverb_transmission_amount");
+    ADD_PROPERTY(PropertyInfo(Variant::BOOL, "apply_occlusion_to_baked_reflections"), "set_apply_occlusion_to_baked_reflections", "get_apply_occlusion_to_baked_reflections");
+    ADD_PROPERTY(PropertyInfo(Variant::BOOL, "apply_distance_curve_to_reflections"), "set_apply_distance_curve_to_reflections", "get_apply_distance_curve_to_reflections");
     ADD_PROPERTY(PropertyInfo(Variant::BOOL, "perspective_correction_enabled"), "set_perspective_correction_enabled", "is_perspective_correction_enabled");
     ADD_PROPERTY(PropertyInfo(Variant::FLOAT, "perspective_correction_factor", PROPERTY_HINT_RANGE, "0.1,3.0,0.1"), "set_perspective_correction_factor", "get_perspective_correction_factor");
 }

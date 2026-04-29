@@ -52,7 +52,7 @@ class ResonanceReflectionProcessor {
     void cleanup();
 
     // Mixes into the provided Mixer handle (unused if using direct path).
-    // reverb_gain scales the input before convolution (for distance/occlusion/air absorption).
+    // reverb_gain scales mono input before iplReflectionEffectApply (Steam Audio Unity spatialize: reflections mix * source level only).
     // prev_reverb_gain: when >= 0, applies per-sample ramp from prev to reverb_gain to avoid clicks; use -1 to skip ramp.
     void process_mix(const IPLAudioBuffer& in_buffer,
                      const IPLReflectionEffectParams& reverb_params,
@@ -63,7 +63,7 @@ class ResonanceReflectionProcessor {
     /// Bypass mixer: apply convolution with mixer=null, output in internal buffer.
     /// Returns pointer to sa_temp_out_buffer (ambisonic) for external decode. Valid until next process call.
     /// Ramps reflections_mix_level on downmixed mono before apply (Unity Steam Audio spatializer parity).
-    /// Caller scales wet to final mix by reverb_gain only; reflections_mix_level is encoded in the ramped input.
+    /// Unity applies reflections mix on mono before Apply only; caller does not add a second distance/air gain on wet.
     void process_mix_direct(const IPLAudioBuffer& in_buffer, const IPLReflectionEffectParams& reverb_params,
                             float prev_reflections_mix_level, float reflections_mix_level);
     IPLAudioBuffer* get_direct_output_buffer() { return &sa_temp_out_buffer; }

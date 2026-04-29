@@ -27,6 +27,19 @@ struct ResonanceServerConfig {
     float reverb_influence_radius = 10000.0f;
     float reverb_max_distance = 0.0f;
     float reverb_transmission_amount = 1.0f;
+    /// When true, baked reflections (IPL_BAKEDDATAVARIATION_REVERB) scale the wet input gain by the same
+    /// occlusion/transmission factor used on the direct path. Defaults to false: direct-line occlusion cannot
+    /// distinguish "source around a corner in the same open room" (listener room still excited via openings,
+    /// realtime convolution stays loud) from "source truly sealed away" (listener room quiet). Enabling the
+    /// flag dampens both cases uniformly, which makes baked REVERB sound less plausible than realtime for the
+    /// common "around the corner" case. Prefer per-source Realtime or the STATICSOURCE bake workflow for
+    /// accurate outdoor-to-indoor reflections. Only consulted in baked-REVERB mode.
+    bool apply_occlusion_to_baked_reflections = false;
+    /// When true (default), the reflection-effect input gain is multiplied by the per-source distance attenuation
+    /// curve so baked/realtime reverb fades with distance. Matches Steam Audio Unity's Spatialize pipeline where
+    /// the AudioSource rolloff is applied to the inBuffer before iplReflectionEffectApply. Set to false only for
+    /// 2D ambience beds where wet gain must stay constant regardless of distance.
+    bool apply_distance_curve_to_reflections = true;
 
     // Reflection
     int reflection_type = 0;

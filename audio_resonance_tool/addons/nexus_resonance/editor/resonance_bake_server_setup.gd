@@ -18,6 +18,11 @@ func _init(runner: Object) -> void:
 	_runner = runner
 
 
+func shutdown() -> void:
+	# Break RefCounted reference cycles (runner <-> server setup).
+	_runner = null
+
+
 func log_and_show_error(
 	message: String,
 	solution: String = "",
@@ -60,10 +65,18 @@ func ensure_resonance_server_initialized(volumes: Array[Node]) -> bool:
 				config = rt.get_config()
 				config["debug_occlusion"] = false
 	if config.is_empty():
-		log_and_show_error(
-			"No ResonanceRuntime in scene.",
-			"Add a ResonanceRuntime node with valid ResonanceRuntimeConfig to the scene."
-		)
+		var data := {"error": true}
+		if Engine.has_singleton("ResonanceLogger"):
+			Engine.get_singleton("ResonanceLogger").log(
+				&"bake", "Bake error: No ResonanceRuntime in scene.", data
+			)
+		var ei = _runner.editor_interface if _runner else null
+		var msg := tr(UIStrings.WARN_RUNTIME_REQUIRED_EDITOR)
+		ResonanceEditorDialogs.show_warning(ei, msg)
+		if ei and ei.has_method("get_editor_toaster"):
+			var toaster = ei.get_editor_toaster()
+			if toaster and toaster.has_method("push_toast"):
+				push_warning(UIStrings.PREFIX + msg)
 		return false
 	var bake_params := ResonanceBakeConfig.create_default().get_bake_params()
 	if volumes.size() > 0:

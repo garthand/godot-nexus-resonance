@@ -29,6 +29,25 @@ func test_get_audio_data_dir_uses_project_setting_when_configured():
 		assert_true(result.ends_with("/"), "configured path should end with /")
 
 
+func test_export_extensions_default_to_tres_when_key_cleared():
+	const K_STATIC := "nexus/resonance/export/static_scene_asset_format"
+	const K_PROBE := "nexus/resonance/export/probe_data_format"
+	var had_s: bool = ProjectSettings.has_setting(K_STATIC)
+	var had_p: bool = ProjectSettings.has_setting(K_PROBE)
+	var prev_s: Variant = ProjectSettings.get_setting(K_STATIC, 0) if had_s else 0
+	var prev_p: Variant = ProjectSettings.get_setting(K_PROBE, 0) if had_p else 0
+	if had_s:
+		ProjectSettings.clear(K_STATIC)
+	if had_p:
+		ProjectSettings.clear(K_PROBE)
+	assert_eq(ResonancePaths.get_static_scene_asset_extension(), "tres")
+	assert_eq(ResonancePaths.get_probe_data_asset_extension(), "tres")
+	if had_s:
+		ProjectSettings.set_setting(K_STATIC, prev_s)
+	if had_p:
+		ProjectSettings.set_setting(K_PROBE, prev_p)
+
+
 func test_get_static_scene_asset_extension_tres_and_res():
 	const KEY := "nexus/resonance/export/static_scene_asset_format"
 	var prev: Variant = ProjectSettings.get_setting(KEY) if ProjectSettings.has_setting(KEY) else 0

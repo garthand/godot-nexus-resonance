@@ -176,11 +176,11 @@ void ResonanceProbeVolume::reload_probe_batch() {
     ResonanceServer* srv = ResonanceServer::get_singleton();
     if (!srv || !srv->is_initialized()) {
         UtilityFunctions::push_warning(
-            "Nexus Resonance: reload_probe_batch skipped — ResonanceServer is not initialized (probe data may have changed on disk only).");
+            "Nexus Resonance: reload_probe_batch skipped - ResonanceServer is not initialized (probe data may have changed on disk only).");
         return;
     }
     if (!probe_data.is_valid() || probe_data->get_data().is_empty()) {
-        UtilityFunctions::push_warning("Nexus Resonance: reload_probe_batch skipped — probe_data is missing or empty.");
+        UtilityFunctions::push_warning("Nexus Resonance: reload_probe_batch skipped - probe_data is missing or empty.");
         return;
     }
     if (probe_batch_handle >= 0) {
@@ -297,8 +297,10 @@ bool ResonanceProbeVolume::_compute_is_probe_dirty() const {
     if (!probe_data.is_valid() || probe_data->get_data().is_empty())
         return true;
     uint32_t stored = static_cast<uint32_t>(probe_data->get_bake_params_hash() & 0xFFFFFFFF);
+    // Probe data without a recorded params hash predates incremental detection. We are pre-release
+    // (no shipped users), so treat that as dirty and force a re-bake instead of silently trusting it.
     if (stored == 0)
-        return false; // old format / .resonance_probe without hash: assume valid
+        return true;
     return stored != _get_bake_params_hash();
 }
 
@@ -565,11 +567,27 @@ void ResonanceProbeVolume::_prepare_and_execute_bake(const PackedVector3Array* p
     }
 }
 
+// Native bake entry points (bake_probes, bake_probes_with_floor_points) are DEPRECATED.
+// They run only the reflection layer and skip pathing, static-source/listener, automatic
+// stale-asset re-export, undo backups, and the static-scene hash bookkeeping. Everything they do is
+// a strict subset of `ResonanceBakeRunner.run_bake([volume])`. Scheduled for removal in 1.0.
+void ResonanceProbeVolume::_warn_native_bake_deprecated() const {
+    UtilityFunctions::push_warning(
+        "Nexus Resonance: ResonanceProbeVolume.bake_probes() / bake_probes_with_floor_points() "
+        "are deprecated and scheduled for removal in 1.0. Use ResonanceBakeRunner.run_bake([volume]) "
+        "instead - it covers the same reflection bake plus pathing, static-source / static-listener "
+        "passes, automatic re-export of stale ResonanceStaticScene assets, undo backup, and full "
+        "incremental-rebake bookkeeping. The native API only updates the reflection layer and the "
+        "inspector will report 'Outdated' afterwards.");
+}
+
 void ResonanceProbeVolume::bake_probes_with_floor_points(const PackedVector3Array& p_points) {
+    _warn_native_bake_deprecated();
     _prepare_and_execute_bake(!p_points.is_empty() ? &p_points : nullptr);
 }
 
 void ResonanceProbeVolume::bake_probes() {
+    _warn_native_bake_deprecated();
     PackedVector3Array raycast_points;
     if (generation_type == GEN_UNIFORM_FLOOR) {
         raycast_points = generate_probes_on_floor_raycast();
@@ -578,8 +596,22 @@ void ResonanceProbeVolume::bake_probes() {
 }
 
 void ResonanceProbeVolume::set_probe_data(const Ref<ResonanceProbeData>& p_data) {
+    if (probe_data == p_data)
+        return;
     probe_data = p_data;
     _queue_update();
+    // Play-mode hot-swap: assigning a different ResonanceProbeData while the volume is live must
+    // re-register the IPL probe batch. Otherwise the stale `probe_batch_handle` from the registry
+    // keeps serving the previously baked probes (parametric/pathing/hybrid all stay on old data).
+    Engine* eng = Engine::get_singleton();
+    if (eng && eng->is_editor_hint())
+        return;
+    if (!is_inside_tree())
+        return;
+    ResonanceServer* srv = ResonanceServer::get_singleton();
+    if (!srv || !srv->is_initialized())
+        return;
+    reload_probe_batch();
 }
 Ref<ResonanceProbeData> ResonanceProbeVolume::get_probe_data() const { return probe_data; }
 

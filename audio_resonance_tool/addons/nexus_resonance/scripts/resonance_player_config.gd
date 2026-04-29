@@ -88,14 +88,28 @@ var _directivity_input: int = 0
 
 # --- Output ---
 @export_group("Output")
+var _bus_override: int = -1
 ## Bus for Direct + Pathing. Use Global = follow ResonanceRuntimeConfig.bus. Custom = use bus_name below.
-## Exported directly (no getter/setter) so Godot reliably serializes it.
-@export_enum("Use Global:-1", "Custom:0") var bus_override: int = -1
+## On change, calls [method notify_property_list_changed] so the inspector re-runs [method _validate_property] for [member bus_name] (read-only only when Use Global).
+@export_enum("Use Global:-1", "Custom:0") var bus_override: int = -1:
+	get:
+		return _bus_override
+	set(v):
+		if _bus_override != v:
+			_bus_override = v
+			notify_property_list_changed()
 ## Bus for Direct + Pathing when bus_override is Custom. Pick from existing buses in Audio Bus Layout.
 @export var bus_name: StringName = &"Master"
-## Reverb bus override. Use Global = follow ResonanceRuntimeConfig.reverb_bus_name. Custom = use reverb_bus_name below. Note: Convolution mode uses a global reverb bus; this applies when per-source reverb routing is supported (e.g. Parametric/Hybrid with separate reverb output).
-## Exported directly (no getter/setter) so Godot reliably serializes it. reverb_bus_name refresh may require re-selecting the resource after change.
-@export_enum("Use Global:-1", "Custom:0") var reverb_bus_override: int = -1
+var _reverb_bus_override: int = -1
+## Reverb bus override. Use Global = follow ResonanceRuntimeConfig.reverb_bus_name. Custom = use reverb_bus_name below. **Parametric/Hybrid:** split wet uses [member reverb_bus_name] when it differs from the dry bus. **Convolution/TAN:** one shared reflection mixer on the runtime [member ResonanceRuntimeConfig.reverb_bus_name] bus; its Godot send follows runtime [member ResonanceRuntimeConfig.bus] (same model as Steam Audio Unity mixer return).
+## On change, calls [method notify_property_list_changed] so the inspector re-runs [method _validate_property] for [member reverb_bus_name].
+@export_enum("Use Global:-1", "Custom:0") var reverb_bus_override: int = -1:
+	get:
+		return _reverb_bus_override
+	set(v):
+		if _reverb_bus_override != v:
+			_reverb_bus_override = v
+			notify_property_list_changed()
 
 ## Bus for reverb output when reverb_bus_override is Custom. Pick from existing buses in Audio Bus Layout.
 @export var reverb_bus_name: StringName = &"ResonanceReverb"
@@ -216,6 +230,30 @@ var reflections_type: int = -1:
 @export_enum("Use Global:-1", "Disabled:0", "Enabled:1") var reflections_enabled: int = -1
 ## Enable pathing for this source. Use Global = follow runtime pathing_enabled.
 @export_enum("Use Global:-1", "Disabled:0", "Enabled:1") var pathing_enabled_override: int = -1
+## Per-source override for [member ResonanceRuntimeConfig.apply_occlusion_to_baked_reflections]. Use Global = follow
+## runtime flag. Enabled = dampen this source's baked REVERB wet input by its direct-path occlusion/transmission
+## (right for outdoor thunder/rain leaking through walls). Disabled = keep wet input unattenuated regardless of the
+## global flag (right for indoor radios/ambience where around-the-corner reverb must stay audible). See
+## [code]docs/baked-reflections-and-outdoor-sources.md[/code] for when to pick which.
+@export_enum("Use Global:-1", "Disabled:0", "Enabled:1") var apply_occlusion_to_baked_reflections_override: int = -1
+## Per-source override for [member ResonanceRuntimeConfig.apply_distance_curve_to_reflections]. Use Global = follow
+## runtime flag (Unity-parity default: Enabled). Disabled = wet input does not fade with source distance (useful
+## for 2D ambience beds or sources where the distance curve already lives elsewhere).
+@export_enum("Use Global:-1", "Disabled:0", "Enabled:1") var apply_distance_curve_to_reflections_override: int = -1
+var _reverb_transmission_amount_input: int = 0
+## Use Global = read [member ResonanceRuntimeConfig.reverb_transmission_amount]; User Defined = use the per-source
+## [member reverb_transmission_amount] below. Only effective when the wet-path occlusion damping is on (global or
+## [member apply_occlusion_to_baked_reflections_override]).
+@export_enum("Use Global:0", "User Defined:1") var reverb_transmission_amount_input: int = 0:
+	get:
+		return _reverb_transmission_amount_input
+	set(v):
+		if _reverb_transmission_amount_input != v:
+			_reverb_transmission_amount_input = v
+			notify_property_list_changed()
+## Per-source transmission damping on reverb (0-1). 0 = no damping, 1 = full damping. Only used when
+## [member reverb_transmission_amount_input] is User Defined and the wet-path occlusion damping is on.
+@export_range(0.0, 1.0, 0.01) var reverb_transmission_amount: float = 1.0
 
 # --- Pathing ---
 @export_group("Pathing")
@@ -292,6 +330,9 @@ func _validate_property(property: Dictionary) -> void:
 			property["usage"] = property["usage"] | PROPERTY_USAGE_READ_ONLY
 	elif property.name in ["transmission_low", "transmission_mid", "transmission_high"]:
 		if transmission_input != 1:
+			property["usage"] = property["usage"] | PROPERTY_USAGE_READ_ONLY
+	elif property.name == "reverb_transmission_amount":
+		if reverb_transmission_amount_input != 1:  # Use Global
 			property["usage"] = property["usage"] | PROPERTY_USAGE_READ_ONLY
 	elif property.name == "occlusion_samples":
 		if occlusion_type_override != 1:

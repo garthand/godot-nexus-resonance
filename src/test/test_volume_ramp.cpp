@@ -155,6 +155,17 @@ TEST_CASE("apply_volume_ramp_and_sanitize constant gain nan to zero", "[volume_r
     REQUIRE(buf[2] == Approx(1.5f));
 }
 
+TEST_CASE("reverb_wet_falloff_max_distance off when max is zero", "[resonance_math]") {
+    REQUIRE(reverb_wet_falloff_max_distance(100.0f, 0.0f) == Approx(1.0f));
+    REQUIRE(reverb_wet_falloff_max_distance(0.0f, 20.0f) == Approx(1.0f));
+    REQUIRE(reverb_wet_falloff_max_distance(20.0f, 20.0f) == Approx(1.0f));
+}
+
+TEST_CASE("reverb_wet_falloff_max_distance linear fade to zero by 2x", "[resonance_math]") {
+    REQUIRE(reverb_wet_falloff_max_distance(30.0f, 20.0f) == Approx(0.5f));
+    REQUIRE(reverb_wet_falloff_max_distance(40.0f, 20.0f) == Approx(0.0f));
+}
+
 TEST_CASE("pathing: wet add unity not times reverb_pathing_attenuation", "[pathing]") {
     // Regression: path stereo used to be scaled by reverb_pathing_attenuation * pathing_mix per sample.
     // Steam Audio Unity/FMOD spatialize mixes path effect output at unity (distance is in SH coeffs).

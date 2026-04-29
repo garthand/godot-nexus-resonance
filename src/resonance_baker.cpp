@@ -314,7 +314,7 @@ bool ResonanceBaker::bake_with_probe_array(IPLContext context, IPLScene scene, I
         // Use our manual grid placement which places probes on a horizontal plane in the volume.
         if (generation_type == GEN_UNIFORM_FLOOR) {
             if (eng && eng->is_editor_hint()) {
-                UtilityFunctions::print_rich("[color=cyan]Nexus Resonance:[/color] Steam Audio UniformFloor returned 0 probes (scene may have no detectable floor). Using flat-plane fallback—probes placed on horizontal plane in volume, NOT on ResonanceGeometry floor. Consider GEN_VOLUME for full 3D coverage.");
+                UtilityFunctions::print_rich("[color=cyan]Nexus Resonance:[/color] Steam Audio UniformFloor returned 0 probes (scene may have no detectable floor). Using flat-plane fallback - probes placed on horizontal plane in volume, NOT on ResonanceGeometry floor. Consider GEN_VOLUME for full 3D coverage.");
             }
             PackedVector3Array points = generate_manual_grid(volume_transform, extents, spacing, generation_type, height_above_floor);
             if (!points.is_empty()) {

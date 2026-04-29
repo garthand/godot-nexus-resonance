@@ -62,6 +62,23 @@ Or use the helper script (set `$env:GODOT_PATH` if godot is not in PATH):
 
 Support scripts (not listed as GUT suites by name): `test/unit/bake_discovery_runtime_stub.gd` (runtime script match tests).
 
+### Headless smoke (AnimationPlayer + ResonancePlayer)
+
+Godot **TYPE_AUDIO** uses `AudioStreamPolyphonic`; **ResonancePlayer** must use native polyphonic playback for that type (wrapper crashes on Windows). Use **`convert_animation_audio_tracks_at_runtime`**, method tracks with `play_animation_audio_clip`, or editor converters for Steam.
+
+| Script | Purpose |
+|--------|---------|
+| `test/run_lightning_smoke.gd` | Loads `Examples/scenes/demo.tscn` and plays the `lightning` animation repeatedly (expects method-track audio on `ResonancePlayer_Thunder`). |
+| `test/run_resonance_method_track_smoke.gd` | Minimal scene: METHOD track → `play_animation_audio_clip`. |
+| `test/run_animation_audio_plain_smoke.gd` | Same as minimal but **AudioStreamPlayer3D** (native polyphonic reference). |
+| `test/run_reverb_tail_smoke.gd` | Verifies the v0.9.13 fix that lets the reverb / pathing tail decay after a one-shot stream ends and after explicit `ResonancePlayer.stop()` (asserts `mix_calls` keep advancing and `zero_input_count > 0` during the tail window). |
+
+Example:
+
+```powershell
+& godot --path audio_resonance_tool --headless -s res://test/run_lightning_smoke.gd
+```
+
 ### Fixtures
 
 `test/fixtures/` holds minimal `.tscn` files for substring and PackedScene tests (probe path lines, `minimal_root_for_collect.tscn` for scene path collection).

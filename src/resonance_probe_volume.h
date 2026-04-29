@@ -42,7 +42,9 @@ class ResonanceProbeVolume : public Node3D {
     int32_t probe_batch_handle = -1;
 
     // Bake targets: NodePaths to ResonancePlayer (sources) and ResonanceListener (listeners).
-    // Reserved for future per-volume bake targets; currently not passed to bake_manual_grid / bake_probes_for_volume.
+    // The editor bake pipeline issues one STATICSOURCE pass per valid bake_sources entry and one
+    // STATICLISTENER pass per valid bake_listeners entry so fixed outdoor emitters get
+    // position-dependent baked IRs that respect source->listener occlusion.
     Array bake_sources;
     Array bake_listeners;
     float bake_influence_radius = 10000.0f;
@@ -63,6 +65,7 @@ class ResonanceProbeVolume : public Node3D {
     uint32_t _get_bake_params_hash() const;
     /// Shared bake logic. p_precomputed_points: when non-null and non-empty, use bake_manual_grid; else bake_probes_for_volume.
     void _prepare_and_execute_bake(const PackedVector3Array* p_precomputed_points);
+    void _warn_native_bake_deprecated() const;
     void _ensure_viz_instance();
     bool _compute_is_probe_dirty() const;
     bool _has_valid_resonance_config() const;
@@ -122,8 +125,13 @@ class ResonanceProbeVolume : public Node3D {
 
     int64_t get_bake_params_hash() const;
 
+    /// @deprecated Reflection-only bake. Use ResonanceBakeRunner.run_bake([volume]) instead - it
+    /// runs the full pathing + static-source + static-listener pipeline, auto-re-exports stale
+    /// ResonanceStaticScene assets, takes an undo backup, and updates all bookkeeping hashes.
+    /// Scheduled for removal in 1.0.
     void bake_probes();
-    /// Bake using pre-computed floor raycast points. Call from worker thread; points must be generated on main thread via generate_probes_on_floor_raycast().
+    /// @deprecated Reflection-only bake with pre-computed floor raycast points. Use
+    /// ResonanceBakeRunner.run_bake([volume]) instead. Scheduled for removal in 1.0.
     void bake_probes_with_floor_points(const PackedVector3Array& p_points);
     /// For Uniform Floor: raycast down onto collision geometry. Returns empty if no collisions. Requires CollisionShape3D on floor. MUST be called from main thread.
     PackedVector3Array generate_probes_on_floor_raycast() const;

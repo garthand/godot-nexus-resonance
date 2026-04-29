@@ -8,8 +8,9 @@
 
 namespace godot {
 
-// Warn once when output buffer is smaller than our frame size (drops samples)
+// Warn once per process for frame-size mismatches.
 static bool s_frame_count_small_warned = false;
+static bool s_frame_count_large_warned = false;
 
 static void _sanitize_audio_buffer(IPLAudioBuffer* buf) {
     if (!buf || !buf->data)
@@ -128,15 +129,50 @@ void ResonanceMixerProcessor::cleanup() {
     }
     init_flags = MixerInitFlags::NONE;
     context = nullptr;
+    pending_stereo_left.clear();
+    pending_stereo_right.clear();
+    pending_read_index = 0;
 }
 
-void ResonanceMixerProcessor::_write_stereo_to_audio_frames(float* left, float* right, AudioFrame* out_frames, int frame_count) {
-    if (!left || !right || !out_frames || frame_count <= 0)
+void ResonanceMixerProcessor::_write_stereo_to_audio_frames_with_carry(AudioFrame* out_frames, int frame_count) {
+    if (!out_frames || frame_count <= 0 || !sa_stereo_buffer.data || !sa_stereo_buffer.data[0] || !sa_stereo_buffer.data[1])
         return;
-    // Stereo samples are already sanitized via _sanitize_audio_buffer(&sa_stereo_buffer) on both call paths.
-    for (int i = 0; i < frame_count; i++) {
-        out_frames[i].left += left[i];
-        out_frames[i].right += right[i];
+
+    // Append the newest decoded block to our carry queue.
+    const size_t append_base = pending_stereo_left.size();
+    pending_stereo_left.resize(append_base + static_cast<size_t>(frame_size));
+    pending_stereo_right.resize(append_base + static_cast<size_t>(frame_size));
+    for (int i = 0; i < frame_size; i++) {
+        pending_stereo_left[append_base + static_cast<size_t>(i)] = sa_stereo_buffer.data[0][i];
+        pending_stereo_right[append_base + static_cast<size_t>(i)] = sa_stereo_buffer.data[1][i];
+    }
+
+    const size_t pending_count = pending_stereo_left.size();
+    int written = 0;
+    if (pending_read_index < pending_count && pending_stereo_right.size() == pending_count) {
+        const int to_copy = std::min(frame_count, static_cast<int>(pending_count - pending_read_index));
+        for (int i = 0; i < to_copy; i++) {
+            const size_t idx = pending_read_index + static_cast<size_t>(i);
+            out_frames[i].left += pending_stereo_left[idx];
+            out_frames[i].right += pending_stereo_right[idx];
+        }
+        pending_read_index += static_cast<size_t>(to_copy);
+        written = to_copy;
+    }
+
+    if (pending_read_index >= pending_stereo_left.size()) {
+        pending_stereo_left.clear();
+        pending_stereo_right.clear();
+        pending_read_index = 0;
+    }
+
+    // If caller requested more than what has been decoded so far, leave zeros for the rest.
+    if (written < frame_count && !s_frame_count_large_warned) {
+        s_frame_count_large_warned = true;
+        UtilityFunctions::push_warning(
+            "Nexus Resonance: Reverb output frame_count (" + String::num_int64(frame_count) +
+            ") > audio_frame_size (" + String::num_int64(frame_size) +
+            "). Zero-padding missing samples until audio engine reinitializes to a matching frame size.");
     }
 }
 
@@ -195,12 +231,14 @@ bool ResonanceMixerProcessor::process_mixer_return(IPLReflectionMixer mixer_hand
                 std::chrono::duration_cast<std::chrono::microseconds>(t1 - t0).count()));
     }
 
-    int safe_frames = (frame_count < frame_size) ? frame_count : frame_size;
     if (frame_count < frame_size && !s_frame_count_small_warned) {
         s_frame_count_small_warned = true;
-        UtilityFunctions::push_warning("Nexus Resonance: Reverb output frame_count (" + String::num_int64(frame_count) + ") < audio_frame_size (" + String::num_int64(frame_size) + "). Some samples dropped. Match Godot mix buffer to audio_frame_size.");
+        UtilityFunctions::push_warning(
+            "Nexus Resonance: Reverb output frame_count (" + String::num_int64(frame_count) +
+            ") < audio_frame_size (" + String::num_int64(frame_size) +
+            "). Carrying tail samples across callbacks until audio engine reinitializes to a matching frame size.");
     }
-    _write_stereo_to_audio_frames(sa_stereo_buffer.data[0], sa_stereo_buffer.data[1], out_frames, safe_frames);
+    _write_stereo_to_audio_frames_with_carry(out_frames, frame_count);
     return true;
 }
 
@@ -219,8 +257,7 @@ bool ResonanceMixerProcessor::decode_ambisonic_to_stereo(IPLAudioBuffer* ambi_bu
                 std::chrono::duration_cast<std::chrono::microseconds>(t1 - t0).count()));
     }
 
-    int safe_frames = (frame_count < frame_size) ? frame_count : frame_size;
-    _write_stereo_to_audio_frames(sa_stereo_buffer.data[0], sa_stereo_buffer.data[1], out_frames, safe_frames);
+    _write_stereo_to_audio_frames_with_carry(out_frames, frame_count);
     return true;
 }
 } // namespace godot

@@ -49,9 +49,9 @@
     },
     "mat_fe5db81a-b4de-4e41-bd74-ca879df7234c": {
         "name": "M_Cladding_01",
-        "relative_path": "props/materials/M_Cladding_01.tres",
+        "relative_path": "props/assets/LVL1_Stage1_Ceiling/M_Cladding_01.tres",
         "content_hash": "75faf19f9dd5c763cf836a2381d631df29a15e8f6edf1d189d5a247c4d2e247e",
-        "source_blend_file": "Walls_Collection.blend"
+        "source_blend_file": "teststage.blend"
     },
     "mat_82cde63e-1e05-4169-8581-49bef86e2399": {
         "name": "M_Glass_01",
@@ -64,5 +64,23 @@
         "relative_path": "props/skeletal_assets/CH_Clown/WhiteClown_material.tres",
         "content_hash": "6c282334ece04fe390c4ae77d441d77d1190389bcd5b5e83e05b0dd15d5b6339",
         "source_blend_file": "clown.blend"
+    },
+    "mat_0ad03986-fbb1-4ede-9262-aa9b0db755e3": {
+        "name": "M_Gramophone",
+        "relative_path": "props/assets/SM_Gramophone_tube/M_Gramophone.tres",
+        "content_hash": "193d36fff6d7b1cf6fa655f9963b3d1f93ab527c5bb29077b6b1621fac447a48",
+        "source_blend_file": "gramophone.blend"
+    },
+    "mat_c0570f66-41bb-4d41-8c70-13948c529ba8": {
+        "name": "Material",
+        "relative_path": "props/materials/Material.tres",
+        "content_hash": "47a1286330db27bd0555e3e9d3ba060faa181f54bdc505bbd883e8128cdcba1e",
+        "source_blend_file": "downwell.blend"
+    },
+    "mat_22aef177-f506-4137-90e9-936ae0e8fd96": {
+        "name": "M_stalagmit",
+        "relative_path": "props/assets/stalagmit/M_stalagmit.tres",
+        "content_hash": "a44c996d1c70408c917e9c582d56eb201709c92a79094429684071d54a735db6",
+        "source_blend_file": "downwell.blend"
     }
 }

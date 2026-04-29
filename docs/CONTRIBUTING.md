@@ -86,7 +86,7 @@ On Linux/macOS: `./build/tests/nexus_resonance_tests`
 
 1. Create a branch from `main` or `master`.
 2. Make your changes. Ensure tests pass.
-3. Update `CHANGELOG.md` under `[Unreleased]` if the change is user-facing.
+3. Update `docs/CHANGELOG.md` for user-facing changes (add to the upcoming release section; use `[Unreleased]` only when that section exists).
 4. Submit a pull request with a clear description.
 
 ## Reporting Bugs

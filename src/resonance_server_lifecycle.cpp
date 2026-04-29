@@ -149,6 +149,8 @@ void ResonanceServer::_apply_config(Dictionary config) {
     reverb_influence_radius = config_.reverb_influence_radius;
     reverb_max_distance = config_.reverb_max_distance;
     reverb_transmission_amount = config_.reverb_transmission_amount;
+    apply_occlusion_to_baked_reflections = config_.apply_occlusion_to_baked_reflections;
+    apply_distance_curve_to_reflections = config_.apply_distance_curve_to_reflections;
     reflection_type = config_.reflection_type;
     default_reflections_mode = config_.default_reflections_mode;
     hybrid_reverb_transition_time = config_.hybrid_reverb_transition_time;
@@ -581,6 +583,8 @@ void ResonanceServer::_worker_thread_func() {
 //   lets cached reflection/reverb data age. RunPathing is independent; pathing outputs refresh only when RunPathing runs.
 void ResonanceServer::_run_phonon_simulation_locked(const IPLCoordinateSpace3& current_listener, bool run_direct, bool run_reflection_sim,
                                                     bool run_pathing_sim) {
+    // Phase 1: apply pending iplSourceAdd / iplSourceRemove queues before anything else touches the simulator.
+    _drain_pending_source_lifecycle_assume_locked();
     uint64_t us_dyn_apply = 0;
     {
         const auto td0 = std::chrono::steady_clock::now();
@@ -877,6 +881,31 @@ void ResonanceServer::_shutdown_steam_audio() {
         worker_cv.notify_all();
         if (worker_thread.joinable())
             worker_thread.join();
+    }
+    // Phase 1: drain pending source lifecycle queues. The worker is gone; release any IPLSource retains we
+    // still hold and drop adds that never ran (their source_manager entry will be freed with release_all).
+    {
+        std::vector<PendingSourceAdd> local_adds;
+        std::vector<IPLSource> local_removes;
+        std::vector<int32_t> local_post_remove;
+        {
+            std::lock_guard<std::mutex> lock(pending_source_lifecycle_mutex_);
+            local_adds.swap(pending_source_adds_);
+            local_removes.swap(pending_source_removes_);
+            local_post_remove.swap(pending_source_post_remove_cleanup_);
+        }
+        for (IPLSource src : local_removes) {
+            if (src) {
+                IPLSource tmp = src;
+                iplSourceRelease(&tmp);
+            }
+        }
+        (void)local_adds;
+        (void)local_post_remove;
+    }
+    {
+        std::lock_guard<std::mutex> lock(pending_attach_handles_mutex_);
+        pending_attach_handles_.clear();
     }
     {
         std::lock_guard<std::recursive_mutex> cb_lock(_attenuation_callback_mutex);

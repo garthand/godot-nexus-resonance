@@ -5,27 +5,82 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),  
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.9.13] - 2026-04-29
+
+### Added
+
+- **AnimationPlayer support** - New `ResonancePlayer.play_animation_audio_clip(stream, from_position)` for AnimationPlayer method tracks. Editor tool to convert existing AnimationPlayer audio clips (**Project → Tools → Nexus Resonance**), plus runtime option `convert_animation_audio_tracks_at_runtime` to apply the same conversion once per scene.
+- **Multiple bake entries per probe volume** - `ResonanceProbeVolume.bake_sources` and `bake_listeners` now bake every valid entry (previously only the first). Combined with per-player `reflections_type = Baked Static Source` + `current_baked_source`, this allows position-dependent baked IRs for several fixed emitters in one volume.
+- `**ResonanceRuntimeConfig.apply_distance_curve_to_reflections`** - Baked / realtime reverb now fades with the per-source 3D distance curve. Turn off for constant-gain wet feeds (2D ambience beds). Per-source override available.
+- `**ResonanceRuntimeConfig.apply_occlusion_to_baked_reflections`** (default **off**, opt-in) - Damps **Baked Reverb** input by the direct-path `occlusion × transmission` factor. Useful for sealed-room where outdoor emitters would otherwise leak a reverb tail indoors. Off by default to keep legitimate around-corner reverb. Per-source override available.
+- **Per-source wet-path overrides on `ResonancePlayerConfig`** - `apply_distance_curve_to_reflections_override`, `apply_occlusion_to_baked_reflections_override`, and `reverb_transmission_amount_input` / `reverb_transmission_amount` let individual sources override the global policy (typical setup: enable occlusion damping only on outdoor thunder/rain emitters).
+- **Audio-thread health monitors** - `Audio/output_underruns_total` (Core), `Audio/late_mix_total`, `Audio/max_block_time_us`, `Audio/active_voice_count` (Standard). Watch these to diagnose audio-thread starvation versus main-thread / GPU stalls.
+- **Server source / probe-batch counters** - `ResonanceServer.get_active_source_count()` / `get_active_probe_batch_count()` plus matching `Server/active_source_count` (Core) and `Server/active_probe_batch_count` (Full) monitors. Lock-free, safe to poll per frame.
+
+### Deprecated
+
+- `**ResonanceProbeVolume.bake_probes()` and `bake_probes_with_floor_points()`** - Reflection-only bake paths. `ResonanceBakeRunner.run_bake([volume])` is a strict superset (pathing + static-source + static-listener passes, automatic re-export of stale `ResonanceStaticScene` assets, undo backup, full incremental-rebake bookkeeping). Calling the native API now emits a deprecation warning. Scheduled for removal in 1.0.
+
+### Changed
+
+- **Main thread no longer blocks on the simulation mutex** - `ResonancePlayer.play()`, dynamic geometry updates, and audio-thread fetches are decoupled from the worker's reflection ticks. Source add / remove / update operations are queued for the next worker tick; transforms flip an atomic; audio-thread fetches always serve the worker-populated double-buffered caches. Eliminates frame spikes when interacting with spatial sources.
+- **Steam Audio effects pre-allocated on the main thread** - `ResonanceStreamPlayback` allocates effects and IPL audio buffers when the playback is instantiated instead of inside the first `_mix` call, removing multi-millisecond stalls on `play()` for polyphonic sources.
+- **Reflection / convolution mixer feed** - Convolution and TAN scale the input to `iplReflectionEffectApply` with `reflections_mix_level × source linear volume` (no extra `reverb_pathing_attenuation` or air absorption on that tap). When `reverb_max_distance > 0`, an additional linear 1→0 wet factor is applied to convolution / TAN feed, parametric / hybrid wet output, and pathing stereo.
+- **Performance monitor tiers re-balanced** - `Worker/sync_fetch_reflections_us` and `Main/last_dynamic_transform_enqueue_us` promoted to **Standard** (correlate with reflection / dynamic-geometry stutter); `Main/runtime_server_tick_us` and `Main/runtime_physics_tick_us` moved to **Full** (only receive values under those tiers anyway). `Worker/last_wake_heavy` renamed to `Worker/heavy_tick_flag` to clarify the 0/1 semantics.
+- **Convolution output block-size mismatch handling** - Reverb mixer decode now carries leftover stereo samples across callbacks when `frame_count < audio_frame_size` instead of dropping them, reducing choppy output during temporary frame-size mismatch windows before reinit.
+
+### Fixed
+
+- **Around-corner baked reverb going near-silent** - Baked Reverb occlusion damping is now opt-in (`apply_occlusion_to_baked_reflections`, default off), so a source behind a corner keeps its reverb tail.
+- **Baked reverb not fading with distance** - The reflection-effect input now scales with the per-source 3D distance curve. Previously the wet feed used constant gain regardless of distance.
+- **Baked reverb / pathing after audio reinit** - Probe batches request an immediate heavy tick on registration, and the runtime reloads probe volumes in the same frame as static geometry. Fixes baked-only stalls where parametric / hybrid `fetch_reverb_params` stayed false and pathing outputs stayed stale until the next simulation interval.
+- **Multiple `ResonanceStaticScene` after audio reinit** - After `reinit_audio_engine` (e.g. reflection type or frame size change), every static scene is reloaded additively instead of only the first one.
+- **Probe bake vs. multiple static scenes** - The static-scene params hash now combines all `ResonanceStaticScene` assets and transforms in DFS order, so changing or moving any nested static pack marks bakes stale. Existing single-scene bakes may show outdated until re-baked once.
+- `**fetch_reverb_params` distance gate** - Honors per-source reflection-distance gating so disabling reflections beyond `realtime_reflection_max_distance` is no longer bypassed via the audio-thread cache path.
+- **Parametric/Hybrid split routing** - Each player's effective reverb bus is now passed to `set_reverb_split_output`, so split wet can target a dedicated reverb bus while dry stays on another bus.
+- **AnimationPlayer audio clips with ResonancePlayer (Windows)** - Avoids a crash; Steam Audio works via method tracks or via the new conversion tool.
+- `**ResonanceStreamPlayback` teardown / mix safety** - `_stop` halts the nested base playback before unregistering from the player to reduce teardown races; `_mix` clamps `mix_audio()` sample count to the requested frame count.
+- **Reverb / pathing tail abruptly cut when a one-shot stream finished or `stop()` was called** - Per-source playbacks now stay alive long enough for the parametric / convolution / hybrid reverb tail and the pathing tail to decay naturally. `ResonancePlayer.stop()` performs a soft stop (halts the dry input but keeps the playback mixing while the IPL effect tails and ring buffers drain), and `_mix` always returns the requested frame count so the AudioServer keeps polling until the tail is exhausted (capped by `max_reverb_duration` as a safety net). `ResonancePlayer.stop()` is now also exposed to GDScript.
+- **Audio-thread debug I/O removed from runtime path** - Temporary NDJSON file logging hooks were removed from listener/path processors to prevent filesystem/mutex stalls in the realtime mix path.
+- **Ambisonic stop now drains pending output** - `ResonanceAmbisonicInternalPlayback` keeps mixing until its internal input/output rings are empty after `stop()`, reducing abrupt tail truncation on stop events.
+- **Reverb output sanitization before final clamp** - Reverb bus now sanitizes NaN/Inf samples before output limiting to avoid propagating invalid floats under edge cases.
+- `**Export Active Scene to OBJ` - "Can't find file ... during file reimport" error** - The newly written OBJ is now registered with `EditorFileSystem.update_file()` before `reimport_files()`, so Godot can locate and import it immediately instead of failing because its filesystem cache was stale.
+- **Probe bake silently used stale `ResonanceStaticScene` asset** - Adding new `ResonanceGeometry` after the last static-scene export caused the bake to ignore the new geometry. The bake runner now compares `ResonanceStaticScene.export_hash` to the live scene hash and re-exports the static asset automatically before baking when they diverge.
+- **Mojibake in bake / probe-batch logs** - Replaced U+2014 em-dashes with ASCII `-` in the `UniformFloor returned 0 probes` fallback message and the `reload_probe_batch skipped` warnings so they render correctly in CP-1252 / non-UTF-8 terminals.
+- `**ResonanceRuntimeConfig` change signals were dead in play mode** - `_connect_runtime_signals` returned immediately outside the editor, so `reflection_type_changed`, `pathing_enabled_changed`, and `audio_frame_size_changed` never fired during gameplay. Settings menus that tweaked these at runtime had no effect until scene reload. Connect path now mirrors `_disconnect_runtime_signals` and runs in both editor and play mode.
+- `**ResonanceProbeVolume.set_probe_data` ignored hot-swaps at runtime** - Assigning a different `ResonanceProbeData` to a live volume kept the previously registered IPL probe batch handle, so reverb / pathing / hybrid stayed on the old probes. The setter now calls `reload_probe_batch()` automatically when the data Ref actually changes during play.
+- `**ResonanceStaticScene.set_static_scene_asset` did not rebuild the IPL scene** - Swapping a static-scene asset at runtime (level streaming, dynamic loaders) left Steam Audio on the previous merged static mesh until the next `reinit_audio_engine`. The setter now requests a deferred, debounced `request_static_scene_reload()` on `ResonanceRuntime`.
+- `**ResonanceGeometry.set_material` did not refresh IPL meshes** - Swapping a `ResonanceMaterial` Ref kept Steam Audio on the previous absorption / scattering / transmission coefficients. The setter now triggers `_create_meshes()` when the geometry is in the tree.
+- **Inspector "Probes baked" status lied for multi-source / multi-listener volumes** - `get_volume_bake_status` only inspected the first NodePath in `bake_sources` / `bake_listeners`, so moving any later entry left the volume reported as up-to-date. Status now mirrors the bake pipeline's `compute_position_radius_list_hash` for multi-entry lists.
+- **Native `ResonanceProbeVolume.bake_probes()` produced inconsistent metadata** - Pathing / static-source / static-listener / static-scene hashes are populated by `ResonanceBakeRunner.run_bake()` only. The native API is now deprecated (see *Deprecated* above); calls emit a warning that points users at `run_bake()`. Probe data with a missing `bake_params_hash` is now treated as dirty (was: silently trusted as "valid legacy data") so a forced re-bake catches pre-hash leftovers.
+- `**Export Active Scene` returned a stale ResourceLoader cache on repeat exports** - `load(save_path)` after `ResourceSaver.save` could hand back the previously cached `ResonanceGeometryAsset` if the same path had been loaded earlier in the session. Switched to `ResourceLoader.load(..., CACHE_MODE_REPLACE)`.
+
+### Documentation
+
+- `**wiki/ResonanceProbeVolume-and-BakeConfig.md`** - Documented native bake limitations, post-bake world-fixed probe positions, and the intentional `bake_num_threads` exclusion from the params hash.
+- `**wiki/ResonancePlayer-and-PlayerConfig.md`** - Documented the ~15-frame override propagation latency and how to force an immediate switch.
+
 ## [0.9.12] - 2026-04-13
 
 ### Added
 
-- **Export: text or binary** — In **Project Settings → Nexus → Resonance → Export** you can save exported geometry and probe bake data as usual text (`.tres`) or as smaller binary (`.res`) files. After changing the option, export or bake again. New probe files use a `*_batch` name pattern; old `*_baked_probes*` files are still found when cleaning up.
-- **Custom physics + many reflection rays** — If reflections use Godot's physics, you can choose how many rays are handled in one batch (default 16) for smoother CPU use; set to **1** for the old behavior. Does not affect the other scene types.
-- **More runtime knobs** — Reflections and pathing can use separate update rates if you need that. Realtime reflections can ignore sources beyond a set distance from the listener (off by default).
-- **Profiling** — Optional timing for the convolution audio path and matching entries under **Debugger → Monitors**.
+- **Export: text or binary** - In **Project Settings → Nexus → Resonance → Export** you can save exported geometry and probe bake data as usual text (`.tres`) or as smaller binary (`.res`) files. After changing the option, export or bake again. New probe files use a `*_batch` name pattern; old `*_baked_probes*` files are still found when cleaning up.
+- **Custom physics + many reflection rays** - If reflections use Godot's physics, you can choose how many rays are handled in one batch (default 16) for smoother CPU use; set to **1** for the old behavior. Does not affect the other scene types.
+- **More runtime knobs** - Reflections and pathing can use separate update rates if you need that. Realtime reflections can ignore sources beyond a set distance from the listener (off by default).
+- **Profiling** - Optional timing for the convolution audio path and matching entries under **Debugger → Monitors**.
 
 ### Changed
 
-- **AmbisonicsPlayer** — Per-channel stream slots were replaced by a clear **order** in the inspector (1st / 2nd / 3rd) and a matching channel list. The player groups decode options and warns if the stream type does not fit.
-- **Realtime rays** — The zero-rays option is labeled **Off**; quick presets include 8 / 16 / 32 rays.
-- **Steam Audio debug** — Validation and CPU-related engine checks moved from the shared config resource to the **ResonanceRuntime** node (**Runtime Debug**). Set them there again if they lived on a saved `.tres`.
-- **Baked-only reverb** — Less unnecessary work when only baked probe data drives the reverb.
-- **Performance monitors** — **Off** / **Core** / **Standard** (default, fewer graphs) / **Full** (everything as before).
+- **AmbisonicsPlayer** - Per-channel stream slots were replaced by a clear **order** in the inspector (1st / 2nd / 3rd) and a matching channel list. The player groups decode options and warns if the stream type does not fit.
+- **Realtime rays** - The zero-rays option is labeled **Off**; quick presets include 8 / 16 / 32 rays.
+- **Steam Audio debug** - Validation and CPU-related engine checks moved from the shared config resource to the **ResonanceRuntime** node (**Runtime Debug**). Set them there again if they lived on a saved `.tres`.
+- **Baked-only reverb** - Less unnecessary work when only baked probe data drives the reverb.
+- **Performance monitors** - **Off** / **Core** / **Standard** (default, fewer graphs) / **Full** (everything as before).
 
 ### Fixed
 
-- **Reflections + convolution** — Fixed a slowdown that made hybrid/convolution setups much heavier than intended.
-- **Closing the game** — Rare crash when quitting a built game should be gone.
+- **Reflections + convolution** - Fixed a slowdown that made hybrid/convolution setups much heavier than intended.
+- **Closing the game** - Rare crash when quitting a built game should be gone.
 
 ## [0.9.11] - 2026-04-04
 

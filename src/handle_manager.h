@@ -1,6 +1,7 @@
 #ifndef HANDLE_MANAGER_H
 #define HANDLE_MANAGER_H
 
+#include <atomic>
 #include <climits>
 #include <cstdint>
 #include <mutex>
@@ -33,11 +34,19 @@ class HandleManagerBase {
     HandleManagerBase& operator=(const HandleManagerBase&) = delete;
     HandleManagerBase& operator=(HandleManagerBase&&) = delete;
 
+  public:
+    /// Lock-free snapshot of the number of currently held items. Maintained alongside [code]items[/code]
+    /// so debug/perf monitors can read without blocking the main/audio thread on [code]mutex[/code].
+    int32_t size_approx() const { return item_count_.load(std::memory_order_relaxed); }
+
   protected:
     int32_t next_handle = 0;
     std::priority_queue<int32_t, std::vector<int32_t>, std::greater<int32_t>> free_handles;
     std::unordered_map<int32_t, T> items;
     mutable std::mutex mutex;
+    /// Mirror of [code]items.size()[/code], updated under [code]mutex[/code] so external readers can observe
+    /// it without locking. Kept separate from the map because unordered_map::size() is not atomic.
+    std::atomic<int32_t> item_count_{0};
 
     /// Returns a new handle, or -1 on overflow (no free handles and next_handle would exceed INT32_MAX).
     int32_t alloc_handle() {
@@ -60,6 +69,7 @@ class HandleManagerBase {
                 ReleaseFunc(&pair.second);
         }
         items.clear();
+        item_count_.store(0, std::memory_order_relaxed);
     }
 
     /// Transfers all items to out and clears the manager. Caller must release each item.
@@ -70,6 +80,7 @@ class HandleManagerBase {
             out.push_back(pair.second);
         }
         items.clear();
+        item_count_.store(0, std::memory_order_relaxed);
         free_handles = std::priority_queue<int32_t, std::vector<int32_t>, std::greater<int32_t>>();
         next_handle = 0;
     }

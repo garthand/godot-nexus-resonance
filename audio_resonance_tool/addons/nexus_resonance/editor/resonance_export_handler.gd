@@ -103,33 +103,19 @@ func ensure_resonance_meshes_dir() -> bool:
 	return true
 
 
-## Schedules OBJ reimport after a few frames so the filesystem sees closed files, without calling
-## scan() first (scan + reimport_files duplicates the "reimport" task and triggers progress_dialog errors).
+## Registers freshly written OBJ files in the EditorFileSystem cache via update_file() and then
+## triggers a reimport. Avoids scan() which would conflict with reimport_files() ("Task 'reimport'
+## already exists"), and avoids the "Can't find file ... during file reimport" error that occurs
+## when reimport_files() runs before the editor has discovered the new file.
 func _request_obj_reimport(paths: PackedStringArray) -> void:
 	if paths.is_empty():
 		return
-	var base = editor_interface.get_base_control()
-	if not base:
+	var fs: EditorFileSystem = editor_interface.get_resource_filesystem()
+	if not fs:
 		return
-	var tree = base.get_tree()
-	if not tree:
-		return
-	_defer_obj_reimport_frames_left(paths, 2)
-
-
-func _defer_obj_reimport_frames_left(paths: PackedStringArray, frames_left: int) -> void:
-	var base = editor_interface.get_base_control()
-	if not base:
-		return
-	var tree = base.get_tree()
-	if not tree:
-		return
-	if frames_left <= 0:
-		editor_interface.get_resource_filesystem().reimport_files(paths)
-		return
-	tree.process_frame.connect(
-		func(): _defer_obj_reimport_frames_left(paths, frames_left - 1), CONNECT_ONE_SHOT
-	)
+	for p in paths:
+		fs.update_file(p)
+	fs.reimport_files(paths)
 
 
 func collect_scene_paths_for_obj(node: Node, out: Dictionary) -> void:
@@ -331,7 +317,10 @@ func export_active_scene(_unused: Variant = null) -> void:
 		static_scene_node.name = "ResonanceStaticScene"
 		root.add_child(static_scene_node)
 		static_scene_node.owner = root
-	var asset: Resource = load(save_path) as Resource
+	# CACHE_MODE_REPLACE forces ResourceLoader to read the freshly written file from disk and replace
+	# any cached instance. Plain `load()` would keep returning the stale resource on repeat exports
+	# to the same path because Godot's resource cache is keyed by `res://` path, not by mtime.
+	var asset: Resource = ResourceLoader.load(save_path, "", ResourceLoader.CACHE_MODE_REPLACE)
 	if asset:
 		static_scene_node.static_scene_asset = asset
 		static_scene_node.scene_name_when_exported = scene_name

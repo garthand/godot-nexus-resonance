@@ -68,10 +68,10 @@
 			Bus for Direct + Pathing when bus_override is Custom. Must exist in Audio Bus Layout.
 		</member>
 		<member name="reverb_bus_override" type="int" default="-1">
-			Reverb bus override. -1 = Use Global (RuntimeConfig.reverb_bus_name), 0 = Custom (use reverb_bus_name).
+			Reverb bus override. -1 = Use Global (RuntimeConfig.reverb_bus_name), 0 = Custom (use reverb_bus_name). For Parametric/Hybrid, this selects the split wet output bus when it differs from the dry bus. For Convolution/TAN, the Steam reflection mixer remains global; this field does not create an extra convolution mixer per source.
 		</member>
 		<member name="reverb_bus_name" type="StringName" default="">
-			Bus for reverb when reverb_bus_override is Custom. Must exist in Audio Bus Layout.
+			Bus for Parametric/Hybrid split wet when reverb_bus_override is Custom (must exist in Audio Bus Layout). When dry and wet buses differ, wet is played on this bus. Convolution/TAN wet stays on the runtime [member ResonanceRuntimeConfig.reverb_bus_name] bus; its Godot send follows [member ResonanceRuntimeConfig.bus].
 		</member>
 		<member name="direct_binaural_override" type="int" default="-1">
 			Per-source binaural override. -1 = use global (RuntimeConfig.reverb_binaural), 0 = panning, 1 = force HRTF.
@@ -120,6 +120,18 @@
 		</member>
 		<member name="pathing_enabled_override" type="int" default="-1">
 			Enable pathing for this source. -1=Use Global, 0=Disabled, 1=Enabled.
+		</member>
+		<member name="apply_occlusion_to_baked_reflections_override" type="int" default="-1">
+			Per-source override for [member ResonanceRuntimeConfig.apply_occlusion_to_baked_reflections]. -1=Use Global, 0=Disabled, 1=Enabled. Enabled = dampen this source's baked REVERB wet input by its direct-path occlusion/transmission. Disabled = keep wet input unattenuated regardless of the global flag. See [code]docs/baked-reflections-and-outdoor-sources.md[/code] for workflow guidance.
+		</member>
+		<member name="apply_distance_curve_to_reflections_override" type="int" default="-1">
+			Per-source override for [member ResonanceRuntimeConfig.apply_distance_curve_to_reflections]. -1=Use Global (Unity-parity default: Enabled), 0=Disabled, 1=Enabled. Disabled = this source's wet input does not fade with distance (useful for 2D ambience beds or sources where the distance curve already lives elsewhere).
+		</member>
+		<member name="reverb_transmission_amount_input" type="int" default="0">
+			0=Use Global ([member ResonanceRuntimeConfig.reverb_transmission_amount]), 1=User Defined (use [member reverb_transmission_amount]). Only effective when the wet-path occlusion damping is on (global or [member apply_occlusion_to_baked_reflections_override]).
+		</member>
+		<member name="reverb_transmission_amount" type="float" default="1.0">
+			Per-source transmission damping on reverb (0-1). 0 = no damping, 1 = full damping. Only used when [member reverb_transmission_amount_input] is User Defined and the wet-path occlusion damping is on.
 		</member>
 		<member name="simulation_occlusion_enabled" type="bool" default="true">
 			When [code]false[/code], occlusion rays are not simulated; use User Defined [member occlusion_input] and [member occlusion_value] for manual occlusion.

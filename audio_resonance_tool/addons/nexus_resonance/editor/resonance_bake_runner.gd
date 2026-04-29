@@ -45,6 +45,26 @@ func _init(p_editor_interface: EditorInterface) -> void:
 	_pipeline = _BakePipeline.new(self)
 
 
+func shutdown() -> void:
+	# Break RefCounted reference cycles and release UI/resources on editor shutdown.
+	_bake_in_progress = false
+	if _progress_ui and _progress_ui.has_method("shutdown"):
+		_progress_ui.shutdown()
+	if _backup and _backup.has_method("shutdown"):
+		_backup.shutdown()
+	if _server_setup and _server_setup.has_method("shutdown"):
+		_server_setup.shutdown()
+	if _pipeline and _pipeline.has_method("shutdown"):
+		_pipeline.shutdown()
+
+	_progress_ui = null
+	_backup = null
+	_server_setup = null
+	_pipeline = null
+	export_static_callback = Callable()
+	editor_interface = null
+
+
 func run_bake(volumes: Array[Node]) -> void:
 	if volumes.is_empty() or _bake_in_progress:
 		return
@@ -53,8 +73,36 @@ func run_bake(volumes: Array[Node]) -> void:
 		_log_and_show_error("No scene open", "Open a scene before baking.")
 		return
 	var static_scene_node = _BakeDiscovery.find_resonance_static_scene_for_bake(volumes, root)
+	_auto_reexport_static_scene_if_stale(root, static_scene_node)
 	var static_asset = static_scene_node.get("static_scene_asset") if static_scene_node else null
 	_do_run_bake_with_backup(volumes, root, static_scene_node, static_asset)
+
+
+## Re-runs export_static_callback when the [ResonanceStaticScene] asset is missing or its
+## stored [code]export_hash[/code] does not match the live scene's current geometry hash.
+## Prevents bakes from silently using a stale, previously exported static asset (e.g. floors
+## or other [ResonanceGeometry] added after the last manual export are otherwise invisible
+## to Steam Audio's [code]UniformFloor[/code] probe placement and reflection rays).
+func _auto_reexport_static_scene_if_stale(root: Node, static_scene_node: Node) -> void:
+	if not static_scene_node or not export_static_callback.is_valid():
+		return
+	if not ResonanceServerAccess.has_server():
+		return
+	var srv: Variant = ResonanceServerAccess.get_server()
+	if not srv or not srv.has_method("get_static_scene_hash"):
+		return
+	var current_hash: int = srv.get_static_scene_hash(root)
+	if current_hash == 0:
+		return
+	var has_valid: bool = (
+		static_scene_node.has_method("has_valid_asset") and static_scene_node.has_valid_asset()
+	)
+	var stored_hash: int = (
+		static_scene_node.export_hash if "export_hash" in static_scene_node else 0
+	)
+	if has_valid and stored_hash == current_hash:
+		return
+	export_static_callback.call(null)
 
 
 func _do_run_bake_with_backup(
@@ -147,55 +195,56 @@ func get_volume_bake_status(vol: Node) -> String:
 	var vols: Array[Node] = []
 	vols.append(vol)
 	var root = _get_edited_scene_root(vols)
-	var static_scene_node = _BakeDiscovery.find_resonance_static_scene_for_bake(vols, root)
-	var static_asset = static_scene_node.get("static_scene_asset") if static_scene_node else null
-	if static_asset and ResonanceServerAccess.has_server():
-		var srv = ResonanceServerAccess.get_server()
-		if (
-			srv.has_method("get_geometry_asset_hash")
-			and probe_data.has_method("get_static_scene_params_hash")
-		):
-			var current_hash = srv.get_geometry_asset_hash(static_asset)
-			var stored = probe_data.get_static_scene_params_hash()
-			if current_hash != 0 and (stored == 0 or stored != current_hash):
-				return "Outdated"
+	var union_static_hash: int = _BakeHashes.compute_all_resonance_static_scenes_params_hash(root)
+	if union_static_hash != 0 and probe_data.has_method("get_static_scene_params_hash"):
+		var stored_union: int = probe_data.get_static_scene_params_hash()
+		if stored_union == 0 or stored_union != union_static_hash:
+			return "Outdated"
+	var rad = (
+		vol.get("bake_influence_radius")
+		if "bake_influence_radius" in vol
+		else DEFAULT_BAKE_INFLUENCE_RADIUS
+	)
 	if bc.static_source_enabled and root:
-		var src = _BakeDiscovery.resolve_bake_node_for_volume(
-			vol, root, "bake_sources", "ResonancePlayer"
+		var src_hash := _bake_entries_hash(vol, root, "bake_sources", "ResonancePlayer", rad)
+		var ssh = (
+			probe_data.get_static_source_params_hash()
+			if probe_data.has_method("get_static_source_params_hash")
+			else 0
 		)
-		if src and src is Node3D:
-			var rad = (
-				vol.get("bake_influence_radius")
-				if "bake_influence_radius" in vol
-				else DEFAULT_BAKE_INFLUENCE_RADIUS
-			)
-			var sh = _BakeHashes.compute_position_radius_hash(src.global_position, rad)
-			var ssh = (
-				probe_data.get_static_source_params_hash()
-				if probe_data.has_method("get_static_source_params_hash")
-				else 0
-			)
-			if ssh == 0 or ssh != sh:
-				return "Outdated"
+		if src_hash != 0 and (ssh == 0 or ssh != src_hash):
+			return "Outdated"
 	if bc.static_listener_enabled and root:
-		var lst = _BakeDiscovery.resolve_bake_node_for_volume(
-			vol, root, "bake_listeners", "ResonanceListener"
+		var lst_hash := _bake_entries_hash(vol, root, "bake_listeners", "ResonanceListener", rad)
+		var lsh = (
+			probe_data.get_static_listener_params_hash()
+			if probe_data.has_method("get_static_listener_params_hash")
+			else 0
 		)
-		if lst and lst is Node3D:
-			var rad = (
-				vol.get("bake_influence_radius")
-				if "bake_influence_radius" in vol
-				else DEFAULT_BAKE_INFLUENCE_RADIUS
-			)
-			var lh = _BakeHashes.compute_position_radius_hash(lst.global_position, rad)
-			var lsh = (
-				probe_data.get_static_listener_params_hash()
-				if probe_data.has_method("get_static_listener_params_hash")
-				else 0
-			)
-			if lsh == 0 or lsh != lh:
-				return "Outdated"
+		if lst_hash != 0 and (lsh == 0 or lsh != lst_hash):
+			return "Outdated"
 	return "Probes baked"
+
+
+## Returns the position/radius hash for [param vol].[param property] using the same Multi/Single
+## logic as [VolumeBakeContext]: list hash for >1 entry, single hash for one entry, 0 for empty.
+## Without this, the inspector status only inspected the first NodePath and could report
+## [code]"Probes baked"[/code] when later entries had moved since the last bake.
+func _bake_entries_hash(
+	vol: Node, root: Node, property: String, target_class: String, rad: float
+) -> int:
+	var nodes: Array = _BakeDiscovery.resolve_bake_nodes_for_volume(
+		vol, root, property, target_class
+	)
+	var entries: Array = []
+	for n in nodes:
+		if n is Node3D:
+			entries.append({"pos": n.global_position, "radius": rad})
+	if entries.is_empty():
+		return 0
+	if entries.size() == 1:
+		return _BakeHashes.compute_position_radius_hash(entries[0].pos, entries[0].radius)
+	return _BakeHashes.compute_position_radius_list_hash(entries)
 
 
 ## Ensures ResonanceServer is initialized and refreshes probe visuals.

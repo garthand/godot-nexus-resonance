@@ -125,6 +125,10 @@ void ResonanceServerConfig::apply(const Dictionary& config,
         reverb_transmission_amount = 0.0f;
     if (reverb_transmission_amount > 1.0f)
         reverb_transmission_amount = 1.0f;
+    apply_occlusion_to_baked_reflections = config_bool(config, "apply_occlusion_to_baked_reflections",
+                                                       apply_occlusion_to_baked_reflections);
+    apply_distance_curve_to_reflections = config_bool(config, "apply_distance_curve_to_reflections",
+                                                      apply_distance_curve_to_reflections);
     reflection_type = config_int(config, "reflection_type", reflection_type);
     if (reflection_type < resonance::kReflectionConvolution)
         reflection_type = resonance::kReflectionConvolution;

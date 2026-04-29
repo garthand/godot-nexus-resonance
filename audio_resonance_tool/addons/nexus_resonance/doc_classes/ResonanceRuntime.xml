@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="UTF-8" ?>
+<class name="ResonanceRuntime" inherits="Node" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:noNamespaceSchemaLocation="../class.xsd">
+	<brief_description>
+		Scene node that initializes [ResonanceServer], applies [ResonanceRuntimeConfig], and ticks the Steam Audio simulation.
+	</brief_description>
+	<description>
+		Add one ResonanceRuntime to your scene and assign a [ResonanceRuntimeConfig]. It initializes the native server in play mode, sets bake params, and calls [method ResonanceServer.tick] each frame.
+		[b]Static geometry:[/b] Every [ResonanceStaticScene] under the scene tree root with a valid [member ResonanceStaticScene.static_scene_asset] is loaded additively when the server exposes [code]clear_static_scenes[/code] and [code]add_static_scene_from_asset[/code]. After [method ResonanceServer.reinit_audio_engine] (for example after [ResonanceRuntimeConfig] frame size or reflection type changes while the game runs), the same multi-scene reload runs so occlusion, transmission, and pathing still see the full combined static mesh.
+	</description>
+	<tutorials>
+	</tutorials>
+</class>

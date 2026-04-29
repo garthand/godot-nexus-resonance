@@ -29,6 +29,8 @@ const MENU_CLEAR_UNREFERENCED_PROBE_DATA := "Clear Unreferenced Probe Data"
 const MENU_BAKE_ALL_PROBE_VOLUMES := "Bake All Probe Volumes In Active Scene"
 const MENU_CLEAR_PROBE_BATCHES := "Clear Probe Batches"
 const MENU_UNLINK_PROBE_VOLUME_REFS := "Unlink Probe Volume References"
+const MENU_CONVERT_ANIMATION_AUDIO_RESONANCE := "Convert Animation Audio Tracks (ResonancePlayer)…"
+const MENU_CONVERT_ANIMATION_AUDIO_ALL_SCENES := "Convert Animation Audio Tracks In All Scenes…"
 
 # --- Dialogs ---
 const DIALOG_BAKE_FAILED_TITLE := "Nexus Resonance - Bake Failed"
@@ -56,6 +58,8 @@ const PROGRESS_STATUS := "Status"
 
 # --- Errors (critical = dialog) ---
 const ERR_NO_SCENE := "No scene open."
+const ERR_EDITOR_FILESYSTEM_UNAVAILABLE := "Editor file system not available."
+const ERR_EDITOR_FILESYSTEM_ROOT := "Could not scan res://."
 const ERR_GDEXTENSION_NOT_LOADED := "GDExtension not loaded."
 const ERR_EXPORT_FAILED := "Export failed with error %s"
 const ERR_SCENE_NOT_EXPORTED := "Scene not exported. Use Tools > Nexus Resonance > Export Active Scene before baking."
@@ -80,6 +84,11 @@ const WARN_SELECT_PROBE_VOLUMES := "Select one or more ResonanceProbeVolume node
 const WARN_NO_PLAYER_REFS := "No ResonancePlayer in this scene points to the selected Probe Volume(s)."
 const WARN_NO_PROBE_VOLUMES := "No ResonanceProbeVolume in scene. Nothing to bake."
 const WARN_ADD_RUNTIME := "Add ResonanceRuntime with valid ResonanceRuntimeConfig to the scene."
+## Shown when the editor needs ResonanceServer but the edited scene has no usable ResonanceRuntime (inspector / bake prep).
+const WARN_RUNTIME_REQUIRED_EDITOR := (
+	"No ResonanceRuntime with a valid ResonanceRuntimeConfig was found in the edited scene. "
+	+ "Add a ResonanceRuntime node, assign a config resource, then deselect and reselect the ResonanceProbeVolume or use Bake Probes so the server can start."
+)
 const WARN_SERVER_INIT_FAILED := "Server init failed."
 const WARN_BAKE_RUNNER_NOT_SET := "Bake runner not set. Cannot bake."
 const WARN_NO_RESONANCE_RUNTIME := "Scene has no ResonanceRuntime. Add ResonanceRuntime for export to make sense."
@@ -113,6 +122,21 @@ const INFO_NO_PROBE_DATA_FILES := "No probe data files found in %s"
 const INFO_ALL_PROBE_DATA_REFERENCED := "All probe data files are still referenced. Nothing to clear."
 const INFO_DELETE_UNREFERENCED_PROBE_DATA := "Delete %d unreferenced probe data file(s)?\n\n%s"
 const DIALOG_CLEAR_UNREFERENCED_TITLE := "Clear Unreferenced Probe Data"
+const DIALOG_CONVERT_ALL_SCENES_TITLE := "Nexus Resonance - Convert All Scenes"
+const DIALOG_CONVERT_ALL_SCENES_MESSAGE := (
+	"This will load every .tscn under res:// from disk, convert Animation audio tracks that target ResonancePlayer into Call Method tracks, and overwrite files that change.\n\n"
+	+ "Use version control or a backup. Save or close open scenes first so you do not lose unsaved editor changes.\n\n"
+	+ "Tracks with use blend are skipped (see Output for warnings). Continue?"
+)
+const INFO_AUTO_CONVERT_ANIMATION_PRE_SAVE := (
+	"Auto-converted %d animation audio track(s) on ResonancePlayer (now Call Method). "
+	+ "If any tracks used blend, check Output for Nexus Resonance warnings."
+)
+const INFO_CONVERT_ALL_SCENES_SUMMARY := (
+	"Project-wide conversion: %d track(s) converted, %d scene file(s) saved, %d scene(s) failed. "
+	+ "Skipped %d blend track(s), %d non-ResonancePlayer target(s)."
+)
+const INFO_CONVERT_SKIPPED_BLEND := " Skipped %d audio track(s) with use blend — convert manually (method keys) for full Steam Audio."
 
 # --- Tooltips ---
 const TT_BAKE_PROBES := "Bake reflections, pathing, static source/listener. Skips up-to-date stages. Configure in bake_config."

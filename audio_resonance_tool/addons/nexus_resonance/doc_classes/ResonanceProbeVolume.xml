@@ -91,10 +91,10 @@
 			Scale of the probe sphere visualization in the editor. Does not affect bake or runtime.
 		</member>
 		<member name="bake_sources" type="Array" setter="set_bake_sources" getter="get_bake_sources">
-			Array of NodePaths to ResonancePlayer nodes to bake as Static Source. First valid entry is used. Configure Static Source in bake_config.
+			Array of NodePaths to ResonancePlayer nodes to bake as Static Source. Every valid entry produces one STATICSOURCE pass so multiple fixed outdoor emitters (e.g. rain, thunder) get position-dependent baked IRs that correctly respect source→listener occlusion through walls. Configure Static Source in bake_config.
 		</member>
 		<member name="bake_listeners" type="Array" setter="set_bake_listeners" getter="get_bake_listeners">
-			Array of NodePaths to ResonanceListener nodes to bake as Static Listener. First valid entry is used. Configure Static Listener in bake_config.
+			Array of NodePaths to ResonanceListener nodes to bake as Static Listener. Every valid entry produces one STATICLISTENER pass. Configure Static Listener in bake_config.
 		</member>
 		<member name="bake_influence_radius" type="float" setter="set_bake_influence_radius" getter="get_bake_influence_radius" default="10000.0">
 			Influence radius (meters) for Static Source and Static Listener when the referenced node has no custom radius.
