@@ -46,9 +46,7 @@ jobs:
         with:
           languages: cpp
           queries: +security-and-quality
-          paths-ignore: |
-            src/lib/**
-            core/**
+          config-file: ./.github/codeql/codeql-config.yml
 
       - name: Build
         run: |

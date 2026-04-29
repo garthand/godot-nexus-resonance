@@ -1,0 +1,5 @@
+name: "Nexus Resonance CodeQL config"
+
+paths-ignore:
+  - "src/lib/**"
+  - "core/**"
