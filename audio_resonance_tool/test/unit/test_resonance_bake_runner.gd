@@ -5,6 +5,7 @@ extends GutTest
 
 const BakeConfigScript = preload("res://addons/nexus_resonance/scripts/resonance_bake_config.gd")
 const BakeEstimates = preload("res://addons/nexus_resonance/editor/resonance_bake_estimates.gd")
+const BakeRunnerScript = preload("res://addons/nexus_resonance/editor/resonance_bake_runner.gd")
 
 
 class MockProbeVolume:
@@ -22,19 +23,13 @@ class MockProbeVolumeOctree:
 
 
 func test_estimate_probe_count_null_returns_minus_one():
-	var BakeRunner = (
-		load("res://addons/nexus_resonance/editor/resonance_bake_runner.gd") as GDScript
-	)
-	var runner = BakeRunner.new(null)
+	var runner = BakeRunnerScript.new(null)
 	var result = runner.estimate_probe_count(null)
 	assert_eq(result, -1, "null volume should return -1")
 
 
 func test_estimate_probe_count_floor_mode():
-	var BakeRunner = (
-		load("res://addons/nexus_resonance/editor/resonance_bake_runner.gd") as GDScript
-	)
-	var runner = BakeRunner.new(null)
+	var runner = BakeRunnerScript.new(null)
 	var vol = MockProbeVolume.new()
 	var result = runner.estimate_probe_count(vol)
 	vol.free()
@@ -44,10 +39,7 @@ func test_estimate_probe_count_floor_mode():
 
 
 func test_estimate_probe_count_octree_mode():
-	var BakeRunner = (
-		load("res://addons/nexus_resonance/editor/resonance_bake_runner.gd") as GDScript
-	)
-	var runner = BakeRunner.new(null)
+	var runner = BakeRunnerScript.new(null)
 	var vol = MockProbeVolumeOctree.new()
 	var result = runner.estimate_probe_count(vol)
 	vol.free()
@@ -57,10 +49,7 @@ func test_estimate_probe_count_octree_mode():
 
 
 func test_estimate_probe_count_zero_spacing_returns_minus_one():
-	var BakeRunner = (
-		load("res://addons/nexus_resonance/editor/resonance_bake_runner.gd") as GDScript
-	)
-	var runner = BakeRunner.new(null)
+	var runner = BakeRunnerScript.new(null)
 	var vol = MockProbeVolume.new()
 	vol.spacing = 0.0
 	var result = runner.estimate_probe_count(vol)
@@ -69,10 +58,7 @@ func test_estimate_probe_count_zero_spacing_returns_minus_one():
 
 
 func test_estimate_probe_count_node_without_properties_returns_minus_one():
-	var BakeRunner = (
-		load("res://addons/nexus_resonance/editor/resonance_bake_runner.gd") as GDScript
-	)
-	var runner = BakeRunner.new(null)
+	var runner = BakeRunnerScript.new(null)
 	var plain_node = Node.new()
 	var result = runner.estimate_probe_count(plain_node)
 	plain_node.free()
@@ -80,10 +66,7 @@ func test_estimate_probe_count_node_without_properties_returns_minus_one():
 
 
 func test_estimate_bake_time_returns_non_empty_for_valid_volume():
-	var BakeRunner = (
-		load("res://addons/nexus_resonance/editor/resonance_bake_runner.gd") as GDScript
-	)
-	var runner = BakeRunner.new(null)
+	var runner = BakeRunnerScript.new(null)
 	var vol = MockProbeVolume.new()
 	var result = runner.estimate_bake_time(vol)
 	vol.free()
@@ -94,10 +77,7 @@ func test_estimate_bake_time_returns_non_empty_for_valid_volume():
 
 
 func test_estimate_bake_time_null_returns_empty():
-	var BakeRunner = (
-		load("res://addons/nexus_resonance/editor/resonance_bake_runner.gd") as GDScript
-	)
-	var runner = BakeRunner.new(null)
+	var runner = BakeRunnerScript.new(null)
 	var result = runner.estimate_bake_time(null)
 	assert_true(result.is_empty(), "null volume should return empty string")
 
@@ -105,10 +85,7 @@ func test_estimate_bake_time_null_returns_empty():
 func test_resonance_bake_estimates_static_matches_runner_probe_count():
 	var vol = MockProbeVolume.new()
 	var from_static = BakeEstimates.estimate_probe_count(vol)
-	var BakeRunner = (
-		load("res://addons/nexus_resonance/editor/resonance_bake_runner.gd") as GDScript
-	)
-	var runner = BakeRunner.new(null)
+	var runner = BakeRunnerScript.new(null)
 	var from_runner = runner.estimate_probe_count(vol)
 	vol.free()
 	assert_eq(from_static, from_runner, "static estimates should match runner delegation")

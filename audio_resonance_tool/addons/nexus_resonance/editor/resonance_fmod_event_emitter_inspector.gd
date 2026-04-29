@@ -11,7 +11,7 @@ func _can_handle(object: Object) -> bool:
 	return object != null and object.get_class() == "ResonanceFmodEventEmitter"
 
 
-func _parse_begin(object: Object) -> void:
+func _parse_begin(_object: Object) -> void:
 	var lbl := Label.new()
 	lbl.text = DSP_LIMITATION_NOTE
 	lbl.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART

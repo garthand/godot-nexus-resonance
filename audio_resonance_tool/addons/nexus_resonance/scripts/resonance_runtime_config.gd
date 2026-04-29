@@ -415,7 +415,7 @@ func get_hrtf_sofa_effective() -> ResonanceSOFAAsset:
 
 
 ## Returns realtime_rays unchanged for all platforms. [param os_name] is reserved for future per-OS caps; callers should pass [method OS.get_name].
-static func get_effective_realtime_rays(realtime_rays: int, os_name: String) -> int:
+static func get_effective_realtime_rays(realtime_rays: int, _os_name: String) -> int:
 	return realtime_rays
 
 

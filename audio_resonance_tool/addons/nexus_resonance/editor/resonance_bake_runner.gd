@@ -115,7 +115,11 @@ func _do_run_bake_with_backup(
 
 
 func _do_run_bake_after_validation(
-	volumes: Array[Node], root: Node, static_scene_node: Node, static_asset, _checklist: Array
+	volumes: Array[Node],
+	_root: Node,
+	static_scene_node: Node,
+	static_asset,
+	_checklist: Array
 ) -> void:
 	if not static_scene_node or not static_scene_node.has_valid_asset():
 		_log_and_show_error(

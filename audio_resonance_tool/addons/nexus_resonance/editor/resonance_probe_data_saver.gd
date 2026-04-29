@@ -13,7 +13,7 @@ func _recognize(resource: Resource) -> bool:
 	return resource != null and resource.get_class() == "ResonanceProbeData"
 
 
-func _get_recognized_extensions(resource: Resource) -> PackedStringArray:
+func _get_recognized_extensions(_resource: Resource) -> PackedStringArray:
 	return PackedStringArray(["tres", "bak"])
 
 

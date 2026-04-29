@@ -24,7 +24,9 @@ func _supports_platform(platform: EditorExportPlatform) -> bool:
 	return platform.get_os_name() in _SUPPORTED_OS
 
 
-func _export_begin(features: PackedStringArray, is_debug: bool, path: String, flags: int) -> void:
+func _export_begin(
+	_features: PackedStringArray, _is_debug: bool, _path: String, _flags: int
+) -> void:
 	var os_name: String = get_export_platform().get_os_name()
 	match os_name:
 		"Windows":

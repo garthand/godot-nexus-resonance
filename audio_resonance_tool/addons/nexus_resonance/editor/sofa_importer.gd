@@ -29,7 +29,7 @@ func _get_priority() -> float:
 	return 1.0
 
 
-func _get_import_options(path: String, preset_index: int) -> Array:
+func _get_import_options(_path: String, _preset_index: int) -> Array:
 	return [
 		{
 			"name": "volume_db",
@@ -50,7 +50,7 @@ func _get_preset_count() -> int:
 	return 0
 
 
-func _get_preset_name(preset_index: int) -> String:
+func _get_preset_name(_preset_index: int) -> String:
 	return ""
 
 
@@ -58,7 +58,7 @@ func _import(
 	source_file: String,
 	save_path: String,
 	options: Dictionary,
-	platform_variants: Array,
+	_platform_variants: Array,
 	gen_files: Array
 ) -> Error:
 	var data := FileAccess.get_file_as_bytes(source_file)

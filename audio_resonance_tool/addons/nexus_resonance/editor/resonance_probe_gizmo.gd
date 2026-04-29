@@ -44,7 +44,7 @@ func _init():
 	# Icon material is created lazily in _redraw to avoid EditorInterface in _init
 
 
-func _ensure_icon_material(gizmo: EditorNode3DGizmo) -> void:
+func _ensure_icon_material(_gizmo: EditorNode3DGizmo) -> void:
 	if _icon_material_created:
 		return
 	var icon_tex: Texture2D = null
@@ -105,7 +105,9 @@ func _redraw(gizmo: EditorNode3DGizmo):
 	gizmo.add_handles(handles, get_material(_mat_handles, gizmo), [])
 
 
-func _get_handle_name(gizmo: EditorNode3DGizmo, handle_id: int, secondary: bool) -> String:
+func _get_handle_name(
+	_gizmo: EditorNode3DGizmo, handle_id: int, _secondary: bool
+) -> String:
 	var names: Array[String] = [
 		UIStrings.GIZMO_HANDLE_SIZE_PX,
 		UIStrings.GIZMO_HANDLE_SIZE_PY,
@@ -117,7 +119,9 @@ func _get_handle_name(gizmo: EditorNode3DGizmo, handle_id: int, secondary: bool)
 	return names[handle_id] if handle_id < names.size() else ""
 
 
-func _get_handle_value(gizmo: EditorNode3DGizmo, handle_id: int, secondary: bool) -> Variant:
+func _get_handle_value(
+	gizmo: EditorNode3DGizmo, _handle_id: int, _secondary: bool
+) -> Variant:
 	var node = gizmo.get_node_3d()
 	return {"region_size": _get_valid_region_size(node), "global_position": node.global_position}
 
@@ -125,7 +129,11 @@ func _get_handle_value(gizmo: EditorNode3DGizmo, handle_id: int, secondary: bool
 ## Applies handle drag immediately; Undo is registered in _commit_handle (standard Gizmo pattern).
 ## Alt: symmetric scaling (both sides from center, like original). Default: asymmetric (opposite face fixed, like CSGBox).
 func _set_handle(
-	gizmo: EditorNode3DGizmo, handle_id: int, secondary: bool, camera: Camera3D, point: Vector2
+	gizmo: EditorNode3DGizmo,
+	handle_id: int,
+	_secondary: bool,
+	camera: Camera3D,
+	point: Vector2
 ) -> void:
 	var node = gizmo.get_node_3d()
 	var size = _get_valid_region_size(node)
@@ -189,7 +197,11 @@ func _set_handle(
 
 
 func _commit_handle(
-	gizmo: EditorNode3DGizmo, handle_id: int, secondary: bool, restore: Variant, cancel: bool
+	gizmo: EditorNode3DGizmo,
+	_handle_id: int,
+	_secondary: bool,
+	restore: Variant,
+	cancel: bool
 ) -> void:
 	var node: Node3D = gizmo.get_node_3d()
 	var restored := restore as Dictionary
