@@ -11,6 +11,13 @@ func _initialize() -> void:
 		quit(1)
 		return
 
+	if not ResourceLoader.exists("res://Examples/audio/Phone.mp3"):
+		print(
+			"[method_track_smoke] SKIP: example audio missing (repo-safe smoke). Missing: res://Examples/audio/Phone.mp3"
+		)
+		quit(0)
+		return
+
 	var root := Node3D.new()
 	get_root().add_child(root)
 

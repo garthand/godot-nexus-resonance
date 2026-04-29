@@ -6,6 +6,13 @@ const ANIM_NAME := &"anim_audio_test"
 
 
 func _initialize() -> void:
+	if not ResourceLoader.exists("res://Examples/audio/Phone.mp3"):
+		print(
+			"[plain_animation_audio_smoke] SKIP: example audio missing (repo-safe smoke). Missing: res://Examples/audio/Phone.mp3"
+		)
+		quit(0)
+		return
+
 	var root := Node3D.new()
 	get_root().add_child(root)
 
