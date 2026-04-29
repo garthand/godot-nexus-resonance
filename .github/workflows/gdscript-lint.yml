@@ -41,19 +41,25 @@ jobs:
 
       - name: Check GDScript format (changed files only)
         if: steps.changed.outputs.gd == 'true'
+        env:
+          GD_FILES: ${{ steps.changed.outputs.gd_files }}
         run: |
-          while IFS= read -r file; do
+          eval "set -- $GD_FILES"
+          for file in "$@"; do
             rel="${file#audio_resonance_tool/}"
             [ -n "$rel" ] && gdformat --check "$rel"
-          done <<< "${{ steps.changed.outputs.gd_files }}"
+          done
 
       - name: Lint GDScript (changed files only)
         if: steps.changed.outputs.gd == 'true'
+        env:
+          GD_FILES: ${{ steps.changed.outputs.gd_files }}
         run: |
-          while IFS= read -r file; do
+          eval "set -- $GD_FILES"
+          for file in "$@"; do
             rel="${file#audio_resonance_tool/}"
             [ -n "$rel" ] && gdlint "$rel"
-          done <<< "${{ steps.changed.outputs.gd_files }}"
+          done
 
       - name: Skip (no changed GDScript files)
         if: steps.changed.outputs.gd != 'true'
