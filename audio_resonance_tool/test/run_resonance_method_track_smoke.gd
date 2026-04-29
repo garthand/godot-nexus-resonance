@@ -4,6 +4,7 @@ extends SceneTree
 
 const ANIM_NAME := &"method_audio_test"
 
+
 func _initialize() -> void:
 	if not ClassDB.class_exists("ResonancePlayer"):
 		push_error("ResonancePlayer missing")
@@ -15,7 +16,9 @@ func _initialize() -> void:
 
 	var player: Node = ClassDB.instantiate("ResonancePlayer")
 	player.name = "ResonancePlayer"
-	var cfg_script: GDScript = load("res://addons/nexus_resonance/scripts/resonance_player_config.gd") as GDScript
+	var cfg_script: GDScript = (
+		load("res://addons/nexus_resonance/scripts/resonance_player_config.gd") as GDScript
+	)
 	player.player_config = cfg_script.call("create_default")
 
 	var stream: Resource = load("res://Examples/audio/Phone.mp3")

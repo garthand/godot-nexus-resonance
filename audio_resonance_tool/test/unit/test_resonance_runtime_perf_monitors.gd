@@ -8,10 +8,7 @@ func test_simulation_worker_timing_sum_empty_dict() -> void:
 
 
 func test_simulation_worker_timing_sum_partial_keys() -> void:
-	assert_eq(
-		ResonanceRuntimePerfMonitors.simulation_worker_timing_sum({"us_run_direct": 5}),
-		5
-	)
+	assert_eq(ResonanceRuntimePerfMonitors.simulation_worker_timing_sum({"us_run_direct": 5}), 5)
 
 
 func test_simulation_worker_timing_sum_all_keys() -> void:

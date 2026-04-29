@@ -108,8 +108,14 @@ func _build_ui() -> void:
 	# Avoid % string operator: en-dash or other chars can confuse the formatter.
 	var ch := COLOR_HINT
 	_hint_label.text = (
-		"[color=" + ch + "]Alt+1-3[/color] sections  [color=" + ch + "]Alt+R[/color] reset  "
-		+ "[color=" + ch + "]Alt+A[/color] audio details\n"
+		"[color="
+		+ ch
+		+ "]Alt+1-3[/color] sections  [color="
+		+ ch
+		+ "]Alt+R[/color] reset  "
+		+ "[color="
+		+ ch
+		+ "]Alt+A[/color] audio details\n"
 	)
 	_vbox.add_child(_hint_label)
 
@@ -230,36 +236,51 @@ func _refresh_status() -> void:
 	if not ResonanceServerAccess.has_server():
 		_status_label.text = "[color=%s]ResonanceServer not loaded[/color]" % COLOR_ERROR
 		_fold_server.title = "Server Status - not loaded"
-		_fold_server.add_theme_color_override("title_font_color", Color.from_string(COLOR_ERROR, Color.RED))
+		_fold_server.add_theme_color_override(
+			"title_font_color", Color.from_string(COLOR_ERROR, Color.RED)
+		)
 		return
 
 	var srv = ResonanceServerAccess.get_server()
 	var init_ok: bool = srv.is_initialized()
-	var sim_ok: bool = (srv.is_simulating() if init_ok else false)
+	var sim_ok: bool = srv.is_simulating() if init_ok else false
 	# FoldableContainer.title has no BBCode; color the whole title via theme.
 	if not init_ok:
 		_fold_server.title = "Server Status - not initialized"
-		_fold_server.add_theme_color_override("title_font_color", Color.from_string(COLOR_WARNING, Color.ORANGE))
+		_fold_server.add_theme_color_override(
+			"title_font_color", Color.from_string(COLOR_WARNING, Color.ORANGE)
+		)
 	elif not sim_ok:
 		_fold_server.title = "Server Status - waiting for geometry"
-		_fold_server.add_theme_color_override("title_font_color", Color.from_string(COLOR_WARNING, Color.ORANGE))
+		_fold_server.add_theme_color_override(
+			"title_font_color", Color.from_string(COLOR_WARNING, Color.ORANGE)
+		)
 	else:
 		_fold_server.title = "Server Status - initialized"
-		_fold_server.add_theme_color_override("title_font_color", Color.from_string(COLOR_OK, Color.LIME_GREEN))
+		_fold_server.add_theme_color_override(
+			"title_font_color", Color.from_string(COLOR_OK, Color.LIME_GREEN)
+		)
 
 	var parts: PackedStringArray = []
 	var path_on: bool = srv.is_pathing_enabled() if srv.has_method("is_pathing_enabled") else false
 	parts.append(
 		(
 			"[color=%s]Output:[/color] Direct - %s | Reverb - %s | Pathing - %s"
-			% [COLOR_NEUTRAL, _str_bool(srv.is_output_direct_enabled()), _str_bool(srv.is_output_reverb_enabled()), _str_bool(path_on)]
+			% [
+				COLOR_NEUTRAL,
+				_str_bool(srv.is_output_direct_enabled()),
+				_str_bool(srv.is_output_reverb_enabled()),
+				_str_bool(path_on)
+			]
 		)
 	)
 
 	var ao: int = 1
 	if srv.has_method("get_ambisonic_order"):
 		ao = int(srv.get_ambisonic_order())
-	parts.append("[color=%s]Ambisonic Order:[/color] %s" % [COLOR_NEUTRAL, _ambisonic_order_label(ao)])
+	parts.append(
+		"[color=%s]Ambisonic Order:[/color] %s" % [COLOR_NEUTRAL, _ambisonic_order_label(ao)]
+	)
 
 	var scene_idx: int = 0
 	if srv.has_method("get_simulation_tracer_profile"):
@@ -290,9 +311,7 @@ func _refresh_status() -> void:
 	parts.append("[color=%s]Reflection Mode:[/color] %s" % [COLOR_NEUTRAL, refl_mode_line])
 
 	if refl_type == 1 or refl_type == 2:
-		parts.append(
-			"[color=%s]Parametric/Hybrid: reverb in player output[/color]" % COLOR_WARNING
-		)
+		parts.append("[color=%s]Parametric/Hybrid: reverb in player output[/color]" % COLOR_WARNING)
 
 	var tree := get_tree()
 	var rt: Node = tree.get_first_node_in_group("resonance_runtime") if tree else null
@@ -312,23 +331,39 @@ func _refresh_status() -> void:
 		var w_heavy: bool = wh if wh is bool else bool(wh)
 		w_heavy_tag = "H" if w_heavy else "L"
 	if init_ok:
-		parts.append(
-			(
-				"[color=%s]Performance:[/color] [color=%s]%d µs[/color] | worker Σ [color=%s]%d µs[/color] [color=%s](%s)[/color]"
-				% [COLOR_NEUTRAL, COLOR_NEUTRAL, mtu, COLOR_NEUTRAL, w_sum, COLOR_HINT, w_heavy_tag]
+		(
+			parts
+			. append(
+				(
+					"[color=%s]Performance:[/color] [color=%s]%d µs[/color] | worker Σ [color=%s]%d µs[/color] [color=%s](%s)[/color]"
+					% [
+						COLOR_NEUTRAL,
+						COLOR_NEUTRAL,
+						mtu,
+						COLOR_NEUTRAL,
+						w_sum,
+						COLOR_HINT,
+						w_heavy_tag
+					]
+				)
 			)
 		)
 	else:
-		parts.append(
-			(
-				"[color=%s]Performance:[/color] [color=%s]%d µs[/color] | worker [color=%s]-[/color]"
-				% [COLOR_NEUTRAL, COLOR_NEUTRAL, mtu, COLOR_HINT]
+		(
+			parts
+			. append(
+				(
+					"[color=%s]Performance:[/color] [color=%s]%d µs[/color] | worker [color=%s]-[/color]"
+					% [COLOR_NEUTRAL, COLOR_NEUTRAL, mtu, COLOR_HINT]
+				)
 			)
 		)
 	if ptu > 0:
 		parts.append(
-			"[color=%s]Custom scene[/color] [i]_physics_process[/i] [color=%s]%d µs[/color]"
-			% [COLOR_NEUTRAL, COLOR_NEUTRAL, ptu]
+			(
+				"[color=%s]Custom scene[/color] [i]_physics_process[/i] [color=%s]%d µs[/color]"
+				% [COLOR_NEUTRAL, COLOR_NEUTRAL, ptu]
+			)
 		)
 
 	_status_label.text = "\n".join(parts)
@@ -361,7 +396,9 @@ func _audio_inst_col_max_block_us(us: int, is_issue: bool) -> String:
 	return COLOR_OK
 
 
-func _audio_inst_col_late_mix(late_mix: int, mix_calls: int, is_issue: bool, is_warn: bool) -> String:
+func _audio_inst_col_late_mix(
+	late_mix: int, mix_calls: int, is_issue: bool, is_warn: bool
+) -> String:
 	if late_mix <= 0:
 		return COLOR_OK
 	if is_issue:
@@ -389,8 +426,10 @@ func _classify_player_instrumentation(
 		}
 	if inst.is_empty():
 		detail_lines.append(
-			"[color=%s]%s[/color]  [color=%s](no instrumentation snapshot)[/color]"
-			% [COLOR_NEUTRAL, p.name, COLOR_WARNING]
+			(
+				"[color=%s]%s[/color]  [color=%s](no instrumentation snapshot)[/color]"
+				% [COLOR_NEUTRAL, p.name, COLOR_WARNING]
+			)
 		)
 		return {
 			"bucket": &"running_no_data",
@@ -449,44 +488,62 @@ func _classify_player_instrumentation(
 	elif ui_severity == 1:
 		badge = "[color=%s]WARN[/color]" % COLOR_WARNING
 
-	detail_lines.append(
-		(
-			"[color=%s]%s[/color]  buf drop=[color=%s]%d[/color] underrun=[color=%s]%d[/color] blocked=[color=%s]%d[/color] | late=[color=%s]%d[/color] (%.2f%% of mix) max=[color=%s]%s[/color]ms"
-			% [
-				COLOR_NEUTRAL,
-				p.name,
-				c_drop,
-				input_dropped,
-				c_un,
-				output_underrun,
-				c_blk,
-				output_blocked,
-				c_late,
-				late_mix,
-				late_rate_pct,
-				c_max,
-				max_ms,
-			]
+	(
+		detail_lines
+		. append(
+			(
+				"[color=%s]%s[/color]  buf drop=[color=%s]%d[/color] underrun=[color=%s]%d[/color] blocked=[color=%s]%d[/color] | late=[color=%s]%d[/color] (%.2f%% of mix) max=[color=%s]%s[/color]ms"
+				% [
+					COLOR_NEUTRAL,
+					p.name,
+					c_drop,
+					input_dropped,
+					c_un,
+					output_underrun,
+					c_blk,
+					output_blocked,
+					c_late,
+					late_mix,
+					late_rate_pct,
+					c_max,
+					max_ms,
+				]
+			)
 		)
 	)
-	detail_lines.append(
-		(
-			"  [color=%s]proc[/color] passthru=%d rmiss=%d silent=%d zero_in=%d rms=%.4f psync=%d  %s"
-			% [COLOR_NEUTRAL, passthrough, reverb_miss, silent, zero_input, last_rms, param_syncs, badge]
+	(
+		detail_lines
+		. append(
+			(
+				"  [color=%s]proc[/color] passthru=%d rmiss=%d silent=%d zero_in=%d rms=%.4f psync=%d  %s"
+				% [
+					COLOR_NEUTRAL,
+					passthrough,
+					reverb_miss,
+					silent,
+					zero_input,
+					last_rms,
+					param_syncs,
+					badge
+				]
+			)
 		)
 	)
 	# GDScript % formatting has no printf %e; invalid specifiers leave literals in the string.
 	var path_energy_str: String = String.num_scientific(path_sh_energy)
-	detail_lines.append(
-		(
-			"  [color=%s]pathing[/color] sh_rms=%s sh_energy=%s out_rms=%s order=%d"
-			% [
-				COLOR_NEUTRAL,
-				String.num(path_sh_rms, 4),
-				path_energy_str,
-				String.num(path_out_rms, 4),
-				path_sh_order,
-			]
+	(
+		detail_lines
+		. append(
+			(
+				"  [color=%s]pathing[/color] sh_rms=%s sh_energy=%s out_rms=%s order=%d"
+				% [
+					COLOR_NEUTRAL,
+					String.num(path_sh_rms, 4),
+					path_energy_str,
+					String.num(path_out_rms, 4),
+					path_sh_order,
+				]
+			)
 		)
 	)
 
@@ -558,23 +615,43 @@ func _refresh_audio_instrumentation() -> void:
 
 	var total_n := idle_n + run_no_data + run_issue + run_ok
 	var parts: PackedStringArray = []
-	var bs_txt := "[color=%s]%s[/color]" % [
-		COLOR_NEUTRAL,
-		"block=%d" % block_size if block_size > 0 else "block=?",
-	]
+	var bs_txt := (
+		"[color=%s]%s[/color]"
+		% [
+			COLOR_NEUTRAL,
+			"block=%d" % block_size if block_size > 0 else "block=?",
+		]
+	)
 	var c_nd := COLOR_WARNING if run_no_data > 0 else COLOR_NEUTRAL
 	var c_iss := COLOR_ERROR if run_issue > 0 else COLOR_NEUTRAL
-	parts.append(
-		(
-			"[color=%s]Sources:[/color] %d total | idle %d | [color=%s]playing OK %d[/color] | [color=%s]playing no data %d[/color] | [color=%s]playing issues %d[/color] | %s"
-			% [COLOR_NEUTRAL, total_n, idle_n, COLOR_OK, run_ok, c_nd, run_no_data, c_iss, run_issue, bs_txt]
+	(
+		parts
+		. append(
+			(
+				"[color=%s]Sources:[/color] %d total | idle %d | [color=%s]playing OK %d[/color] | [color=%s]playing no data %d[/color] | [color=%s]playing issues %d[/color] | %s"
+				% [
+					COLOR_NEUTRAL,
+					total_n,
+					idle_n,
+					COLOR_OK,
+					run_ok,
+					c_nd,
+					run_no_data,
+					c_iss,
+					run_issue,
+					bs_txt
+				]
+			)
 		)
 	)
 
 	if _audio_show_details:
 		if not problem_details.is_empty():
 			parts.append(
-				"[color=%s]- issues / no data (max %d) -[/color]" % [COLOR_HINT, AUDIO_PROBLEM_DETAIL_CAP]
+				(
+					"[color=%s]- issues / no data (max %d) -[/color]"
+					% [COLOR_HINT, AUDIO_PROBLEM_DETAIL_CAP]
+				)
 			)
 			var n := mini(AUDIO_PROBLEM_DETAIL_CAP, problem_details.size())
 			for j in range(n):
@@ -591,9 +668,7 @@ func _refresh_audio_instrumentation() -> void:
 				for line in w.detail:
 					parts.append(line)
 	elif run_no_data > 0 or run_issue > 0 or run_watch > 0:
-		parts.append(
-			"[color=%s]Alt+A[/color] per-source details (issues, then watch)" % COLOR_HINT
-		)
+		parts.append("[color=%s]Alt+A[/color] per-source details (issues, then watch)" % COLOR_HINT)
 
 	_audio_instrumentation_label.text = "\n".join(parts)
 
@@ -644,20 +719,33 @@ func _refresh_reverb_bus() -> void:
 	compact.append(
 		(
 			"[color=%s]Effect:[/color] [color=%s]success %d / %d[/color] (mixer_null=%d) peak=%.4f"
-			% [COLOR_NEUTRAL, eff_col, eff_ok, eff_proc, eff_null, ri.get("effect_output_peak", 0.0)]
+			% [
+				COLOR_NEUTRAL,
+				eff_col,
+				eff_ok,
+				eff_proc,
+				eff_null,
+				ri.get("effect_output_peak", 0.0)
+			]
 		)
 	)
 	if parametric_or_hybrid:
-		compact.append(
-			(
-				"[color=%s]Bus effect:[/color] silent by design - use [color=%s]ResonancePlayer[/color] RMS / signal levels for wet audio."
-				% [COLOR_HINT, COLOR_NEUTRAL]
+		(
+			compact
+			. append(
+				(
+					"[color=%s]Bus effect:[/color] silent by design - use [color=%s]ResonancePlayer[/color] RMS / signal levels for wet audio."
+					% [COLOR_HINT, COLOR_NEUTRAL]
+				)
 			)
 		)
-	compact.append(
-		(
-			"[color=%s]Fetch reverb:[/color] [color=%s]cache miss %.1f%%[/color] (hit=%d miss=%d lock_ok=%d)"
-			% [COLOR_NEUTRAL, miss_col, miss_pct, fetch_hit, fetch_miss, fetch_lock]
+	(
+		compact
+		. append(
+			(
+				"[color=%s]Fetch reverb:[/color] [color=%s]cache miss %.1f%%[/color] (hit=%d miss=%d lock_ok=%d)"
+				% [COLOR_NEUTRAL, miss_col, miss_pct, fetch_hit, fetch_miss, fetch_lock]
+			)
 		)
 	)
 	if srv.has_method("get_pathing_instrumentation"):
@@ -683,10 +771,26 @@ func _refresh_reverb_bus() -> void:
 			path_col = COLOR_ERROR
 		if p_miss > 0 and sh_null > 0:
 			path_col = COLOR_ERROR
-		compact.append(
-			(
-				"[color=%s]Pathing:[/color] [color=%s]attempt=%d ran=%d seh_fail=%d[/color] skip_L=%d skip_cd=%d | sh_ok=%d sh_null=%d | player gate=%d applied=%d miss=%d"
-				% [COLOR_NEUTRAL, path_col, sim_attempt, sim_ran, sim_seh, skip_l, skip_cd, sh_ok, sh_null, p_gate, p_ap, p_miss]
+		(
+			compact
+			. append(
+				(
+					"[color=%s]Pathing:[/color] [color=%s]attempt=%d ran=%d seh_fail=%d[/color] skip_L=%d skip_cd=%d | sh_ok=%d sh_null=%d | player gate=%d applied=%d miss=%d"
+					% [
+						COLOR_NEUTRAL,
+						path_col,
+						sim_attempt,
+						sim_ran,
+						sim_seh,
+						skip_l,
+						skip_cd,
+						sh_ok,
+						sh_null,
+						p_gate,
+						p_ap,
+						p_miss
+					]
+				)
 			)
 		)
 
@@ -701,16 +805,19 @@ func _refresh_reverb_bus() -> void:
 		if ai != null and not ai.is_empty():
 			var act: bool = ai.get("active", false)
 			var acol := COLOR_OK if act else COLOR_WARNING
-			compact.append(
-				(
-					"[color=%s]Activator:[/color] [color=%s]%s[/color] frames=%d skips=%s"
-					% [
-						COLOR_NEUTRAL,
-						acol,
-						"active" if act else str(ai.get("reason", "?")),
-						ai.get("frames_pushed_total", 0),
-						str(ai.get("skips", "?")),
-					]
+			(
+				compact
+				. append(
+					(
+						"[color=%s]Activator:[/color] [color=%s]%s[/color] frames=%d skips=%s"
+						% [
+							COLOR_NEUTRAL,
+							acol,
+							"active" if act else str(ai.get("reason", "?")),
+							ai.get("frames_pushed_total", 0),
+							str(ai.get("skips", "?")),
+						]
+					)
 				)
 			)
 

@@ -35,9 +35,13 @@ func _export_begin(features: PackedStringArray, is_debug: bool, path: String, fl
 			]:
 				_add_if_exists(dll_path, PackedStringArray())
 		"Linux":
-			_add_if_exists("res://addons/nexus_resonance/bin/linux/libphonon.so", PackedStringArray())
+			_add_if_exists(
+				"res://addons/nexus_resonance/bin/linux/libphonon.so", PackedStringArray()
+			)
 		"macOS":
-			_add_if_exists("res://addons/nexus_resonance/bin/macos/libphonon.dylib", PackedStringArray())
+			_add_if_exists(
+				"res://addons/nexus_resonance/bin/macos/libphonon.dylib", PackedStringArray()
+			)
 		"Android":
 			_export_begin_android()
 		_:
@@ -57,10 +61,12 @@ func _export_begin_android() -> void:
 		if bool(get_option(opt)):
 			push_warning(
 				(
-					"Nexus Resonance Export: Android ABI '%s' is enabled but this addon does not ship libphonon.so for it. "
-					+ "Disable the ABI or provide a matching library."
+					(
+						"Nexus Resonance Export: Android ABI '%s' is enabled but this addon does not ship libphonon.so for it. "
+						+ "Disable the ABI or provide a matching library."
+					)
+					% abi
 				)
-				% abi
 			)
 
 

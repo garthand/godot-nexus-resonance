@@ -108,7 +108,9 @@ static func _warn_rss_no_asset_rec(node: Node) -> void:
 	if node.is_class("ResonanceStaticScene"):
 		var has_asset: bool = node.has_method("has_valid_asset") and node.has_valid_asset()
 		if not has_asset and _rss_subtree_has_merged_static_geometry(node):
-			var msg: String = TranslationServer.translate(UIStrings.WARN_STATIC_SCENE_NO_ASSET_STILL_MERGED)
+			var msg: String = TranslationServer.translate(
+				UIStrings.WARN_STATIC_SCENE_NO_ASSET_STILL_MERGED
+			)
 			push_warning(msg % str(node.get_path()))
 	for c in node.get_children():
 		_warn_rss_no_asset_rec(c)
@@ -117,7 +119,11 @@ static func _warn_rss_no_asset_rec(node: Node) -> void:
 ## True if descendant ResonanceStaticGeometry exists, skipping subtrees under nested ResonanceStaticScene with valid asset.
 static func _rss_subtree_has_merged_static_geometry(node: Node) -> bool:
 	for c in node.get_children():
-		if c.is_class("ResonanceStaticScene") and c.has_method("has_valid_asset") and c.has_valid_asset():
+		if (
+			c.is_class("ResonanceStaticScene")
+			and c.has_method("has_valid_asset")
+			and c.has_valid_asset()
+		):
 			continue
 		if c.is_class("ResonanceStaticGeometry"):
 			return true

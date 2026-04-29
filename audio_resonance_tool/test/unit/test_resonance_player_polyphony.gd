@@ -19,7 +19,11 @@ func test_resonance_player_inherits_max_polyphony() -> void:
 		pass_test("max_polyphony not in property list on this Godot build")
 		return
 	player.max_polyphony = 4
-	assert_eq(player.max_polyphony, 4, "ResonancePlayer should expose max_polyphony like AudioStreamPlayer3D")
+	assert_eq(
+		player.max_polyphony,
+		4,
+		"ResonancePlayer should expose max_polyphony like AudioStreamPlayer3D"
+	)
 
 
 func test_get_audio_instrumentation_has_polyphony_key_when_documented() -> void:

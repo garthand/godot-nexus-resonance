@@ -9,6 +9,7 @@ const DEMO_SCENE := "res://Examples/scenes/demo.tscn"
 const ANIM_NAME := "lightning"
 const TRIGGERS := 10
 
+
 func _initialize() -> void:
 	var packed: PackedScene = load(DEMO_SCENE)
 	if packed == null:
@@ -57,4 +58,3 @@ func _run(anim_player: AnimationPlayer) -> void:
 			await process_frame
 
 	quit(0)
-

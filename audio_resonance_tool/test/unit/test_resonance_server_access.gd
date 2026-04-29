@@ -12,8 +12,7 @@ func test_has_server_consistent_with_classdb() -> void:
 	var class_registered: bool = ClassDB.class_exists("ResonanceServer")
 	if not class_registered:
 		assert_false(
-			ResonanceServerAccess.has_server(),
-			"no ResonanceServer class implies no singleton"
+			ResonanceServerAccess.has_server(), "no ResonanceServer class implies no singleton"
 		)
 	else:
 		# In CI or headless runs without the native library, class can exist without singleton.

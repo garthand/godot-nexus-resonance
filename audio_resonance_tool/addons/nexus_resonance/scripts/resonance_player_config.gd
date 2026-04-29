@@ -14,13 +14,7 @@ class_name ResonancePlayerConfig
 @export_range(1.0, 2000.0, 1.0) var max_distance: float = 500.0
 var _attenuation_mode: int = 0
 ## Distance rolloff model. Inverse = Steam Audio inverse distance on the direct path. Disabled = inverse-style routing but **simulator distance attenuation is off** (unity LOS gain from the sim until occlusion/transmission/air apply)—not “mute the source”. Linear / Curve = min/max falloff. Legacy [code]distance_attenuation_simulation_enabled = false[/code] on older .tres with mode 0 still migrates to this value at runtime.
-@export_enum(
-	"Inverse:0",
-	"Linear:1",
-	"Curve:2",
-	"Disabled:3"
-)
-var attenuation_mode: int:
+@export_enum("Inverse:0", "Linear:1", "Curve:2", "Disabled:3") var attenuation_mode: int:
 	get:
 		return _attenuation_mode
 	set(v):
@@ -181,11 +175,7 @@ var _transmission_input: int = 0
 ## High-band transmission (0-1). Only when transmission_input is User Defined.
 @export_range(0.0, 1.0, 0.01) var transmission_high: float = 1.0
 ## Overrides runtime transmission mode for the direct effect only. Frequency independent = single coefficient; frequency dependent = three bands (see simulator transmission type).
-@export_enum(
-	"Use Global:-1",
-	"Frequency Independent:0",
-	"Frequency Dependent:1"
-)
+@export_enum("Use Global:-1", "Frequency Independent:0", "Frequency Dependent:1")
 var transmission_type_override: int = -1
 var _max_transmission_surfaces_override: int = 0
 ## Use Global = follow [member ResonanceRuntimeConfig.max_transmission_surfaces]. User Defined = use [member max_transmission_surfaces] (1–256). Default **Use Global** (same rule as other overrides with a global option). Values [code]0[/code] / [code]1[/code] keep the inspector enum reliable; legacy [code]-1[/code] maps to Use Global.
@@ -235,11 +225,13 @@ var reflections_type: int = -1:
 ## (right for outdoor thunder/rain leaking through walls). Disabled = keep wet input unattenuated regardless of the
 ## global flag (right for indoor radios/ambience where around-the-corner reverb must stay audible). See
 ## [code]docs/baked-reflections-and-outdoor-sources.md[/code] for when to pick which.
-@export_enum("Use Global:-1", "Disabled:0", "Enabled:1") var apply_occlusion_to_baked_reflections_override: int = -1
+@export_enum("Use Global:-1", "Disabled:0", "Enabled:1")
+var apply_occlusion_to_baked_reflections_override: int = -1
 ## Per-source override for [member ResonanceRuntimeConfig.apply_distance_curve_to_reflections]. Use Global = follow
 ## runtime flag (Unity-parity default: Enabled). Disabled = wet input does not fade with source distance (useful
 ## for 2D ambience beds or sources where the distance curve already lives elsewhere).
-@export_enum("Use Global:-1", "Disabled:0", "Enabled:1") var apply_distance_curve_to_reflections_override: int = -1
+@export_enum("Use Global:-1", "Disabled:0", "Enabled:1")
+var apply_distance_curve_to_reflections_override: int = -1
 var _reverb_transmission_amount_input: int = 0
 ## Use Global = read [member ResonanceRuntimeConfig.reverb_transmission_amount]; User Defined = use the per-source
 ## [member reverb_transmission_amount] below. Only effective when the wet-path occlusion damping is on (global or
@@ -292,7 +284,8 @@ var _reverb_transmission_amount_input: int = 0
 @export_enum("Use Global:-1", "Nearest:0", "Bilinear:1") var hrtf_interpolation_override: int = -1
 var _perspective_correction_override: int = -1
 ## Per-source perspective correction. Use Global = follow RuntimeConfig. Disabled = off. Enabled = force on for this source.
-@export_enum("Use Global:-1", "Disabled:0", "Enabled:1") var perspective_correction_override: int = -1:
+@export_enum("Use Global:-1", "Disabled:0", "Enabled:1")
+var perspective_correction_override: int = -1:
 	get:
 		return _perspective_correction_override
 	set(v):

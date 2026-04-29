@@ -19,8 +19,8 @@ const ANIM_NAME := "lightning"
 # Headless Godot does not pace process_frame at real time, but the audio mixer thread
 # does run in real time. We therefore poll across a wall-clock budget and yield via
 # process_frame between samples so SceneTree continues to dispatch.
-const DRY_END_WAIT_MSEC := 8000 # Lightning wav is ~3.7s; 8s wall clock leaves headroom.
-const TAIL_OBSERVATION_MSEC := 2000 # Watch tail-drain for ~2s after dry end / stop.
+const DRY_END_WAIT_MSEC := 8000  # Lightning wav is ~3.7s; 8s wall clock leaves headroom.
+const TAIL_OBSERVATION_MSEC := 2000  # Watch tail-drain for ~2s after dry end / stop.
 
 var _exit_code: int = 0
 
@@ -129,7 +129,9 @@ func _run_case() -> void:
 
 	var ap := _find_animation_player(root)
 	if ap == null:
-		push_error("[reverb_tail_smoke] No AnimationPlayer with '%s' animation in demo." % ANIM_NAME)
+		push_error(
+			"[reverb_tail_smoke] No AnimationPlayer with '%s' animation in demo." % ANIM_NAME
+		)
 		_exit_code = 1
 		root.queue_free()
 		return
@@ -148,14 +150,18 @@ func _run_case() -> void:
 	ap.play(ANIM_NAME)
 
 	if not await _wait_for_blocks(thunder, 4000):
-		push_error("[reverb_tail_smoke] case 1 FAILED: no audio blocks processed (audio thread idle).")
+		push_error(
+			"[reverb_tail_smoke] case 1 FAILED: no audio blocks processed (audio thread idle)."
+		)
 		_exit_code = 1
 		root.queue_free()
 		return
 
 	# Wait for the dry signal to finish (zero_input_count fires when samples_read==0).
 	if not await _wait_for_zero_input(thunder, DRY_END_WAIT_MSEC):
-		push_error("[reverb_tail_smoke] case 1 FAILED: tail-drain branch never hit (zero_input_count=0 after dry end).")
+		push_error(
+			"[reverb_tail_smoke] case 1 FAILED: tail-drain branch never hit (zero_input_count=0 after dry end)."
+		)
 		_exit_code = 1
 		root.queue_free()
 		return
@@ -173,14 +179,24 @@ func _run_case() -> void:
 
 	if mix_after_tail <= mix_at_dry_end:
 		push_error(
-			"[reverb_tail_smoke] case 1 FAILED: mix_calls did not advance during tail (before=%d after=%d)."
-			% [mix_at_dry_end, mix_after_tail]
+			(
+				"[reverb_tail_smoke] case 1 FAILED: mix_calls did not advance during tail (before=%d after=%d)."
+				% [mix_at_dry_end, mix_after_tail]
+			)
 		)
 		_exit_code = 1
 	else:
 		print(
-			"[reverb_tail_smoke] case 1 OK: zero_input=%d blocks=%d->%d mix_calls=%d->%d"
-			% [zero_at_dry_end, blocks_at_dry_end, blocks_after_tail, mix_at_dry_end, mix_after_tail]
+			(
+				"[reverb_tail_smoke] case 1 OK: zero_input=%d blocks=%d->%d mix_calls=%d->%d"
+				% [
+					zero_at_dry_end,
+					blocks_at_dry_end,
+					blocks_after_tail,
+					mix_at_dry_end,
+					mix_after_tail
+				]
+			)
 		)
 
 	# Wait until case 1's leftover playback voice has fully drained (voice_count drops to 0)
@@ -232,8 +248,10 @@ func _run_case() -> void:
 
 	if mix_after_tail2 <= mix_after_stop:
 		push_error(
-			"[reverb_tail_smoke] case 2 FAILED: mix_calls did not advance after stop() (before=%d after=%d)."
-			% [mix_after_stop, mix_after_tail2]
+			(
+				"[reverb_tail_smoke] case 2 FAILED: mix_calls did not advance after stop() (before=%d after=%d)."
+				% [mix_after_stop, mix_after_tail2]
+			)
 		)
 		_exit_code = 1
 	elif zero_after_tail2 <= 0:
@@ -241,8 +259,10 @@ func _run_case() -> void:
 		_exit_code = 1
 	else:
 		print(
-			"[reverb_tail_smoke] case 2 OK: mix_calls=%d->%d zero_input=%d"
-			% [mix_after_stop, mix_after_tail2, zero_after_tail2]
+			(
+				"[reverb_tail_smoke] case 2 OK: mix_calls=%d->%d zero_input=%d"
+				% [mix_after_stop, mix_after_tail2, zero_after_tail2]
+			)
 		)
 
 	root.queue_free()

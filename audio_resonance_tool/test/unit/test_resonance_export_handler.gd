@@ -5,7 +5,9 @@ extends GutTest
 
 
 func test_collect_scene_paths_for_obj_null_safe():
-	var ExportHandler = load("res://addons/nexus_resonance/editor/resonance_export_handler.gd") as GDScript
+	var ExportHandler = (
+		load("res://addons/nexus_resonance/editor/resonance_export_handler.gd") as GDScript
+	)
 	var handler = ExportHandler.new(null)
 	var out: Dictionary = {}
 	handler.collect_scene_paths_for_obj(null, out)
@@ -13,7 +15,9 @@ func test_collect_scene_paths_for_obj_null_safe():
 
 
 func test_collect_scene_paths_for_obj_plain_node_adds_nothing():
-	var ExportHandler = load("res://addons/nexus_resonance/editor/resonance_export_handler.gd") as GDScript
+	var ExportHandler = (
+		load("res://addons/nexus_resonance/editor/resonance_export_handler.gd") as GDScript
+	)
 	var handler = ExportHandler.new(null)
 	var n = Node.new()
 	var out: Dictionary = {}
@@ -23,7 +27,9 @@ func test_collect_scene_paths_for_obj_plain_node_adds_nothing():
 
 
 func test_collect_scene_paths_for_obj_recurses_children():
-	var ExportHandler = load("res://addons/nexus_resonance/editor/resonance_export_handler.gd") as GDScript
+	var ExportHandler = (
+		load("res://addons/nexus_resonance/editor/resonance_export_handler.gd") as GDScript
+	)
 	var handler = ExportHandler.new(null)
 	var root = Node.new()
 	var child = Node.new()
@@ -35,9 +41,13 @@ func test_collect_scene_paths_for_obj_recurses_children():
 
 
 func test_collect_scene_paths_instantiated_packed_scene_adds_scene_file_path():
-	var ExportHandler = load("res://addons/nexus_resonance/editor/resonance_export_handler.gd") as GDScript
+	var ExportHandler = (
+		load("res://addons/nexus_resonance/editor/resonance_export_handler.gd") as GDScript
+	)
 	var handler = ExportHandler.new(null)
-	var packed: PackedScene = load("res://test/fixtures/minimal_root_for_collect.tscn") as PackedScene
+	var packed: PackedScene = (
+		load("res://test/fixtures/minimal_root_for_collect.tscn") as PackedScene
+	)
 	assert_not_null(packed, "fixture minimal_root_for_collect.tscn must load")
 	var inst: Node = packed.instantiate()
 	var out: Dictionary = {}
@@ -51,7 +61,9 @@ func test_collect_scene_paths_instantiated_packed_scene_adds_scene_file_path():
 
 
 func test_get_resonance_server_or_show_error_without_singleton_returns_null():
-	var ExportHandler = load("res://addons/nexus_resonance/editor/resonance_export_handler.gd") as GDScript
+	var ExportHandler = (
+		load("res://addons/nexus_resonance/editor/resonance_export_handler.gd") as GDScript
+	)
 	var handler = ExportHandler.new(null)
 	# When ResonanceServer is not loaded (headless or test), should return null without crashing
 	var result = handler.get_resonance_server_or_show_error("")

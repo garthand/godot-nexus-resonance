@@ -7,7 +7,8 @@ const RuntimeStubScript = preload("res://test/unit/bake_discovery_runtime_stub.g
 
 
 ## Native subclass so [code]property in vol[/code] matches editor volumes (script-only nodes can fail [code]in[/code]).
-class _VolWithBakePaths extends Node:
+class _VolWithBakePaths:
+	extends Node
 	@export var test_bake_nodepaths: Array = [NodePath("Target")]
 
 

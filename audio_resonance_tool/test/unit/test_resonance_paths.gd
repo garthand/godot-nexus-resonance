@@ -13,7 +13,9 @@ func test_get_audio_data_dir_returns_path_ending_with_slash():
 
 func test_get_audio_data_dir_default_is_audio_data():
 	var path: String = ResonancePaths.get_audio_data_dir()
-	assert_true("audio_data" in path or path == "res://audio_data/", "default should point to audio_data")
+	assert_true(
+		"audio_data" in path or path == "res://audio_data/", "default should point to audio_data"
+	)
 
 
 func test_get_audio_data_dir_uses_project_setting_when_configured():
@@ -24,7 +26,9 @@ func test_get_audio_data_dir_uses_project_setting_when_configured():
 	var configured: String = ProjectSettings.get_setting(KEY, "")
 	var result: String = ResonancePaths.get_audio_data_dir()
 	if configured.is_empty():
-		assert_eq(result, ResonancePaths.PATH_AUDIO_DATA, "empty setting should fall back to default")
+		assert_eq(
+			result, ResonancePaths.PATH_AUDIO_DATA, "empty setting should fall back to default"
+		)
 	else:
 		assert_true(result.ends_with("/"), "configured path should end with /")
 

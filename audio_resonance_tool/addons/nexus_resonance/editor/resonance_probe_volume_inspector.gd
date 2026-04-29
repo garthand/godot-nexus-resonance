@@ -91,11 +91,7 @@ func _add_probe_batch_edit_section(vol: Object) -> void:
 	rm_btn.tooltip_text = tr(UIStrings.TT_REMOVE_PROBE)
 	rm_btn.disabled = not has_data or not server_ready
 	var batch_ui := {
-		"count_lbl": count_lbl,
-		"spin": spin,
-		"rm_btn": rm_btn,
-		"path_btn": null,
-		"refl_btn": null
+		"count_lbl": count_lbl, "spin": spin, "rm_btn": rm_btn, "path_btn": null, "refl_btn": null
 	}
 	rm_btn.pressed.connect(_on_remove_probe_at_index_pressed.bind(vol, spin, batch_ui))
 	row.add_child(spin)
@@ -166,7 +162,11 @@ func _probe_edit_post_success(vol: Object, pd: Resource, batch_ui: Dictionary = 
 
 
 func _ensure_server_for_probe_edit(vol: Object) -> bool:
-	if bake_runner and vol is Node and bake_runner.has_method("ensure_resonance_server_for_volumes"):
+	if (
+		bake_runner
+		and vol is Node
+		and bake_runner.has_method("ensure_resonance_server_for_volumes")
+	):
 		var vol_nodes: Array[Node] = []
 		vol_nodes.append(vol as Node)
 		return bake_runner.ensure_resonance_server_for_volumes(vol_nodes)
@@ -179,11 +179,19 @@ func _on_remove_probe_at_index_pressed(vol: Object, spin: SpinBox, batch_ui: Dic
 	if pd == null or pd.get_data().is_empty():
 		return
 	if not _ensure_server_for_probe_edit(vol):
-		ResonanceEditorDialogs.show_warning(editor_interface, tr(UIStrings.WARN_PROBE_EDIT_NO_SERVER))
+		ResonanceEditorDialogs.show_warning(
+			editor_interface, tr(UIStrings.WARN_PROBE_EDIT_NO_SERVER)
+		)
 		return
 	var srv = ResonanceServerAccess.get_server()
-	if srv == null or not srv.is_initialized() or not srv.has_method("editor_probe_data_remove_probe"):
-		ResonanceEditorDialogs.show_warning(editor_interface, tr(UIStrings.WARN_PROBE_EDIT_NO_SERVER))
+	if (
+		srv == null
+		or not srv.is_initialized()
+		or not srv.has_method("editor_probe_data_remove_probe")
+	):
+		ResonanceEditorDialogs.show_warning(
+			editor_interface, tr(UIStrings.WARN_PROBE_EDIT_NO_SERVER)
+		)
 		return
 	var idx := int(spin.value)
 	if not srv.editor_probe_data_remove_probe(pd, idx):
@@ -197,11 +205,19 @@ func _on_remove_baked_pathing_pressed(vol: Object, batch_ui: Dictionary) -> void
 	if pd == null or pd.get_data().is_empty():
 		return
 	if not _ensure_server_for_probe_edit(vol):
-		ResonanceEditorDialogs.show_warning(editor_interface, tr(UIStrings.WARN_PROBE_EDIT_NO_SERVER))
+		ResonanceEditorDialogs.show_warning(
+			editor_interface, tr(UIStrings.WARN_PROBE_EDIT_NO_SERVER)
+		)
 		return
 	var srv = ResonanceServerAccess.get_server()
-	if srv == null or not srv.is_initialized() or not srv.has_method("editor_probe_data_remove_baked_layer"):
-		ResonanceEditorDialogs.show_warning(editor_interface, tr(UIStrings.WARN_PROBE_EDIT_NO_SERVER))
+	if (
+		srv == null
+		or not srv.is_initialized()
+		or not srv.has_method("editor_probe_data_remove_baked_layer")
+	):
+		ResonanceEditorDialogs.show_warning(
+			editor_interface, tr(UIStrings.WARN_PROBE_EDIT_NO_SERVER)
+		)
 		return
 	# baked_data_type 1 = pathing; variation 3 = dynamic (matches bake_pathing)
 	if not srv.editor_probe_data_remove_baked_layer(pd, 1, 3, Vector3.ZERO, 0.0):
@@ -215,11 +231,19 @@ func _on_remove_baked_reflection_reverb_pressed(vol: Object, batch_ui: Dictionar
 	if pd == null or pd.get_data().is_empty():
 		return
 	if not _ensure_server_for_probe_edit(vol):
-		ResonanceEditorDialogs.show_warning(editor_interface, tr(UIStrings.WARN_PROBE_EDIT_NO_SERVER))
+		ResonanceEditorDialogs.show_warning(
+			editor_interface, tr(UIStrings.WARN_PROBE_EDIT_NO_SERVER)
+		)
 		return
 	var srv = ResonanceServerAccess.get_server()
-	if srv == null or not srv.is_initialized() or not srv.has_method("editor_probe_data_remove_baked_layer"):
-		ResonanceEditorDialogs.show_warning(editor_interface, tr(UIStrings.WARN_PROBE_EDIT_NO_SERVER))
+	if (
+		srv == null
+		or not srv.is_initialized()
+		or not srv.has_method("editor_probe_data_remove_baked_layer")
+	):
+		ResonanceEditorDialogs.show_warning(
+			editor_interface, tr(UIStrings.WARN_PROBE_EDIT_NO_SERVER)
+		)
 		return
 	# baked_data_type 0 = reflections; variation 0 = reverb
 	if not srv.editor_probe_data_remove_baked_layer(pd, 0, 0, Vector3.ZERO, 0.0):

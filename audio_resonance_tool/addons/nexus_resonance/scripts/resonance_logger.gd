@@ -42,6 +42,7 @@ static func get_default_categories_enabled_dict() -> Dictionary:
 		d[str(c)] = true
 	return d
 
+
 ## Emitted when a log entry is added (after category filter). Args: category, message, data
 signal log_entry_added(category: StringName, message: String, data: Dictionary)
 
@@ -153,7 +154,9 @@ func _add_to_buffer(entry: Dictionary) -> void:
 func _output_to_debug_console(category: StringName, message: String, data: Dictionary) -> void:
 	var data_suffix := "" if data.is_empty() else " " + str(data)
 	# Use print_rich so the line appears as normal log output in the Output dock; category is visible without BBCode too.
-	print_rich("[color=cyan][Nexus Resonance][%s][/color] %s%s" % [String(category), message, data_suffix])
+	print_rich(
+		"[color=cyan][Nexus Resonance][%s][/color] %s%s" % [String(category), message, data_suffix]
+	)
 	# Plain duplicate: some filters or remote runs only surface standard print() reliably.
 	print("[Nexus Resonance][%s] %s%s" % [String(category), message, data_suffix])
 

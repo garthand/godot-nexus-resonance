@@ -38,4 +38,8 @@ func _run() -> void:
 	sc.set_meta(_META_SCENE_DONE, true)
 	var n := int(result.get("tracks_converted", 0))
 	if n > 0:
-		print("Nexus Resonance: runtime converted ", n, " animation TYPE_AUDIO track(s) to play_animation_audio_clip()")
+		print(
+			"Nexus Resonance: runtime converted ",
+			n,
+			" animation TYPE_AUDIO track(s) to play_animation_audio_clip()"
+		)

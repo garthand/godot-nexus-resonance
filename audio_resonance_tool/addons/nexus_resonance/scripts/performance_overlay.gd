@@ -83,14 +83,15 @@ func _refresh() -> void:
 	var process_ms := Performance.get_monitor(Performance.TIME_PROCESS) * 1000.0
 	var physics_ms := Performance.get_monitor(Performance.TIME_PHYSICS_PROCESS) * 1000.0
 	_label.text = (
-		"[color={c}]FPS: {fps}[/color]\n[color={c}]Frame: {proc_ms} ms[/color]\n[color={c}]Physics: {phy_ms} ms[/color]"
-	).format(
-		{
-			"c": COLOR_NEUTRAL,
-			"fps": int(fps),
-			"proc_ms": String.num(process_ms, 2),
-			"phy_ms": String.num(physics_ms, 2),
-		}
+		("[color={c}]FPS: {fps}[/color]\n[color={c}]Frame: {proc_ms} ms[/color]\n[color={c}]Physics: {phy_ms} ms[/color]")
+		. format(
+			{
+				"c": COLOR_NEUTRAL,
+				"fps": int(fps),
+				"proc_ms": String.num(process_ms, 2),
+				"phy_ms": String.num(physics_ms, 2),
+			}
+		)
 	)
 	_panel.reset_size()
 	call_deferred("_update_position")

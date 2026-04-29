@@ -507,8 +507,9 @@ func list_probe_data_files() -> PackedStringArray:
 	var name_str: String = d.get_next()
 	while name_str != "":
 		var ext_probe := name_str.get_extension().to_lower()
-		if (ext_probe == "tres" or ext_probe == "res") and (
-			"_batch" in name_str or "_baked_probes" in name_str
+		if (
+			(ext_probe == "tres" or ext_probe == "res")
+			and ("_batch" in name_str or "_baked_probes" in name_str)
 		):
 			out.append(logical_dir + name_str)
 		name_str = d.get_next()

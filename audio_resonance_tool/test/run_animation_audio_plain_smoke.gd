@@ -4,6 +4,7 @@ extends SceneTree
 
 const ANIM_NAME := &"anim_audio_test"
 
+
 func _initialize() -> void:
 	var root := Node3D.new()
 	get_root().add_child(root)

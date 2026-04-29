@@ -13,7 +13,9 @@ const _BakeEstimates = preload("res://addons/nexus_resonance/editor/resonance_ba
 const _BakeHashes = preload("res://addons/nexus_resonance/editor/resonance_bake_hashes.gd")
 const _BakeDiscovery = preload("res://addons/nexus_resonance/editor/resonance_bake_discovery.gd")
 const _BakeValidation = preload("res://addons/nexus_resonance/editor/resonance_bake_validation.gd")
-const _BakeServerSetup = preload("res://addons/nexus_resonance/editor/resonance_bake_server_setup.gd")
+const _BakeServerSetup = preload(
+	"res://addons/nexus_resonance/editor/resonance_bake_server_setup.gd"
+)
 const _BakePipeline = preload("res://addons/nexus_resonance/editor/resonance_bake_pipeline.gd")
 const ResonanceEditorDialogs = preload(
 	"res://addons/nexus_resonance/editor/resonance_editor_dialogs.gd"

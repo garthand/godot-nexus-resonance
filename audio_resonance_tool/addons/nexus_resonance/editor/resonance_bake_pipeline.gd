@@ -146,7 +146,10 @@ func _prepare_probe_data_for_bake(vol: Node, probe_data: Resource, root: Node) -
 	if node_key.is_empty():
 		node_key = str(vol.name).to_lower().replace(" ", "_")
 	if node_key.length() > 128:
-		node_key = "h_%s" % str(abs(hash(str(root.get_path_to(vol)) if vol.is_inside_tree() else vol.name)))
+		node_key = (
+			"h_%s"
+			% str(abs(hash(str(root.get_path_to(vol)) if vol.is_inside_tree() else vol.name)))
+		)
 	var audio_dir: String = ResonancePaths.get_audio_data_dir()
 	var fs_audio: String = ResonanceFsPaths.filesystem_path_for_dir_access(audio_dir)
 	var path: String = ResonancePaths.probe_data_save_path(scene_name, node_key)
@@ -218,11 +221,7 @@ func _bake_reflections(ctx: Variant) -> bool:
 
 
 func _run_bake_step(
-	ctx: Variant,
-	status_key: String,
-	bake_callable: Callable,
-	hash_setter: String,
-	hash_value: int
+	ctx: Variant, status_key: String, bake_callable: Callable, hash_setter: String, hash_value: int
 ) -> void:
 	var progress_ui = _runner._progress_ui
 	progress_ui.set_bake_status(status_key + ctx.vol_info)
@@ -263,7 +262,11 @@ func _bake_static_source(ctx: Variant) -> void:
 		var pos: Vector3 = e.pos
 		var radius: float = e.radius
 		progress_ui.set_bake_status(
-			tr(UIStrings.PROGRESS_BAKING_STATIC_SOURCE) + ctx.vol_info + (" [%d/%d]" % [i + 1, total] if total > 1 else "")
+			(
+				tr(UIStrings.PROGRESS_BAKING_STATIC_SOURCE)
+				+ ctx.vol_info
+				+ (" [%d/%d]" % [i + 1, total] if total > 1 else "")
+			)
 		)
 		var do_static_source = func() -> bool:
 			return srv.bake_static_source(ctx.probe_data, pos, radius)
@@ -295,7 +298,11 @@ func _bake_static_listener(ctx: Variant) -> void:
 		var pos: Vector3 = e.pos
 		var radius: float = e.radius
 		progress_ui.set_bake_status(
-			tr(UIStrings.PROGRESS_BAKING_STATIC_LISTENER) + ctx.vol_info + (" [%d/%d]" % [i + 1, total] if total > 1 else "")
+			(
+				tr(UIStrings.PROGRESS_BAKING_STATIC_LISTENER)
+				+ ctx.vol_info
+				+ (" [%d/%d]" % [i + 1, total] if total > 1 else "")
+			)
 		)
 		var do_static_listener = func() -> bool:
 			return srv.bake_static_listener(ctx.probe_data, pos, radius)

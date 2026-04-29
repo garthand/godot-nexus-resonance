@@ -36,7 +36,10 @@ static func estimate_bake_time(vol: Node, bc: Resource) -> String:
 	var threads = bc.bake_num_threads
 	var pathing = bc.pathing_enabled
 	var sec_per_probe = (
-		BAKE_RAY_BASE_SEC_PER_PROBE * (rays / float(BAKE_RAY_BASE_COUNT)) * bounces / max(1, threads)
+		BAKE_RAY_BASE_SEC_PER_PROBE
+		* (rays / float(BAKE_RAY_BASE_COUNT))
+		* bounces
+		/ max(1, threads)
 	)
 	var total = count * sec_per_probe
 	if pathing:

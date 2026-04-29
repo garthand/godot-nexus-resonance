@@ -5,6 +5,7 @@ extends GutTest
 
 var _temp_path: String = ""
 
+
 func after_each():
 	if _temp_path != "":
 		if FileAccess.file_exists(_temp_path):
@@ -12,6 +13,7 @@ func after_each():
 		if FileAccess.file_exists(_temp_path + ".tmp"):
 			DirAccess.remove_absolute(_temp_path + ".tmp")
 	_temp_path = ""
+
 
 func test_recognize_resonance_probe_data():
 	if not ClassDB.class_exists("ResonanceProbeData"):
@@ -21,14 +23,17 @@ func test_recognize_resonance_probe_data():
 	var saver = load("res://addons/nexus_resonance/editor/resonance_probe_data_saver.gd").new()
 	assert_true(saver._recognize(probe_data), "should recognize ResonanceProbeData")
 
+
 func test_recognize_rejects_other_resources():
 	var saver = load("res://addons/nexus_resonance/editor/resonance_probe_data_saver.gd").new()
 	var other = Resource.new()
 	assert_false(saver._recognize(other), "should not recognize generic Resource")
 
+
 func test_recognize_rejects_null():
 	var saver = load("res://addons/nexus_resonance/editor/resonance_probe_data_saver.gd").new()
 	assert_false(saver._recognize(null), "should not recognize null")
+
 
 func test_get_recognized_extensions():
 	var saver = load("res://addons/nexus_resonance/editor/resonance_probe_data_saver.gd").new()
@@ -36,6 +41,7 @@ func test_get_recognized_extensions():
 	assert_eq(exts.size(), 2, "should have tres + bak")
 	assert_true(exts.has("tres"), "should recognize tres")
 	assert_true(exts.has("bak"), "should recognize bak")
+
 
 func test_save_writes_valid_tres():
 	if not ClassDB.class_exists("ResonanceProbeData"):
@@ -48,8 +54,12 @@ func test_save_writes_valid_tres():
 	var err = saver._save(probe_data, _temp_path, 0)
 	assert_eq(err, OK, "save should succeed")
 	assert_file_exists(_temp_path)
-	assert_false(FileAccess.file_exists(_temp_path + ".tmp"), "atomic save: .tmp file should not remain")
+	assert_false(
+		FileAccess.file_exists(_temp_path + ".tmp"), "atomic save: .tmp file should not remain"
+	)
 	var content = FileAccess.get_file_as_string(_temp_path)
-	assert_string_contains(content, "[gd_resource type=\"ResonanceProbeData\"", "should have correct header")
+	assert_string_contains(
+		content, '[gd_resource type="ResonanceProbeData"', "should have correct header"
+	)
 	assert_string_contains(content, "[resource]", "should have resource block")
 	assert_string_contains(content, "data = PackedByteArray", "should have data line")

@@ -53,7 +53,10 @@ func _process(_delta: float) -> void:
 		return
 	if _resonance_handle >= 0 and _bridge and ResonanceServerAccess.has_server():
 		var pos := global_position
-		if (pos - _last_resonance_sync_pos).length_squared() < _RESONANCE_SYNC_POS_EPS * _RESONANCE_SYNC_POS_EPS:
+		if (
+			(pos - _last_resonance_sync_pos).length_squared()
+			< _RESONANCE_SYNC_POS_EPS * _RESONANCE_SYNC_POS_EPS
+		):
 			return
 		_last_resonance_sync_pos = pos
 		var srv = ResonanceServerAccess.get_server()

@@ -92,17 +92,13 @@ func show_ui() -> void:
 	_progress_dialog.popup_centered(Vector2i(440, 320))
 	Callable(cancel_btn, "grab_focus").call_deferred()
 
-	var srv: Variant = (
-		ResonanceServerAccess.get_server()
-	)
+	var srv: Variant = ResonanceServerAccess.get_server()
 	if srv and srv.has_signal("bake_progress") and _progress_bar:
 		srv.bake_progress.connect(_on_bake_progress)
 
 
 func hide_ui() -> void:
-	var srv: Variant = (
-		ResonanceServerAccess.get_server()
-	)
+	var srv: Variant = ResonanceServerAccess.get_server()
 	if (
 		srv
 		and srv.has_signal("bake_progress")
@@ -164,9 +160,7 @@ func _on_bake_progress(progress: float) -> void:
 
 func _on_cancel_pressed() -> void:
 	cancel_requested = true
-	var srv: Variant = (
-		ResonanceServerAccess.get_server()
-	)
+	var srv: Variant = ResonanceServerAccess.get_server()
 	if srv:
 		srv.cancel_reflections_bake()
 		srv.cancel_pathing_bake()

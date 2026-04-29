@@ -2,15 +2,26 @@ extends GutTest
 
 ## Unit tests for ResonanceBakeConfig (per-volume bake resource).
 
+
 func test_get_bake_params_has_expected_keys():
 	var bc = ResonanceBakeConfig.create_default()
 	var params = bc.get_bake_params()
-	var expected = ["bake_ambisonics_order", "bake_num_rays", "bake_num_bounces", "bake_num_threads", "bake_reflection_type",
-		"bake_pathing_vis_range", "bake_pathing_path_range", "bake_pathing_num_samples",
-		"bake_pathing_radius", "bake_pathing_threshold"]
+	var expected = [
+		"bake_ambisonics_order",
+		"bake_num_rays",
+		"bake_num_bounces",
+		"bake_num_threads",
+		"bake_reflection_type",
+		"bake_pathing_vis_range",
+		"bake_pathing_path_range",
+		"bake_pathing_num_samples",
+		"bake_pathing_radius",
+		"bake_pathing_threshold"
+	]
 	for key in expected:
 		assert_has(params, key, "get_bake_params missing: " + key)
 	assert_eq(params.size(), expected.size(), "get_bake_params should have exactly expected keys")
+
 
 func test_bake_defaults_are_sensible():
 	var bc = ResonanceBakeConfig.create_default()
@@ -23,6 +34,7 @@ func test_bake_defaults_are_sensible():
 	assert_gte(bc.bake_ambisonics_order, 1, "bake_ambisonics_order should be >= 1")
 	assert_lte(bc.bake_ambisonics_order, 3, "bake_ambisonics_order should be <= 3")
 
+
 func test_get_bake_params_applies_properties():
 	var bc = ResonanceBakeConfig.create_default()
 	bc.bake_num_rays = 8192
@@ -34,21 +46,29 @@ func test_get_bake_params_applies_properties():
 	assert_eq(params.get("bake_ambisonics_order", -1), 2, "bake_ambisonics_order should be applied")
 	assert_eq(params.get("bake_pathing_radius", -1.0), 0.8, "bake_pathing_radius should be applied")
 
+
 func test_create_default_returns_valid_config():
 	var bc = ResonanceBakeConfig.create_default()
 	assert_not_null(bc, "create_default should return non-null")
 	assert_true(bc is ResonanceBakeConfig, "create_default should return ResonanceBakeConfig")
 
+
 # --- pathing_params_hash: must match C++ ResonanceBaker::bake_pathing and GDScript _compute_pathing_hash ---
 
+
 static func _pathing_hash_from_params(params: Dictionary) -> int:
-	return hash(var_to_str({
-		"vis_range": params.get("bake_pathing_vis_range", 500),
-		"path_range": params.get("bake_pathing_path_range", 100),
-		"num_samples": params.get("bake_pathing_num_samples", 16),
-		"radius": params.get("bake_pathing_radius", 0.5),
-		"threshold": params.get("bake_pathing_threshold", 0.1)
-	}))
+	return hash(
+		var_to_str(
+			{
+				"vis_range": params.get("bake_pathing_vis_range", 500),
+				"path_range": params.get("bake_pathing_path_range", 100),
+				"num_samples": params.get("bake_pathing_num_samples", 16),
+				"radius": params.get("bake_pathing_radius", 0.5),
+				"threshold": params.get("bake_pathing_threshold", 0.1)
+			}
+		)
+	)
+
 
 func test_pathing_hash_deterministic():
 	var bc = ResonanceBakeConfig.create_default()
@@ -57,6 +77,7 @@ func test_pathing_hash_deterministic():
 	var h2 = _pathing_hash_from_params(params)
 	assert_eq(h1, h2, "pathing hash should be deterministic")
 	assert_ne(h1, 0, "pathing hash for default params should be non-zero")
+
 
 func test_pathing_hash_changes_with_params():
 	var bc = ResonanceBakeConfig.create_default()
@@ -77,7 +98,11 @@ func test_pathing_hash_bake_runner_matches_cpp_format():
 	bc.pathing_enabled = true
 	var runner_hash = BakeHashes.compute_pathing_hash(bc)
 	var manual_hash = _pathing_hash_from_params(bc.get_bake_params())
-	assert_eq(runner_hash, manual_hash, "BakeHashes must match C++ dict format (vis_range, path_range, num_samples, radius, threshold)")
+	assert_eq(
+		runner_hash,
+		manual_hash,
+		"BakeHashes must match C++ dict format (vis_range, path_range, num_samples, radius, threshold)"
+	)
 	bc.bake_pathing_threshold = 0.05
 	runner_hash = BakeHashes.compute_pathing_hash(bc)
 	manual_hash = _pathing_hash_from_params(bc.get_bake_params())

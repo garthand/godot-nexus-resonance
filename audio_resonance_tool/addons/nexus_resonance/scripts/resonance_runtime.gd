@@ -51,31 +51,22 @@ var _runtime: ResonanceRuntimeConfig
 ## Key to toggle player/source ray visualization (occlusion + reflection rays in engine). Requires ResonanceServer debug support.
 @export var player_overlay_toggle_key: Key = KEY_F3
 ## Debugger [Performance] custom monitors from Nexus (main/worker/audio µs). [b]Off[/b] removes all; [b]Standard[/b] is default (~12 graphs). [b]Full[/b] matches pre-0.9.5 verbosity and enables per-phase main/physics timing in [method _process].
-@export_enum(
-	"Off:0",
-	"Core:1",
-	"Standard:2",
-	"Full:3",
-)
-var performance_custom_monitors: int = 2:
+@export_enum("Off:0", "Core:1", "Standard:2", "Full:3",) var performance_custom_monitors: int = 2:
 	get:
 		return _performance_custom_monitors
 	set(v):
-		var nv := clampi(v, ResonanceRuntimePerfMonitors.PERF_MONITORS_OFF, ResonanceRuntimePerfMonitors.PERF_MONITORS_FULL)
+		var nv := clampi(
+			v,
+			ResonanceRuntimePerfMonitors.PERF_MONITORS_OFF,
+			ResonanceRuntimePerfMonitors.PERF_MONITORS_FULL
+		)
 		if _performance_custom_monitors == nv:
 			return
 		_performance_custom_monitors = nv
 		_refresh_performance_custom_monitors_if_ready()
 
 ## Caps the Steam Audio IPL context SIMD level (older CPUs / crash debugging). **Default** lets Phonon pick the highest usable set. Lower sets trade some speed for broader CPU support.
-@export_enum(
-	"Default:-1",
-	"AVX-512:0",
-	"AVX2:1",
-	"AVX:2",
-	"SSE4:3",
-	"SSE2:4"
-)
+@export_enum("Default:-1", "AVX-512:0", "AVX2:1", "AVX:2", "SSE4:3", "SSE2:4")
 var context_simd_level: int = -1:
 	get:
 		return _context_simd_level
@@ -179,7 +170,10 @@ func _sorted_rid_int_ids(rids: Array) -> PackedInt64Array:
 
 func _camera_listener_xform_changed(cam: Camera3D) -> bool:
 	var xf := cam.global_transform
-	return not xf.origin.is_equal_approx(_vp_sync_last_cam_xform.origin) or not xf.basis.is_equal_approx(_vp_sync_last_cam_xform.basis)
+	return (
+		not xf.origin.is_equal_approx(_vp_sync_last_cam_xform.origin)
+		or not xf.basis.is_equal_approx(_vp_sync_last_cam_xform.basis)
+	)
 
 
 ## Returns bake params from first Probe Volume with bake_config, or default. Used before init so pathing visibility params are set.
@@ -414,9 +408,7 @@ func _apply_resonance_viewport_to_server(vp: Viewport) -> void:
 				or _camera_listener_xform_changed(cam)
 			):
 				srv.update_listener(
-					cam.global_position,
-					-cam.global_transform.basis.z,
-					cam.global_transform.basis.y
+					cam.global_position, -cam.global_transform.basis.z, cam.global_transform.basis.y
 				)
 				_vp_sync_last_cam_xform = cam.global_transform
 			_vp_sync_last_had_listener_nodes = false
@@ -582,7 +574,9 @@ func _reload_static_scenes_from_tree(srv: Variant, tree_root: Node) -> void:
 		if static_scenes.size() == 1:
 			var only = static_scenes[0]
 			if only.static_scene_asset and only.has_valid_asset():
-				srv.load_static_scene_from_asset(only.static_scene_asset, only.get_global_transform())
+				srv.load_static_scene_from_asset(
+					only.static_scene_asset, only.get_global_transform()
+				)
 		else:
 			push_error(
 				"Nexus Resonance: Multiple ResonanceStaticScene nodes require clear_static_scenes and add_static_scene_from_asset on ResonanceServer; this build only supports load_static_scene_from_asset (single scene)."
@@ -722,9 +716,7 @@ func _reload_after_reinit() -> void:
 	for n in tree.get_nodes_in_group("resonance_probe_volume"):
 		if n.has_method("reload_probe_batch"):
 			n.reload_probe_batch()
-	tree.call_group_flags(
-		SceneTree.GROUP_CALL_DEFERRED, "resonance_geometry", "refresh_geometry"
-	)
+	tree.call_group_flags(SceneTree.GROUP_CALL_DEFERRED, "resonance_geometry", "refresh_geometry")
 	call_deferred("_deferred_reset_spatial_audio_warmup_passes")
 	_sync_physics_process_for_custom_tracer()
 
@@ -836,9 +828,7 @@ func _warn_restart_if_needed() -> void:
 
 
 func _nexus_perf_uses_full_frame_timing() -> bool:
-	return (
-		_performance_custom_monitors == ResonanceRuntimePerfMonitors.PERF_MONITORS_FULL
-	)
+	return _performance_custom_monitors == ResonanceRuntimePerfMonitors.PERF_MONITORS_FULL
 
 
 func _refresh_performance_custom_monitors_if_ready() -> void:
@@ -951,7 +941,10 @@ func _nexus_perf_read_mixer_sanitize_stereo_last_us() -> int:
 ## ~Hz-rate Performance monitors, so higher update rates have no UI benefit.
 func _sample_audio_aggregates_if_due() -> void:
 	var now_sec := float(Time.get_ticks_msec()) * 0.001
-	if _audio_agg_last_sample_sec >= 0.0 and (now_sec - _audio_agg_last_sample_sec) < AUDIO_AGGREGATE_SAMPLE_PERIOD_SEC:
+	if (
+		_audio_agg_last_sample_sec >= 0.0
+		and (now_sec - _audio_agg_last_sample_sec) < AUDIO_AGGREGATE_SAMPLE_PERIOD_SEC
+	):
 		return
 	_audio_agg_last_sample_sec = now_sec
 	var tree := get_tree()

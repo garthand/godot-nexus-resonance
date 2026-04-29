@@ -27,11 +27,13 @@ func _clear_test_dir() -> void:
 func _triangle_mesh() -> ArrayMesh:
 	var arrays: Array = []
 	arrays.resize(Mesh.ARRAY_MAX)
-	arrays[Mesh.ARRAY_VERTEX] = PackedVector3Array([
-		Vector3(0, 0, 0),
-		Vector3(1, 0, 0),
-		Vector3(0, 1, 0),
-	])
+	arrays[Mesh.ARRAY_VERTEX] = PackedVector3Array(
+		[
+			Vector3(0, 0, 0),
+			Vector3(1, 0, 0),
+			Vector3(0, 1, 0),
+		]
+	)
 	var m := ArrayMesh.new()
 	m.add_surface_from_arrays(Mesh.PRIMITIVE_TRIANGLES, arrays)
 	return m

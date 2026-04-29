@@ -28,21 +28,61 @@ const MON_W_SUM := "Nexus Resonance/Worker/last_tick_sum_us"
 ## Main / physics aggregate monitors: [code]min_level[/code] is [constant PERF_MONITORS_CORE] … [constant PERF_MONITORS_FULL].
 const _MAIN_PHYS_MONITORS: Array[Dictionary] = [
 	{"id": MON_MAIN, "callable": "_nexus_perf_read_main_usec", "min_level": PERF_MONITORS_CORE},
-	{"id": MON_MAIN_VP, "callable": "_nexus_perf_read_main_viewport_usec", "min_level": PERF_MONITORS_FULL},
-	{"id": MON_MAIN_TICK, "callable": "_nexus_perf_read_main_tick_usec", "min_level": PERF_MONITORS_FULL},
-	{"id": MON_MAIN_FLUSH, "callable": "_nexus_perf_read_main_flush_usec", "min_level": PERF_MONITORS_FULL},
-	{"id": MON_PHYS, "callable": "_nexus_perf_read_physics_tick_usec", "min_level": PERF_MONITORS_FULL},
-	{"id": MON_PHYS_VP, "callable": "_nexus_perf_read_physics_viewport_usec", "min_level": PERF_MONITORS_FULL},
-	{"id": MON_PHYS_TICK, "callable": "_nexus_perf_read_physics_server_tick_usec", "min_level": PERF_MONITORS_FULL},
-	{"id": MON_PHYS_FLUSH, "callable": "_nexus_perf_read_physics_flush_usec", "min_level": PERF_MONITORS_FULL},
+	{
+		"id": MON_MAIN_VP,
+		"callable": "_nexus_perf_read_main_viewport_usec",
+		"min_level": PERF_MONITORS_FULL
+	},
+	{
+		"id": MON_MAIN_TICK,
+		"callable": "_nexus_perf_read_main_tick_usec",
+		"min_level": PERF_MONITORS_FULL
+	},
+	{
+		"id": MON_MAIN_FLUSH,
+		"callable": "_nexus_perf_read_main_flush_usec",
+		"min_level": PERF_MONITORS_FULL
+	},
+	{
+		"id": MON_PHYS,
+		"callable": "_nexus_perf_read_physics_tick_usec",
+		"min_level": PERF_MONITORS_FULL
+	},
+	{
+		"id": MON_PHYS_VP,
+		"callable": "_nexus_perf_read_physics_viewport_usec",
+		"min_level": PERF_MONITORS_FULL
+	},
+	{
+		"id": MON_PHYS_TICK,
+		"callable": "_nexus_perf_read_physics_server_tick_usec",
+		"min_level": PERF_MONITORS_FULL
+	},
+	{
+		"id": MON_PHYS_FLUSH,
+		"callable": "_nexus_perf_read_physics_flush_usec",
+		"min_level": PERF_MONITORS_FULL
+	},
 	{"id": MON_W_SUM, "callable": "_nexus_perf_read_worker_sum", "min_level": PERF_MONITORS_CORE},
 ]
 
 ## [method ResonanceServer.get_simulation_worker_timing] keys → graph titles (microseconds unless noted). [code]min_level[/code] per row.
 const _WORKER_US_MONITORS: Array[Dictionary] = [
-	{"id": "Nexus Resonance/Worker/direct_us", "key": "us_run_direct", "min_level": PERF_MONITORS_STANDARD},
-	{"id": "Nexus Resonance/Worker/reflections_us", "key": "us_run_reflections", "min_level": PERF_MONITORS_CORE},
-	{"id": "Nexus Resonance/Worker/pathing_sim_us", "key": "us_run_pathing", "min_level": PERF_MONITORS_FULL},
+	{
+		"id": "Nexus Resonance/Worker/direct_us",
+		"key": "us_run_direct",
+		"min_level": PERF_MONITORS_STANDARD
+	},
+	{
+		"id": "Nexus Resonance/Worker/reflections_us",
+		"key": "us_run_reflections",
+		"min_level": PERF_MONITORS_CORE
+	},
+	{
+		"id": "Nexus Resonance/Worker/pathing_sim_us",
+		"key": "us_run_pathing",
+		"min_level": PERF_MONITORS_FULL
+	},
 	{
 		"id": "Nexus Resonance/Worker/sync_fetch_total_us",
 		"key": "us_sync_fetch",
@@ -63,7 +103,11 @@ const _WORKER_US_MONITORS: Array[Dictionary] = [
 		"key": "us_sync_fetch_pathing",
 		"min_level": PERF_MONITORS_FULL,
 	},
-	{"id": "Nexus Resonance/Worker/simulator_commit_us", "key": "us_simulator_commit", "min_level": PERF_MONITORS_STANDARD},
+	{
+		"id": "Nexus Resonance/Worker/simulator_commit_us",
+		"key": "us_simulator_commit",
+		"min_level": PERF_MONITORS_STANDARD
+	},
 	{
 		"id": "Nexus Resonance/Worker/scene_graph_commit_us",
 		"key": "us_scene_graph_commit",
@@ -82,7 +126,11 @@ const _WORKER_US_MONITORS: Array[Dictionary] = [
 	## 0/1 flag (not microseconds) — set by the worker when its last wake did
 	## heavy work (reflections/pathing/commit). Kept under the legacy id to stay
 	## backwards compatible with existing dashboards.
-	{"id": "Nexus Resonance/Worker/heavy_tick_flag", "key": "worker_last_wake_heavy", "min_level": PERF_MONITORS_CORE},
+	{
+		"id": "Nexus Resonance/Worker/heavy_tick_flag",
+		"key": "worker_last_wake_heavy",
+		"min_level": PERF_MONITORS_CORE
+	},
 ]
 
 const MON_PATHING_RAN := "Nexus Resonance/Worker/pathing_ran_last_tick"
@@ -105,7 +153,11 @@ const MON_SERVER_PROBE_BATCH_COUNT := "Nexus Resonance/Server/active_probe_batch
 
 ## Extra monitors after worker rows: id, callable on [param owner], min_level.
 const _EXTRA_MONITORS: Array[Dictionary] = [
-	{"id": MON_PATHING_RAN, "callable": "_nexus_perf_read_pathing_ran_tick", "min_level": PERF_MONITORS_FULL},
+	{
+		"id": MON_PATHING_RAN,
+		"callable": "_nexus_perf_read_pathing_ran_tick",
+		"min_level": PERF_MONITORS_FULL
+	},
 	{
 		"id": MON_AUDIO_CONV_APPLY,
 		"callable": "_nexus_perf_read_convolution_apply_last_us",

@@ -211,7 +211,8 @@ var _applying_performance_schedule_preset: bool = false
 
 ## Preset for a few key scheduling knobs (simulation interval, throttles).
 ## The selected value is kept until you manually tweak one of those knobs, then it switches back to Custom.
-@export_enum("Custom:0", "Quality:1", "Balanced:2", "Performance:3") var apply_performance_schedule_preset: int = 0:
+@export_enum("Custom:0", "Quality:1", "Balanced:2", "Performance:3")
+var apply_performance_schedule_preset: int = 0:
 	get:
 		return _performance_schedule_selector
 	set(v):
@@ -302,7 +303,8 @@ var _scene_type: int = 0
 ## Ray tracer backend. Default = built-in Phonon; Embree = Intel (often faster on CPU).
 ## Radeon Rays = OpenCL GPU path supported on 64-bit Windows only; other platforms fall back to Default.
 ## Custom = Steam Audio custom scene: raycasts use Godot 3D physics and simulation runs during the physics frame.
-@export_enum("Default:0", "Embree:1", "Radeon Rays:2", "Custom (Godot Physics):3") var scene_type: int:
+@export_enum("Default:0", "Embree:1", "Radeon Rays:2", "Custom (Godot Physics):3")
+var scene_type: int:
 	get:
 		return _scene_type
 	set(v):
@@ -362,7 +364,15 @@ func _validate_property(property: Dictionary) -> void:
 	):
 		if realtime_rays == 0:
 			property["usage"] = property["usage"] | PROPERTY_USAGE_READ_ONLY
-	elif property.name in ["pathing_normalize_eq", "pathing_num_vis_samples", "path_validation_enabled", "find_alternate_paths"]:
+	elif (
+		property.name
+		in [
+			"pathing_normalize_eq",
+			"pathing_num_vis_samples",
+			"path_validation_enabled",
+			"find_alternate_paths"
+		]
+	):
 		if not pathing_enabled:
 			property["usage"] = property["usage"] | PROPERTY_USAGE_READ_ONLY
 

@@ -63,7 +63,9 @@ func fill_buffer(bus: ResonanceRuntimeBus) -> void:
 		# Reuse success dict in place when possible; do not set _instrumentation_shape_ok on a minimal dict
 		# (would break the full-key update path on the next successful push).
 		if _instrumentation_shape_ok:
-			instrumentation["avail_zero_count"] = int(instrumentation.get("avail_zero_count", 0)) + 1
+			instrumentation["avail_zero_count"] = (
+				int(instrumentation.get("avail_zero_count", 0)) + 1
+			)
 		else:
 			var prev_z := 0
 			if instrumentation.get("active", false) and instrumentation.has("avail_zero_count"):

@@ -5,6 +5,7 @@ class_name ResonanceRuntimeBus
 
 const EFFECT_CLASS := "ResonanceAudioEffect"
 
+
 ## Ensures [ResonanceAudioEffect] is on the bus at index 0 (before EQ/compressor chain).
 ## Call when the reverb bus already exists from [AudioBusLayout] but the effect was stripped or failed to load.
 static func ensure_resonance_reverb_effect_on_bus(bus_idx: int) -> void:
@@ -21,6 +22,7 @@ static func ensure_resonance_reverb_effect_on_bus(bus_idx: int) -> void:
 	effect.resource_name = "Resonance Reverb"
 	AudioServer.add_bus_effect(bus_idx, effect, 0)
 
+
 var _get_bus_effective: Callable
 var _get_reverb_bus_name: Callable
 ## Callable → Godot send target for the runtime reverb effect bus (matches dry [code]bus[/code]).
@@ -28,7 +30,9 @@ var _get_reverb_bus_send: Callable
 
 
 func _init(
-	get_bus_effective_cb: Callable, get_reverb_bus_name_cb: Callable, get_reverb_bus_send_cb: Callable
+	get_bus_effective_cb: Callable,
+	get_reverb_bus_name_cb: Callable,
+	get_reverb_bus_send_cb: Callable
 ) -> void:
 	_get_bus_effective = get_bus_effective_cb
 	_get_reverb_bus_name = get_reverb_bus_name_cb
@@ -88,6 +92,8 @@ func apply_bus_to_players(tree: SceneTree) -> void:
 			effective_reverb_bus = cfg.get_reverb_bus_name_effective(global_reverb_bus)
 		else:
 			effective_reverb_bus = global_reverb_bus
-		var reverb_split := (reflection_type == 1 or reflection_type == 2) and effective_bus != effective_reverb_bus
+		var reverb_split := (
+			(reflection_type == 1 or reflection_type == 2) and effective_bus != effective_reverb_bus
+		)
 		if p.has_method("set_reverb_split_output"):
 			p.set_reverb_split_output(reverb_split, effective_reverb_bus)

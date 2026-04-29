@@ -50,7 +50,8 @@ static func build(
 	if ctx.bc == null:
 		ctx.bc = ResonanceBakeConfig.create_default()
 	ctx.add_flags = {
-		"static_source": ctx.bc.static_source_enabled, "static_listener": ctx.bc.static_listener_enabled
+		"static_source": ctx.bc.static_source_enabled,
+		"static_listener": ctx.bc.static_listener_enabled
 	}
 	ctx.player_pos = Vector3.ZERO
 	ctx.player_radius = (

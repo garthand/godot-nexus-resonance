@@ -54,7 +54,9 @@ func ensure_resonance_server_initialized(volumes: Array[Node]) -> bool:
 	if srv.is_initialized():
 		return true
 	var root: Node = _runner._get_edited_scene_root(volumes) if _runner else null
-	var cfg_node = _BakeDiscovery.find_resonance_runtime(root, ResonanceRuntimeScript) if root else null
+	var cfg_node = (
+		_BakeDiscovery.find_resonance_runtime(root, ResonanceRuntimeScript) if root else null
+	)
 	var config := {}
 	if cfg_node:
 		if cfg_node.has_method("get_config_dict"):
