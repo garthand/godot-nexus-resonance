@@ -5,6 +5,12 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),  
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.9.14] - 2026-04-30
+
+### Fixed
+
+- **Reverb drop/pop at the end of short audio clips** - Mixer return now avoids pulling the shared reflection mixer when no sources have fed it in the current audio quantum (Godot scheduling + mixer mutex ordering edge case vs Unity's deterministic DSP chain). This prevents an audible wet-level dip right as one-shot clips end.
+
 ## [0.9.13] - 2026-04-29
 
 ### Added

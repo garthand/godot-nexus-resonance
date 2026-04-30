@@ -1,6 +1,8 @@
+#include "resonance_math.h"
 #include "resonance_server.h"
 #include "resonance_utils.h"
 #include <climits>
+#include <cstring>
 #include <godot_cpp/classes/node3d.hpp>
 #include <godot_cpp/core/object.hpp>
 #include <godot_cpp/variant/utility_functions.hpp>
@@ -28,6 +30,22 @@ IPLReflectionMixer ResonanceServer::get_reflection_mixer_handle() const {
     }
     return reflection_mixer_[0];
 }
+
+void ResonanceServer::fill_reflection_mixer_apply_params(IPLReflectionEffectParams* p) const {
+    if (!p)
+        return;
+    std::memset(p, 0, sizeof(IPLReflectionEffectParams));
+    p->numChannels = get_num_channels_for_order();
+    if (reflection_type == resonance::kReflectionTan) {
+        p->type = IPL_REFLECTIONEFFECTTYPE_TAN;
+        p->tanDevice = _tan();
+        p->tanSlot = 0;
+    } else {
+        p->type = IPL_REFLECTIONEFFECTTYPE_CONVOLUTION;
+        p->irSize = static_cast<IPLint32>(resonance::reverb_ir_size_samples(get_sample_rate(), max_reverb_duration));
+    }
+}
+
 static int snap_to_supported_frame_size(int value) {
     const int supported[] = {256, resonance::kGodotDefaultFrameSize, 1024, resonance::kMaxAudioFrameSize};
     int best = resonance::kGodotDefaultFrameSize;

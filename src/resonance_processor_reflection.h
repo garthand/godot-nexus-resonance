@@ -52,25 +52,32 @@ class ResonanceReflectionProcessor {
     void cleanup();
 
     // Mixes into the provided Mixer handle (unused if using direct path).
-    // reverb_gain scales mono input before iplReflectionEffectApply (Steam Audio Unity spatialize: reflections mix * source level only).
-    // prev_reverb_gain: when >= 0, applies per-sample ramp from prev to reverb_gain to avoid clicks; use -1 to skip ramp.
-    void process_mix(const IPLAudioBuffer& in_buffer,
+    // Unity spatialize_effect: applyVolumeRamp only on reflectionsMixLevel (mono), then source-side scaling separately.
+    // prev_reflections_mix_level: use -1 to skip ramp on first block (constant reflections_mix_level); else per-sample ramp to reflections_mix_level.
+    // wet_extra_gain: applied uniformly after the ramp (no inter-frame ramp on this product — avoids zipper when distance/occlusion move).
+    /// Returns true if \c iplReflectionEffectApply ran (feed reached mixer). Unity passes simulation outputs with IR;
+    /// skip Apply without advancing caller ramp state when IR invalid — avoids zipper/clicks.
+    bool process_mix(const IPLAudioBuffer& in_buffer,
                      const IPLReflectionEffectParams& reverb_params,
                      IPLReflectionMixer mixer_handle,
-                     float reverb_gain = 1.0f,
-                     float prev_reverb_gain = -1.0f);
+                     float prev_reflections_mix_level,
+                     float reflections_mix_level,
+                     float wet_extra_gain);
 
     /// Bypass mixer: apply convolution with mixer=null, output in internal buffer.
     /// Returns pointer to sa_temp_out_buffer (ambisonic) for external decode. Valid until next process call.
     /// Ramps reflections_mix_level on downmixed mono before apply (Unity Steam Audio spatializer parity).
     /// Unity applies reflections mix on mono before Apply only; caller does not add a second distance/air gain on wet.
-    void process_mix_direct(const IPLAudioBuffer& in_buffer, const IPLReflectionEffectParams& reverb_params,
+    /// Returns true if \c iplReflectionEffectApply ran.
+    bool process_mix_direct(const IPLAudioBuffer& in_buffer, const IPLReflectionEffectParams& reverb_params,
                             float prev_reflections_mix_level, float reflections_mix_level);
     IPLAudioBuffer* get_direct_output_buffer() { return &sa_temp_out_buffer; }
     bool is_parametric() const { return reflection_type == resonance::kReflectionParametric; }
 
     /// Steam Audio tail after input ended (parametric/hybrid direct path; use instead of Apply until TAILCOMPLETE).
     IPLAudioEffectState tail_apply_direct(IPLReflectionEffectParams* params);
+    /// Convolution/TAN: mix tail into [param mixer] (parity with iplReflectionEffectApply ... mixer). Required for reverb-bus output.
+    IPLAudioEffectState tail_apply_to_mixer(IPLReflectionEffectParams* params, IPLReflectionMixer mixer);
     int get_tail_size_samples() const;
     void reset_effect();
 

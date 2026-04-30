@@ -156,10 +156,14 @@ class ResonanceStreamPlayback : public AudioStreamPlayback {
     // Reusable buffers for read_reverb_frames (avoids allocation in audio path)
     std::vector<float> temp_reverb_buffer_l;
     std::vector<float> temp_reverb_buffer_r;
+    // Click guard for split-reverb output: fade to zero when ring runs dry mid-callback.
+    float reverb_ring_prev_l_ = 0.0f;
+    float reverb_ring_prev_r_ = 0.0f;
+    bool reverb_ring_prev_valid_ = false;
 
     // Volume Ramping State
     float prev_direct_weight = 1.0f;
-    float prev_conv_reverb_gain = -1.0f; // For Convolution mixer feed ramp; -1 = no ramp on first use
+    float prev_conv_reflections_mix_level_ = -1.0f; // Convolution mixer: ramp reflections_mix_level only (Unity); -1 = no ramp on first use
     /// Ramped reflections mix on mono before iplReflectionEffectApply (parametric/hybrid player path).
     float prev_parametric_reflections_mix_level_ = 1.0f;
     /// Ramped pathing mix on mono before iplPathEffectApply (matches Steam Audio Unity/FMOD spatialize).
@@ -179,6 +183,13 @@ class ResonanceStreamPlayback : public AudioStreamPlayback {
     bool reflection_tail_have_params_ = false;
     float reflection_tail_wet_gain_ = 1.0f;
     bool reflection_tail_split_output_ = false;
+    /// Convolution/TAN EOS tail: after dry EOS, keep calling Apply(silence) to advance the effect like Unity's
+    /// spatialize path (which has no explicit GetTail step). Reset in _start.
+    bool conv_reverb_eos_silence_apply_done_ = false;
+
+    /// Pathing EOS tail: Unity advances via iplPathEffectApply every tick; cache last params so we can Apply(silence) after EOS.
+    IPLPathEffectParams pathing_tail_params_{};
+    bool pathing_tail_have_params_ = false;
 
     /// Set when the dry signal has been halted (either via Godot's _stop() or via a soft-stop
     /// request from ResonancePlayer::stop()). Marks the start of the tail-drain window: _mix
@@ -222,13 +233,14 @@ class ResonanceStreamPlayback : public AudioStreamPlayback {
     std::atomic<float> debug_signal_pathing{0.0f};               // Path wet stereo RMS after path sim (per block, clamped 0..1 for HUD)
     std::chrono::steady_clock::time_point last_mix_time_;        // For inter-callback timing (audio thread only)
 
-    void _lazy_init_steam_audio(int sampling_rate);                                            // Lazy init to avoid overhead if not needed
-    void _cleanup_steam_audio();                                                               // Cleanup all resources
-    void _process_steam_audio_block();                                                         // Process a single block of audio through Steam Audio
-    void _sync_params();                                                                       // Sync parameters from next to current
-    void _add_reverb_to_output(IPLAudioBuffer* reverb_buf, float refl_mix, bool split_output); // Parametric vs Convolution, split vs mix
-    void _write_output_rings_folded();                                                         // sa_final_mix_buffer (N ch) -> stereo rings via temp_process_buffer_*
-    void _zero_sa_final_mix();                                                                 // memset all direct_out_channels_
+    void _lazy_init_steam_audio(int sampling_rate); // Lazy init to avoid overhead if not needed
+    void _cleanup_steam_audio();                    // Cleanup all resources
+    void _process_steam_audio_block();              // Process a single block of audio through Steam Audio
+    void _sync_params();                            // Sync parameters from next to current
+    void _add_reverb_to_output(IPLAudioBuffer* reverb_buf, float refl_mix, bool split_output,
+                               const IPLCoordinateSpace3& listener_coords); // Ambisonic decode must match reverb bus listener
+    void _write_output_rings_folded();                                      // sa_final_mix_buffer (N ch) -> stereo rings via temp_process_buffer_*
+    void _zero_sa_final_mix();                                              // memset all direct_out_channels_
     void internal_orphan_owner_player() { owner_player_ = nullptr; }
 
   public:

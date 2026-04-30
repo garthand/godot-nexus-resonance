@@ -111,6 +111,10 @@ void ResonanceAudioEffectInstance::_process(const void* src_buffer, AudioFrame* 
 
     IPLCoordinateSpace3 listener_coords = srv->get_current_listener_coords();
 
+    // Steam Audio Unity: per-source effects (spatialize) call iplReflectionEffectApply into the shared mixer
+    // before the Mix Return effect runs iplReflectionMixerApply on the same DSP tick. Godot should run
+    // ResonanceStreamPlayback::_mix (which feeds the mixer) before this bus _process for send routing;
+    // matching ResonanceServer::audio_frame_size to the bus frame_count avoids a one-block feed/pull skew.
     const auto bus_t0 = std::chrono::steady_clock::now();
     bool success = processor.process_mixer_return(mixer, listener_coords, dst_buffer, frame_count);
     const auto bus_t1 = std::chrono::steady_clock::now();
@@ -120,8 +124,10 @@ void ResonanceAudioEffectInstance::_process(const void* src_buffer, AudioFrame* 
     float peak = 0.0f;
     int32_t frames_written = 0;
     if (success) {
-        // Reset Mixer after reading
-        iplReflectionMixerReset(mixer);
+        // Do not call iplReflectionMixerReset here. Steam Audio Unity mix_return_effect.cpp only uses
+        // iplReflectionMixerApply to pull accumulated mixer audio; Reset would clear internal mixer
+        // state between Apply (sources) and Apply (bus), causing choppy / gated wet output when feed
+        // and pull run on different scheduling phases.
         frames_written = frame_count;
 
         float gain = 1.0f;
@@ -140,6 +146,26 @@ void ResonanceAudioEffectInstance::_process(const void* src_buffer, AudioFrame* 
                 peak = v;
         }
     }
+
+    // Click guard (Godot scheduling edge case): if the wet bus transitions from an audible block to near-silence
+    // in one callback, fade the current block to 0 so the next all-zero block doesn't click.
+    // Unity's DSP chain avoids this by deterministic per-tick feed/pull; in Godot the last fed block can be cut
+    // by callback ordering or voice lifetime edges.
+    const float silent_thr = 1.0e-4f;
+    if (frames_written > 0 && prev_peak_ >= silent_thr && peak < silent_thr) {
+        for (int i = 0; i < frame_count; i++) {
+            const float fade = 1.0f - (float(i + 1) / float(frame_count));
+            dst_buffer[i].left *= fade;
+            dst_buffer[i].right *= fade;
+        }
+        peak = 0.0f;
+        for (int i = 0; i < frame_count; i++) {
+            const float v = std::max(std::abs(dst_buffer[i].left), std::abs(dst_buffer[i].right));
+            if (v > peak)
+                peak = v;
+        }
+    }
+    prev_peak_ = peak;
 
     srv->update_reverb_effect_instrumentation(false, success, frames_written, peak);
 }

@@ -34,14 +34,23 @@ class ResonanceMixerProcessor {
 
     // Buffers
     IPLAudioBuffer sa_ambisonic_buffer{}; // Mixer -> Decode
-    IPLAudioBuffer sa_stereo_buffer{};    // Decode -> Godot (or VirtualSurround -> Godot)
-    IPLAudioBuffer sa_7_1_buffer{};       // Decode 7.1 intermediate when use_virtual_surround
+    IPLAudioBuffer sa_ambisonic_prev{};   // Previous mixer block (1-block delay to avoid Godot feed/pull ordering clicks)
+    bool ambisonic_prev_valid = false;
+    IPLAudioBuffer sa_stereo_buffer{}; // Decode -> Godot (or VirtualSurround -> Godot)
+    IPLAudioBuffer sa_7_1_buffer{};    // Decode 7.1 intermediate when use_virtual_surround
+    std::vector<float> last_stereo_left{};
+    std::vector<float> last_stereo_right{};
+    bool last_stereo_valid = false;
+    uint64_t last_seen_mixer_feed_count_ = 0;
+    bool have_seen_mixer_feed_count_ = false;
     std::vector<float> pending_stereo_left{};
     std::vector<float> pending_stereo_right{};
     size_t pending_read_index = 0;
 
     void _write_stereo_to_audio_frames_with_carry(AudioFrame* out_frames, int frame_count);
     void _decode_ambisonic_to_stereo_buffer(IPLAudioBuffer* ambi_in, const IPLCoordinateSpace3& listener_coords);
+    void _cache_last_stereo_block();
+    bool _restore_last_stereo_block();
     bool _can_decode() const;
 
     MixerInitFlags init_flags = MixerInitFlags::NONE;

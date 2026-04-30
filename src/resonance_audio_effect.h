@@ -26,6 +26,7 @@ class ResonanceAudioEffectInstance : public AudioEffectInstance {
     ResonanceMixerProcessor processor;
     bool initialized_processor = false;
     Ref<ResonanceAudioEffect> effect_ref;
+    float prev_peak_ = 0.0f;
 
   public:
     ResonanceAudioEffectInstance() = default;

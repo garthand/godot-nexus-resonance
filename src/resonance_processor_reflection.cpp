@@ -122,41 +122,61 @@ void ResonanceReflectionProcessor::cleanup() {
     effect_max_ir_samples_ = 0;
 }
 
-void ResonanceReflectionProcessor::process_mix(const IPLAudioBuffer& in_buffer,
+bool ResonanceReflectionProcessor::process_mix(const IPLAudioBuffer& in_buffer,
                                                const IPLReflectionEffectParams& reverb_params,
                                                IPLReflectionMixer mixer_handle,
-                                               float reverb_gain,
-                                               float prev_reverb_gain) {
+                                               float prev_reflections_mix_level,
+                                               float reflections_mix_level,
+                                               float wet_extra_gain) {
 
     if (!(init_flags & ReflectionInitFlags::REFLECTIONEFFECT) || !(init_flags & ReflectionInitFlags::BUFFERS) || !reflection_effect)
-        return;
-
-    // Downmix (IPL API has non-const param; input is read-only)
-    iplAudioBufferDownmix(context, const_cast<IPLAudioBuffer*>(&in_buffer), &sa_mono_buffer);
-
-    float safe_gain = resonance::sanitize_audio_float(reverb_gain);
-    float safe_prev = resonance::sanitize_audio_float(prev_reverb_gain);
-    if (sa_mono_buffer.data && sa_mono_buffer.data[0])
-        preprocess_reflection_mono(safe_prev, safe_gain, frame_size, sa_mono_buffer.data[0]);
+        return false;
 
     IPLReflectionEffectParams params = reverb_params;
     sanitize_reflection_params(&params);
 
-    // Steam Audio validation requires ir non-null for CONVOLUTION/HYBRID. Skip apply if invalid.
+    // Steam Audio validation requires ir non-null for CONVOLUTION/HYBRID. Check before touching mono so caller ramp state stays aligned.
     if ((params.type == IPL_REFLECTIONEFFECTTYPE_CONVOLUTION || params.type == IPL_REFLECTIONEFFECTTYPE_HYBRID) && !params.ir)
-        return;
+        return false;
+
+    // Downmix (IPL API has non-const param; input is read-only)
+    iplAudioBufferDownmix(context, const_cast<IPLAudioBuffer*>(&in_buffer), &sa_mono_buffer);
+
+    const bool first_block = (prev_reflections_mix_level < 0.0f);
+    float safe_curr_refl = resonance::sanitize_audio_float(reflections_mix_level);
+    if (sa_mono_buffer.data && sa_mono_buffer.data[0]) {
+        float* mono = sa_mono_buffer.data[0];
+        if (first_block) {
+            preprocess_reflection_mono(-1.0f, safe_curr_refl, frame_size, mono);
+        } else {
+            float safe_prev_refl = resonance::sanitize_audio_float(prev_reflections_mix_level);
+            resonance::apply_volume_ramp_and_sanitize(safe_prev_refl, safe_curr_refl, frame_size, mono);
+        }
+        float eg = resonance::sanitize_audio_float(wet_extra_gain);
+        if (std::abs(eg - 1.0f) > 1e-5f) {
+            for (int i = 0; i < frame_size; i++)
+                mono[i] = resonance::sanitize_audio_float(mono[i] * eg);
+        }
+    }
 
     // Apply (writes to mixer when mixer_handle is non-null, else to sa_temp_out_buffer)
     iplReflectionEffectApply(reflection_effect, &params,
                              &sa_mono_buffer, &sa_temp_out_buffer, mixer_handle);
+    return true;
 }
 
-void ResonanceReflectionProcessor::process_mix_direct(const IPLAudioBuffer& in_buffer,
+bool ResonanceReflectionProcessor::process_mix_direct(const IPLAudioBuffer& in_buffer,
                                                       const IPLReflectionEffectParams& reverb_params,
                                                       float prev_reflections_mix_level,
                                                       float reflections_mix_level) {
     if (!(init_flags & ReflectionInitFlags::REFLECTIONEFFECT) || !(init_flags & ReflectionInitFlags::BUFFERS) || !reflection_effect)
-        return;
+        return false;
+
+    IPLReflectionEffectParams params = reverb_params;
+    sanitize_reflection_params(&params);
+
+    if ((params.type == IPL_REFLECTIONEFFECTTYPE_CONVOLUTION || params.type == IPL_REFLECTIONEFFECTTYPE_HYBRID) && !params.ir)
+        return false;
 
     // IPL API has non-const param; input is read-only
     iplAudioBufferDownmix(context, const_cast<IPLAudioBuffer*>(&in_buffer), &sa_mono_buffer);
@@ -167,16 +187,10 @@ void ResonanceReflectionProcessor::process_mix_direct(const IPLAudioBuffer& in_b
         resonance::apply_volume_ramp_and_sanitize(p, c, frame_size, sa_mono_buffer.data[0]);
     }
 
-    IPLReflectionEffectParams params = reverb_params;
-    sanitize_reflection_params(&params);
-
-    // Steam Audio validation requires ir non-null for CONVOLUTION/HYBRID. Skip apply if invalid.
-    if ((params.type == IPL_REFLECTIONEFFECTTYPE_CONVOLUTION || params.type == IPL_REFLECTIONEFFECTTYPE_HYBRID) && !params.ir)
-        return;
-
     // Bypass mixer: output goes directly to sa_temp_out_buffer
     iplReflectionEffectApply(reflection_effect, &params,
                              &sa_mono_buffer, &sa_temp_out_buffer, nullptr);
+    return true;
 }
 
 void ResonanceReflectionProcessor::sanitize_reflection_params(IPLReflectionEffectParams* params) const {
@@ -218,6 +232,15 @@ IPLAudioEffectState ResonanceReflectionProcessor::tail_apply_direct(IPLReflectio
     if ((params->type == IPL_REFLECTIONEFFECTTYPE_CONVOLUTION || params->type == IPL_REFLECTIONEFFECTTYPE_HYBRID) && !params->ir)
         return IPL_AUDIOEFFECTSTATE_TAILCOMPLETE;
     return iplReflectionEffectGetTail(reflection_effect, &sa_temp_out_buffer, nullptr);
+}
+
+IPLAudioEffectState ResonanceReflectionProcessor::tail_apply_to_mixer(IPLReflectionEffectParams* params, IPLReflectionMixer mixer) {
+    if (!(init_flags & ReflectionInitFlags::REFLECTIONEFFECT) || !(init_flags & ReflectionInitFlags::BUFFERS) || !reflection_effect || !params || !mixer)
+        return IPL_AUDIOEFFECTSTATE_TAILCOMPLETE;
+    sanitize_reflection_params(params);
+    if ((params->type == IPL_REFLECTIONEFFECTTYPE_CONVOLUTION || params->type == IPL_REFLECTIONEFFECTTYPE_HYBRID) && !params->ir)
+        return IPL_AUDIOEFFECTSTATE_TAILCOMPLETE;
+    return iplReflectionEffectGetTail(reflection_effect, &sa_temp_out_buffer, mixer);
 }
 
 } // namespace godot

@@ -8,7 +8,7 @@ namespace resonance {
 
 /// Version string (centralized; override via NEXUS_RESONANCE_VERSION when building)
 #ifndef NEXUS_RESONANCE_VERSION
-#define NEXUS_RESONANCE_VERSION "0.9.13"
+#define NEXUS_RESONANCE_VERSION "0.9.14"
 #endif
 constexpr const char* kVersion = NEXUS_RESONANCE_VERSION;
 
@@ -88,8 +88,6 @@ constexpr float kSimulatorIrradianceMinDistance = 0.1f;
 
 /// Parametric reverb and pathing EQ: number of frequency bands (Steam Audio low/mid/high)
 constexpr int kReverbBandCount = 3;
-/// Dummy reverb time for iplReflectionMixerApply params (not used; Steam Audio validation requires > 0)
-constexpr float kMixerParametricDummyReverbTime = 0.5f;
 /// Path effect EQ coefficient clamp (prevents extreme gains; Steam Audio uses [0, inf))
 constexpr float kPathEQCoeffMin = 1e-6f;
 constexpr float kPathEQCoeffMax = 1.0f;

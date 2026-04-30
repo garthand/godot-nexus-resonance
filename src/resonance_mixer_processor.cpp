@@ -1,28 +1,15 @@
 #include "resonance_mixer_processor.h"
 #include "resonance_log.h"
-#include "resonance_math.h"
 #include "resonance_server.h"
-#include <chrono>
 #include <godot_cpp/variant/string.hpp>
 #include <godot_cpp/variant/utility_functions.hpp>
+#include <utility>
 
 namespace godot {
 
 // Warn once per process for frame-size mismatches.
 static bool s_frame_count_small_warned = false;
 static bool s_frame_count_large_warned = false;
-
-static void _sanitize_audio_buffer(IPLAudioBuffer* buf) {
-    if (!buf || !buf->data)
-        return;
-    for (int ch = 0; ch < buf->numChannels; ch++) {
-        if (!buf->data[ch])
-            continue;
-        for (int i = 0; i < buf->numSamples; i++) {
-            buf->data[ch][i] = resonance::sanitize_audio_float(buf->data[ch][i]);
-        }
-    }
-}
 
 ResonanceMixerProcessor::~ResonanceMixerProcessor() { cleanup(); }
 
@@ -42,11 +29,17 @@ void ResonanceMixerProcessor::initialize(IPLContext p_context, int p_sample_rate
     IPLAudioSettings audioSettings{p_sample_rate, p_frame_size};
     int num_channels = (ambisonic_order + 1) * (ambisonic_order + 1);
     if (iplAudioBufferAllocate(context, num_channels, frame_size, &sa_ambisonic_buffer) != IPL_STATUS_SUCCESS ||
+        iplAudioBufferAllocate(context, num_channels, frame_size, &sa_ambisonic_prev) != IPL_STATUS_SUCCESS ||
         iplAudioBufferAllocate(context, 2, frame_size, &sa_stereo_buffer) != IPL_STATUS_SUCCESS) {
         ResonanceLog::error("ResonanceMixerProcessor: Buffer allocation failed.");
         cleanup();
         return;
     }
+    ambisonic_prev_valid = false;
+    last_stereo_left.resize(static_cast<size_t>(frame_size));
+    last_stereo_right.resize(static_cast<size_t>(frame_size));
+    last_stereo_valid = false;
+    have_seen_mixer_feed_count_ = false;
     init_flags = init_flags | MixerInitFlags::BUFFERS;
 
     ResonanceServer* srv = ResonanceServer::get_singleton();
@@ -118,6 +111,10 @@ void ResonanceMixerProcessor::cleanup() {
             iplAudioBufferFree(context, &sa_ambisonic_buffer);
             sa_ambisonic_buffer.data = nullptr;
         }
+        if (sa_ambisonic_prev.data) {
+            iplAudioBufferFree(context, &sa_ambisonic_prev);
+            sa_ambisonic_prev.data = nullptr;
+        }
         if (sa_stereo_buffer.data) {
             iplAudioBufferFree(context, &sa_stereo_buffer);
             sa_stereo_buffer.data = nullptr;
@@ -132,11 +129,52 @@ void ResonanceMixerProcessor::cleanup() {
     pending_stereo_left.clear();
     pending_stereo_right.clear();
     pending_read_index = 0;
+    ambisonic_prev_valid = false;
+    last_stereo_left.clear();
+    last_stereo_right.clear();
+    last_stereo_valid = false;
+    have_seen_mixer_feed_count_ = false;
+}
+
+void ResonanceMixerProcessor::_cache_last_stereo_block() {
+    if (!sa_stereo_buffer.data || !sa_stereo_buffer.data[0] || !sa_stereo_buffer.data[1])
+        return;
+    if (last_stereo_left.size() != static_cast<size_t>(frame_size))
+        last_stereo_left.resize(static_cast<size_t>(frame_size));
+    if (last_stereo_right.size() != static_cast<size_t>(frame_size))
+        last_stereo_right.resize(static_cast<size_t>(frame_size));
+    for (int i = 0; i < frame_size; i++) {
+        last_stereo_left[static_cast<size_t>(i)] = sa_stereo_buffer.data[0][i];
+        last_stereo_right[static_cast<size_t>(i)] = sa_stereo_buffer.data[1][i];
+    }
+    last_stereo_valid = true;
+}
+
+bool ResonanceMixerProcessor::_restore_last_stereo_block() {
+    if (!last_stereo_valid || !sa_stereo_buffer.data || !sa_stereo_buffer.data[0] || !sa_stereo_buffer.data[1])
+        return false;
+    if (last_stereo_left.size() != static_cast<size_t>(frame_size) || last_stereo_right.size() != static_cast<size_t>(frame_size))
+        return false;
+    for (int i = 0; i < frame_size; i++) {
+        sa_stereo_buffer.data[0][i] = last_stereo_left[static_cast<size_t>(i)];
+        sa_stereo_buffer.data[1][i] = last_stereo_right[static_cast<size_t>(i)];
+    }
+    return true;
 }
 
 void ResonanceMixerProcessor::_write_stereo_to_audio_frames_with_carry(AudioFrame* out_frames, int frame_count) {
     if (!out_frames || frame_count <= 0 || !sa_stereo_buffer.data || !sa_stereo_buffer.data[0] || !sa_stereo_buffer.data[1])
         return;
+
+    // Unity mix_return: one Steam block in per DSP tick when buffer sizes match — no cross-callback carry.
+    // Godot can pass frame_count != frame_size (mismatch / reinit); use the vector path only then.
+    if (pending_stereo_left.empty() && pending_read_index == 0 && frame_count == frame_size) {
+        for (int i = 0; i < frame_count; i++) {
+            out_frames[i].left += sa_stereo_buffer.data[0][i];
+            out_frames[i].right += sa_stereo_buffer.data[1][i];
+        }
+        return;
+    }
 
     // Append the newest decoded block to our carry queue.
     const size_t append_base = pending_stereo_left.size();
@@ -197,48 +235,60 @@ void ResonanceMixerProcessor::_decode_ambisonic_to_stereo_buffer(IPLAudioBuffer*
         decParams.binaural = (srv && srv->use_reverb_binaural()) ? IPL_TRUE : IPL_FALSE;
         iplAmbisonicsDecodeEffectApply(decode_effect, &decParams, ambi_in, &sa_stereo_buffer);
     }
+    _cache_last_stereo_block();
 }
 
 bool ResonanceMixerProcessor::process_mixer_return(IPLReflectionMixer mixer_handle, const IPLCoordinateSpace3& listener_coords, AudioFrame* out_frames, int frame_count) {
     if (!_can_decode() || !mixer_handle)
         return false;
 
-    // 1. Apply Mixer: Extracts the accumulated audio from the mixer into our local Ambisonic buffer.
-    // The mixer apply step consumes accumulated audio; params are required by API but not used for convolution.
-    // Use PARAMETRIC type so validation does not require ir/irSize (avoids Steam Audio validation warnings).
+    // Unity has a deterministic DSP chain (sources feed, then mixer return pulls). In Godot, the reverb bus callback can
+    // run before per-source callbacks in the same audio quantum. If we pull (and clear) the mixer before any source has
+    // fed it, we output a near-silent block -> audible "drop/pop". Use the server's feed counter to avoid pulling when
+    // nothing has been fed since the last bus callback; instead repeat the last wet block (hold-last) for one tick.
+    ResonanceServer* srv_count = ResonanceServer::get_singleton();
+    const uint64_t feed_count_now = srv_count ? srv_count->get_mixer_feed_count() : 0;
+    if (have_seen_mixer_feed_count_ && feed_count_now == last_seen_mixer_feed_count_) {
+        if (_restore_last_stereo_block()) {
+            _write_stereo_to_audio_frames_with_carry(out_frames, frame_count);
+            return true;
+        }
+        // If we can't restore (first tick), fall through to a normal pull.
+    }
+
+    // 1. Apply Mixer: pull accumulated ambisonic wet from the shared reflection mixer.
+    // Unity mix_return_effect.cpp: reflectionParams.type = simulation reflectionType, numChannels, tanDevice
+    // (not PARAMETRIC dummy — mixer was created for convolution/TAN to match per-source effects).
     IPLReflectionEffectParams params{};
-    params.type = IPL_REFLECTIONEFFECTTYPE_PARAMETRIC;
-    params.numChannels = sa_ambisonic_buffer.numChannels;
-    params.reverbTimes[0] = params.reverbTimes[1] = params.reverbTimes[2] = resonance::kMixerParametricDummyReverbTime;
+    if (ResonanceServer* srv = ResonanceServer::get_singleton())
+        srv->fill_reflection_mixer_apply_params(&params);
+    else
+        params.numChannels = sa_ambisonic_buffer.numChannels;
 
+    // No extra buffer sanitize here: Unity mix_return goes straight from Apply to ambisonic decode. Non-finite
+    // values are still caught at ResonanceAudioEffect output (sanitize + clamp after gain).
     iplReflectionMixerApply(mixer_handle, &params, &sa_ambisonic_buffer);
-    {
-        const auto t0 = std::chrono::steady_clock::now();
-        _sanitize_audio_buffer(&sa_ambisonic_buffer);
-        const auto t1 = std::chrono::steady_clock::now();
-        if (ResonanceServer* srv = ResonanceServer::get_singleton())
-            srv->record_mixer_sanitize_ambi_usec(static_cast<uint64_t>(
-                std::chrono::duration_cast<std::chrono::microseconds>(t1 - t0).count()));
+
+    // Godot bus scheduling can call the mixer-return effect before sources have fed the reflection mixer
+    // for the current tick. To avoid a feed/pull ordering click at EOS, decode the previous block and
+    // only swap in the newly pulled block for the next callback (1-block wet latency; stable like Unity's DSP chain).
+    if (ambisonic_prev_valid) {
+        _decode_ambisonic_to_stereo_buffer(&sa_ambisonic_prev, listener_coords);
+
+        if (frame_count < frame_size && !s_frame_count_small_warned) {
+            s_frame_count_small_warned = true;
+            UtilityFunctions::push_warning(
+                "Nexus Resonance: Reverb output frame_count (" + String::num_int64(frame_count) +
+                ") < audio_frame_size (" + String::num_int64(frame_size) +
+                "). Carrying tail samples across callbacks until audio engine reinitializes to a matching frame size.");
+        }
+        _write_stereo_to_audio_frames_with_carry(out_frames, frame_count);
     }
 
-    _decode_ambisonic_to_stereo_buffer(&sa_ambisonic_buffer, listener_coords);
-    {
-        const auto t0 = std::chrono::steady_clock::now();
-        _sanitize_audio_buffer(&sa_stereo_buffer);
-        const auto t1 = std::chrono::steady_clock::now();
-        if (ResonanceServer* srv = ResonanceServer::get_singleton())
-            srv->record_mixer_sanitize_stereo_usec(static_cast<uint64_t>(
-                std::chrono::duration_cast<std::chrono::microseconds>(t1 - t0).count()));
-    }
-
-    if (frame_count < frame_size && !s_frame_count_small_warned) {
-        s_frame_count_small_warned = true;
-        UtilityFunctions::push_warning(
-            "Nexus Resonance: Reverb output frame_count (" + String::num_int64(frame_count) +
-            ") < audio_frame_size (" + String::num_int64(frame_size) +
-            "). Carrying tail samples across callbacks until audio engine reinitializes to a matching frame size.");
-    }
-    _write_stereo_to_audio_frames_with_carry(out_frames, frame_count);
+    std::swap(sa_ambisonic_prev, sa_ambisonic_buffer);
+    ambisonic_prev_valid = true;
+    have_seen_mixer_feed_count_ = true;
+    last_seen_mixer_feed_count_ = feed_count_now;
     return true;
 }
 
@@ -248,14 +298,6 @@ bool ResonanceMixerProcessor::decode_ambisonic_to_stereo(IPLAudioBuffer* ambi_bu
         return false;
 
     _decode_ambisonic_to_stereo_buffer(ambi_buf, listener_coords);
-    {
-        const auto t0 = std::chrono::steady_clock::now();
-        _sanitize_audio_buffer(&sa_stereo_buffer);
-        const auto t1 = std::chrono::steady_clock::now();
-        if (ResonanceServer* srv = ResonanceServer::get_singleton())
-            srv->record_mixer_sanitize_stereo_usec(static_cast<uint64_t>(
-                std::chrono::duration_cast<std::chrono::microseconds>(t1 - t0).count()));
-    }
 
     _write_stereo_to_audio_frames_with_carry(out_frames, frame_count);
     return true;

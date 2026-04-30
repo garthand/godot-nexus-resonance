@@ -134,7 +134,7 @@ class ResonanceServer : public Object {
 
     // Mixer (processing done in ResonanceMixerProcessor). Double-buffer: init/main writes [1], audio reads [0].
     // Phase 5 (optional follow-up, not yet implemented): the audio thread still holds mixer_access_mutex during
-    // iplReflectionMixerApply + iplReflectionMixerReset so the mixer handle cannot be released mid-process. Making
+    // iplReflectionMixerApply (ResonanceAudioEffect) so the mixer handle cannot be released mid-process. Making
     // this path fully lock-free (like Unity's gReflectionMixer[2] + std::atomic<bool>) requires epoch-based reclamation
     // of the previous mixer handle so the audio thread can load the pointer via std::atomic and never take a mutex.
     mutable IPLReflectionMixer reflection_mixer_[2] = {nullptr, nullptr};
@@ -710,6 +710,9 @@ class ResonanceServer : public Object {
     IPLRadeonRaysDevice get_radeon_rays_device_handle() const { return steam_audio_context_ ? steam_audio_context_->get_radeon_rays_device() : nullptr; }
     IPLHRTF get_hrtf_handle() const { return steam_audio_context_ ? steam_audio_context_->get_hrtf() : nullptr; }
     IPLReflectionMixer get_reflection_mixer_handle() const;
+    /// Params for \c iplReflectionMixerApply on the shared mixer — Steam Audio Unity \c mix_return_effect.cpp parity
+    /// (\c reflectionParams.type / \c numChannels / \c tanDevice; convolution \c irSize aligned with mixer create).
+    void fill_reflection_mixer_apply_params(IPLReflectionEffectParams* out_params) const;
     IPLCoordinateSpace3 get_current_listener_coords();
     /// FMOD Bridge: Handle for reverb source (listener position). -1 if not created.
     int32_t get_fmod_reverb_source_handle() const { return fmod_reverb_source_handle_; }
@@ -804,6 +807,8 @@ class ResonanceServer : public Object {
     void record_pathing_player_fetch_miss();
     /// Called by ResonancePlayer when it feeds the reflection mixer (Convolution only).
     void record_mixer_feed() { reverb_mixer_feed_count.fetch_add(1, std::memory_order_relaxed); }
+    /// Audio-thread safe: monotonic counter of mixer feeds (used to avoid feed/pull ordering drops vs Unity's DSP chain).
+    uint64_t get_mixer_feed_count() const { return reverb_mixer_feed_count.load(std::memory_order_relaxed); }
     /// Call when feeding mixer for convolution; ir_non_null, reverb_gain, input_rms (mono before gain)
     void record_convolution_feed(bool ir_non_null, float reverb_gain, float input_rms);
     /// Called by ResonanceAudioEffectInstance each _process.
