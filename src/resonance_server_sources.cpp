@@ -29,7 +29,7 @@ int32_t ResonanceServer::create_source_handle(Vector3 pos, float radius) {
         iplSourceRelease(&src);
         return -1;
     }
-    if (handle >= 0 && handle < kMaxCacheHandles) {
+    if (handle < kMaxCacheHandles) {
         // Clear caches for recycled handle IDs.
         for (int slot = 0; slot < kCacheSlots; slot++) {
             occlusion_cache_[static_cast<size_t>(slot)][static_cast<size_t>(handle)].epoch = 0;
@@ -141,7 +141,7 @@ void ResonanceServer::destroy_source_handle(int32_t handle) {
         pending_source_removes_.push_back(src);
         pending_source_post_remove_cleanup_.push_back(handle);
     }
-    if (handle >= 0 && handle < kMaxCacheHandles) {
+    if (handle < kMaxCacheHandles) {
         for (int slot = 0; slot < kCacheSlots; slot++) {
             reverb_param_cache_[static_cast<size_t>(slot)][static_cast<size_t>(handle)].epoch = 0;
             reflection_param_cache_[static_cast<size_t>(slot)][static_cast<size_t>(handle)].epoch = 0;
