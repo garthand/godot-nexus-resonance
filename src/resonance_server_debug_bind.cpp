@@ -76,6 +76,7 @@ void ResonanceServer::reset_reverb_bus_instrumentation() {
     instrumentation_fetch_lock_ok.store(0, std::memory_order_relaxed);
     instrumentation_fetch_cache_hit.store(0, std::memory_order_relaxed);
     instrumentation_fetch_cache_miss.store(0, std::memory_order_relaxed);
+    instrumentation_fetch_cache_skip.store(0, std::memory_order_relaxed);
     instrumentation_audio_conv_refl_apply_last_us_.store(0, std::memory_order_relaxed);
     instrumentation_audio_conv_reverb_bus_last_us_.store(0, std::memory_order_relaxed);
     instrumentation_audio_mixer_sanitize_ambi_last_us_.store(0, std::memory_order_relaxed);
@@ -114,6 +115,11 @@ void ResonanceServer::reset_pathing_instrumentation() {
     instrumentation_worker_us_sync_fetch_occlusion.store(0, std::memory_order_relaxed);
     instrumentation_worker_us_sync_fetch_reflections.store(0, std::memory_order_relaxed);
     instrumentation_worker_us_sync_fetch_pathing.store(0, std::memory_order_relaxed);
+    instrumentation_reflections_sim_skip_no_change.store(0, std::memory_order_relaxed);
+    instrumentation_worker_last_num_rays_.store(0, std::memory_order_relaxed);
+    instrumentation_worker_last_adaptive_num_rays_target_.store(0, std::memory_order_relaxed);
+    instrumentation_worker_active_reflection_sources_.store(0, std::memory_order_relaxed);
+    instrumentation_worker_active_realtime_reflection_sources_.store(0, std::memory_order_relaxed);
 }
 
 Dictionary ResonanceServer::get_simulation_worker_timing() const {
@@ -129,6 +135,11 @@ Dictionary ResonanceServer::get_simulation_worker_timing() const {
     d["us_sync_fetch_reflections"] = (int64_t)instrumentation_worker_us_sync_fetch_reflections.load(std::memory_order_relaxed);
     d["us_sync_fetch_pathing"] = (int64_t)instrumentation_worker_us_sync_fetch_pathing.load(std::memory_order_relaxed);
     d["worker_last_wake_heavy"] = instrumentation_worker_last_wake_was_heavy.load(std::memory_order_relaxed);
+    d["shared_num_rays"] = (int64_t)instrumentation_worker_last_num_rays_.load(std::memory_order_relaxed);
+    d["shared_adaptive_num_rays_target"] = (int64_t)instrumentation_worker_last_adaptive_num_rays_target_.load(std::memory_order_relaxed);
+    d["active_reflection_sources"] = (int64_t)instrumentation_worker_active_reflection_sources_.load(std::memory_order_relaxed);
+    d["active_realtime_reflection_sources"] = (int64_t)instrumentation_worker_active_realtime_reflection_sources_.load(std::memory_order_relaxed);
+    d["refl_skip_no_change"] = (int64_t)instrumentation_reflections_sim_skip_no_change.load(std::memory_order_relaxed);
     d["reflections_adaptive_extra_interval"] = reflections_adaptive_extra_interval_;
     d["main_us_dynamic_transform_enqueue"] = (int64_t)instrumentation_main_us_dynamic_transform_enqueue_.load(std::memory_order_relaxed);
     d["main_last_dynamic_transform_enqueue_us"] = (int64_t)instrumentation_main_us_last_dynamic_transform_enqueue_.load(std::memory_order_relaxed);
@@ -227,10 +238,7 @@ Dictionary ResonanceServer::get_reverb_bus_instrumentation() const {
     d["effect_frames_written"] = (int64_t)reverb_effect_frames_written.load(std::memory_order_relaxed);
     d["effect_output_peak"] = reverb_effect_output_peak.load(std::memory_order_relaxed);
     d["mixer_feed_count"] = (int64_t)reverb_mixer_feed_count.load(std::memory_order_relaxed);
-    {
-        std::lock_guard<std::mutex> m_lock(mixer_access_mutex);
-        d["mixer_exists"] = (reflection_mixer_[0] != nullptr || reflection_mixer_[1] != nullptr);
-    }
+    d["mixer_exists"] = (reflection_mixer_.load(std::memory_order_acquire) != nullptr);
     d["reflection_type"] = reflection_type;
     d["convolution_valid_fetches"] = (int64_t)reverb_convolution_valid_fetches.load(std::memory_order_relaxed);
     d["convolution_feed_ir_null"] = (int64_t)reverb_convolution_feed_ir_null.load(std::memory_order_relaxed);
@@ -240,6 +248,7 @@ Dictionary ResonanceServer::get_reverb_bus_instrumentation() const {
     d["fetch_lock_ok"] = (int64_t)instrumentation_fetch_lock_ok.load(std::memory_order_relaxed);
     d["fetch_cache_hit"] = (int64_t)instrumentation_fetch_cache_hit.load(std::memory_order_relaxed);
     d["fetch_cache_miss"] = (int64_t)instrumentation_fetch_cache_miss.load(std::memory_order_relaxed);
+    d["fetch_cache_skip"] = (int64_t)instrumentation_fetch_cache_skip.load(std::memory_order_relaxed);
     return d;
 }
 

@@ -74,7 +74,8 @@ void ResonanceAudioEffectInstance::_process(const void* src_buffer, AudioFrame* 
         }
     }
 
-    IPLReflectionMixer mixer = srv->get_reflection_mixer_handle();
+    auto mixer_guard = srv->scoped_mixer_read();
+    IPLReflectionMixer mixer = mixer_guard.get();
     if (ResonanceServer::ipl_audio_teardown_active()) {
         for (int i = 0; i < frame_count; i++) {
             dst_buffer[i].left = 0.0f;
@@ -98,9 +99,7 @@ void ResonanceAudioEffectInstance::_process(const void* src_buffer, AudioFrame* 
         dst_buffer[i].right = 0.0f;
     }
 
-    // --- LOCKING & PROCESSING (RAII: unlock on scope exit or exception) ---
-    auto mixer_lock = srv->scoped_mixer_lock();
-
+    // --- PROCESSING ---
     if (ResonanceServer::ipl_audio_teardown_active()) {
         for (int i = 0; i < frame_count; i++) {
             dst_buffer[i].left = 0.0f;

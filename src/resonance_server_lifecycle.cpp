@@ -62,6 +62,20 @@ static ResonanceServer* g_resonance_server_singleton = nullptr;
 ResonanceServer::ResonanceServer() {
     g_resonance_server_singleton = this;
     // No auto-init here!
+    reverb_param_cache_front_.store(0, std::memory_order_release);
+    reflection_param_cache_front_.store(0, std::memory_order_release);
+    pathing_param_cache_front_.store(0, std::memory_order_release);
+    occlusion_cache_front_.store(0, std::memory_order_release);
+    for (size_t i = 0; i < reflections_pending_.size(); i++)
+        reflections_pending_[i].store(false, std::memory_order_release);
+    for (int slot = 0; slot < kCacheSlots; slot++) {
+        for (int i = 0; i < kMaxCacheHandles; i++) {
+            reverb_param_cache_[static_cast<size_t>(slot)][static_cast<size_t>(i)].epoch = 0;
+            reflection_param_cache_[static_cast<size_t>(slot)][static_cast<size_t>(i)].epoch = 0;
+            pathing_param_cache_[static_cast<size_t>(slot)][static_cast<size_t>(i)].epoch = 0;
+            occlusion_cache_[static_cast<size_t>(slot)][static_cast<size_t>(i)].epoch = 0;
+        }
+    }
 }
 
 ResonanceServer::~ResonanceServer() {
@@ -196,23 +210,25 @@ void ResonanceServer::_apply_config(Dictionary config) {
     debug_pathing.store(config_.debug_pathing, std::memory_order_relaxed);
     perspective_correction_enabled.store(config_.perspective_correction_enabled, std::memory_order_relaxed);
     perspective_correction_factor.store(config_.perspective_correction_factor, std::memory_order_relaxed);
-    geometry_update_throttle = config_.geometry_update_throttle;
     dynamic_scene_commit_min_interval_ = config_.dynamic_scene_commit_min_interval;
-    simulation_tick_throttle = config_.simulation_tick_throttle;
     simulation_update_interval = config_.simulation_update_interval;
     reflections_sim_update_interval = config_.reflections_sim_update_interval;
     pathing_sim_update_interval = config_.pathing_sim_update_interval;
     realtime_reflection_max_distance_m = config_.realtime_reflection_max_distance_m;
     reflections_adaptive_budget_us_ = static_cast<uint32_t>(config_.reflections_adaptive_budget_us);
+    reflections_adaptive_ray_min_ = config_.reflections_adaptive_ray_min;
+    reflections_adaptive_ray_recover_frac_ = config_.reflections_adaptive_ray_recover_frac;
+    reflections_adaptive_ray_recover_cap_ = config_.reflections_adaptive_ray_recover_cap;
     reflections_adaptive_step_sec_ = config_.reflections_adaptive_step_sec;
     reflections_adaptive_max_extra_interval_ = config_.reflections_adaptive_max_extra_interval;
     reflections_adaptive_decay_per_sec_ = config_.reflections_adaptive_decay_per_sec;
     reflections_defer_after_scene_commit_us_ = static_cast<uint32_t>(config_.reflections_defer_after_scene_commit_us);
     convolution_ir_max_samples_ = config_.convolution_ir_max_samples;
     reflections_adaptive_extra_interval_ = 0.0f;
+    // Reset adaptive ray scaler state when configuration changes (rays/budget/min knobs).
+    _adaptive_realtime_num_rays_initialized_ = false;
     direct_sim_interval = config_.direct_sim_interval;
     batch_source_updates = config_.batch_source_updates;
-    tick_throttle_counter.store(0, std::memory_order_relaxed);
     simulation_update_time_elapsed = 0.0f;
     reflections_interval_elapsed = 0.0f;
     pathing_interval_elapsed = 0.0f;
@@ -260,6 +276,7 @@ void ResonanceServer::_init_internal() {
     instrumentation_fetch_lock_ok.store(0, std::memory_order_relaxed);
     instrumentation_fetch_cache_hit.store(0, std::memory_order_relaxed);
     instrumentation_fetch_cache_miss.store(0, std::memory_order_relaxed);
+    instrumentation_fetch_cache_skip.store(0, std::memory_order_relaxed);
     reset_pathing_instrumentation();
 
     // shutdown()/reinit leave is_shutting_down_flag true and ipl_teardown_active_ true until a new context
@@ -408,11 +425,7 @@ bool ResonanceServer::_init_scene_and_simulator() {
             steam_audio_context_.reset();
             return false;
         }
-        {
-            std::lock_guard<std::mutex> m_lock(mixer_access_mutex);
-            reflection_mixer_[1] = tmp_mixer;
-        }
-        new_reflection_mixer_written_.store(true, std::memory_order_release);
+        _set_reflection_mixer(tmp_mixer);
     }
 
     iplSceneCommit(scene);
@@ -452,14 +465,14 @@ void ResonanceServer::_start_worker_thread() {
 
 void ResonanceServer::tick(float delta) {
     if (reflection_force_heavy_next_tick_.exchange(false, std::memory_order_acq_rel)) {
-        const bool need_rfl = (max_rays > 0) || probe_batch_registry_.has_any_batches();
+        const bool need_rfl = _any_source_needs_reflection_sim_assume_locked();
         if (need_rfl)
             reflection_sim_heavy_requested.store(true, std::memory_order_release);
     }
 
     // Heavy cadence: default uses one timer (simulation_update_interval) for both reflections and pathing.
     // When reflections_sim_update_interval or pathing_sim_update_interval is >= 0, that axis uses its own seconds value; < 0 falls back to simulation_update_interval.
-    const bool need_refl_heavy = (max_rays > 0) || probe_batch_registry_.has_any_batches();
+    const bool need_refl_heavy = _any_source_needs_reflection_sim_assume_locked();
     const bool split_heavy = (reflections_sim_update_interval >= 0.0f) || (pathing_sim_update_interval >= 0.0f);
     const bool adaptive_refl = (reflections_adaptive_budget_us_ > 0);
     if (!split_heavy && !adaptive_refl) {
@@ -515,9 +528,6 @@ void ResonanceServer::tick(float delta) {
     }
 
     direct_sim_time_elapsed += delta;
-
-    if (!_should_run_throttled(tick_throttle_counter, simulation_tick_throttle))
-        return;
 
     const bool heavy_pending = reflection_sim_heavy_requested.load(std::memory_order_acquire) ||
                                pathing_sim_heavy_requested.load(std::memory_order_acquire);
@@ -586,30 +596,123 @@ void ResonanceServer::_run_phonon_simulation_locked(const IPLCoordinateSpace3& c
     // Phase 1: apply pending iplSourceAdd / iplSourceRemove queues before anything else touches the simulator.
     _drain_pending_source_lifecycle_assume_locked();
     uint64_t us_dyn_apply = 0;
+    bool dynamic_instanced_transforms_applied = false;
     {
         const auto td0 = std::chrono::steady_clock::now();
-        _apply_queued_dynamic_instanced_mesh_transforms_assume_locked();
+        dynamic_instanced_transforms_applied = _apply_queued_dynamic_instanced_mesh_transforms_assume_locked();
         const auto td1 = std::chrono::steady_clock::now();
         us_dyn_apply = static_cast<uint64_t>(std::chrono::duration_cast<std::chrono::microseconds>(td1 - td0).count());
     }
     instrumentation_worker_us_dynamic_instanced_apply.store(us_dyn_apply, std::memory_order_relaxed);
 
-    // Skip reflections simulation when no data source: saves CPU, avoids Steam Audio fallback.
-    bool reflection_capable = (max_rays > 0);
-    if (!reflection_capable) {
-        reflection_capable = probe_batch_registry_.has_any_batches();
+    // Skip reflections simulation when no source needs it. (Probe batches existing alone is not sufficient.)
+    const bool shared_reflections = _any_source_needs_reflection_sim_assume_locked();
+    const bool any_realtime_reflections = _any_source_needs_realtime_reflections_assume_locked();
+
+    // Debug/diagnostics: count sources participating in reflections, and how many request realtime ray tracing.
+    int32_t active_reflection_sources = 0;
+    int32_t active_realtime_sources = 0;
+    {
+        std::vector<int32_t> handles;
+        source_manager.get_all_handles(handles);
+        for (int32_t h : handles) {
+            if (h < 0 || h >= kMaxCacheHandles)
+                continue;
+            if (source_outputs_reflections_[static_cast<size_t>(h)].load(std::memory_order_relaxed) != 0)
+                active_reflection_sources++;
+            if (source_outputs_realtime_reflections_[static_cast<size_t>(h)].load(std::memory_order_relaxed) != 0)
+                active_realtime_sources++;
+        }
     }
-    bool shared_reflections = false;
-    if (reflection_capable) {
-        if (probe_batch_registry_.has_any_batches())
-            shared_reflections = true;
-        else
-            shared_reflections = _any_source_needs_reflection_sim_assume_locked();
+    instrumentation_worker_active_reflection_sources_.store(active_reflection_sources, std::memory_order_relaxed);
+    instrumentation_worker_active_realtime_reflection_sources_.store(active_realtime_sources, std::memory_order_relaxed);
+
+    // Dirty gating for reflections: if nothing relevant changed since last RunReflections, skip the heavy work.
+    // This reduces base load and sporadic spikes when the listener is idle (Unity parity: avoid no-op ray tracing).
+    constexpr float kListenerMoveEps = 0.0025f; // meters
+    constexpr float kSourceMoveEps = 0.0025f;   // meters
+    bool reflections_dirty = true;
+    if (run_reflection_sim && shared_reflections) {
+        reflections_dirty = false;
+        if (dynamic_instanced_transforms_applied)
+            reflections_dirty = true;
+        if (!reflections_dirty && scene_dirty.load(std::memory_order_relaxed))
+            reflections_dirty = true;
+
+        const Vector3 listener_pos(current_listener.origin.x, current_listener.origin.y, current_listener.origin.z);
+        if (!reflections_dirty) {
+            if (!_last_reflections_listener_pos_valid_ || _last_reflections_listener_pos_.distance_to(listener_pos) > kListenerMoveEps) {
+                reflections_dirty = true;
+            }
+        }
+        if (!reflections_dirty && active_realtime_sources > 0) {
+            std::vector<int32_t> handles;
+            source_manager.get_all_handles(handles);
+            for (int32_t h : handles) {
+                if (h < 0 || h >= kMaxCacheHandles)
+                    continue;
+                if (source_outputs_realtime_reflections_[static_cast<size_t>(h)].load(std::memory_order_relaxed) == 0)
+                    continue;
+                auto it = _source_update_snapshot_.find(h);
+                if (it == _source_update_snapshot_.end() || !it->second.valid) {
+                    reflections_dirty = true;
+                    break;
+                }
+                const Vector3& p = it->second.position;
+                const size_t idx = static_cast<size_t>(h);
+                if (!_last_realtime_reflection_source_pos_valid_[idx] ||
+                    _last_realtime_reflection_source_pos_[idx].distance_to(p) > kSourceMoveEps) {
+                    reflections_dirty = true;
+                    break;
+                }
+            }
+        }
+        if (!reflections_dirty) {
+            instrumentation_reflections_sim_skip_no_change.fetch_add(1, std::memory_order_relaxed);
+        }
     }
 
     IPLSimulationSharedInputs inputs{};
     inputs.listener = current_listener;
-    inputs.numRays = max_rays;
+    // Adaptive numRays (budget-driven): scale rays proportionally to budget vs last tick cost.
+    // This makes `reflections_adaptive_budget_us` meaningfully affect aggressiveness even when last_us is huge.
+    int eff_num_rays = 0;
+    int adaptive_target = 0;
+    if (any_realtime_reflections && reflections_dirty) {
+        eff_num_rays = max_rays;
+        adaptive_target = max_rays;
+        if (reflections_adaptive_budget_us_ > 0) {
+            const int min_rays_cfg = std::max(1, std::min(reflections_adaptive_ray_min_, max_rays));
+            if (!_adaptive_realtime_num_rays_initialized_) {
+                _adaptive_realtime_num_rays_ = max_rays;
+                _adaptive_realtime_num_rays_initialized_ = true;
+            } else {
+                const uint64_t last_us = instrumentation_worker_us_run_reflections.load(std::memory_order_relaxed);
+                const uint64_t budget = static_cast<uint64_t>(reflections_adaptive_budget_us_);
+                if (budget > 0 && last_us > budget) {
+                    // Scale down roughly proportional to overshoot.
+                    const double ratio = static_cast<double>(budget) / static_cast<double>(last_us);
+                    int next = static_cast<int>(static_cast<double>(_adaptive_realtime_num_rays_) * ratio);
+                    next = std::max(min_rays_cfg, next);
+                    _adaptive_realtime_num_rays_ = std::min(max_rays, next);
+                } else {
+                    // Recover using configured fraction/cap (aggressiveness knob separate from budget).
+                    const float frac = std::max(0.0f, std::min(1.0f, reflections_adaptive_ray_recover_frac_));
+                    int step = static_cast<int>(std::ceil(static_cast<float>(max_rays) * frac));
+                    const int cap = reflections_adaptive_ray_recover_cap_;
+                    if (cap > 0)
+                        step = std::min(step, cap);
+                    step = std::max(1, step);
+                    _adaptive_realtime_num_rays_ = std::min(max_rays, _adaptive_realtime_num_rays_ + step);
+                }
+            }
+            eff_num_rays = std::max(min_rays_cfg, std::min(max_rays, _adaptive_realtime_num_rays_));
+            adaptive_target = _adaptive_realtime_num_rays_;
+        }
+    }
+    inputs.numRays = eff_num_rays;
+    instrumentation_worker_last_num_rays_.store(static_cast<int32_t>(inputs.numRays), std::memory_order_relaxed);
+    instrumentation_worker_last_adaptive_num_rays_target_.store(static_cast<int32_t>(adaptive_target), std::memory_order_relaxed);
     inputs.numBounces = max_bounces;
     inputs.duration = realtime_simulation_duration;
     inputs.order = ambisonic_order;
@@ -642,7 +745,7 @@ void ResonanceServer::_run_phonon_simulation_locked(const IPLCoordinateSpace3& c
     instrumentation_worker_us_scene_graph_commit.store(us_scene_graph, std::memory_order_relaxed);
     instrumentation_worker_us_simulator_commit.store(us_commit, std::memory_order_relaxed);
 
-    bool execute_run_reflections = run_reflection_sim && shared_reflections;
+    bool execute_run_reflections = run_reflection_sim && shared_reflections && reflections_dirty;
     if (execute_run_reflections && reflections_defer_after_scene_commit_us_ > 0 &&
         us_scene_graph >= static_cast<uint64_t>(reflections_defer_after_scene_commit_us_)) {
         execute_run_reflections = false;
@@ -670,10 +773,27 @@ void ResonanceServer::_run_phonon_simulation_locked(const IPLCoordinateSpace3& c
             us_refl = (uint64_t)std::chrono::duration_cast<std::chrono::microseconds>(t1 - t0).count();
             reflections_have_run_once_.store(true);
             ran_reflections_this_pass = true;
-            {
-                std::lock_guard<std::mutex> lock(reflections_pending_mutex_);
-                reflections_pending_handles_.clear();
+            // Update dirty-gating state on successful reflections run.
+            _last_reflections_listener_pos_ = Vector3(current_listener.origin.x, current_listener.origin.y, current_listener.origin.z);
+            _last_reflections_listener_pos_valid_ = true;
+            if (active_realtime_sources > 0) {
+                std::vector<int32_t> handles;
+                source_manager.get_all_handles(handles);
+                for (int32_t h : handles) {
+                    if (h < 0 || h >= kMaxCacheHandles)
+                        continue;
+                    if (source_outputs_realtime_reflections_[static_cast<size_t>(h)].load(std::memory_order_relaxed) == 0)
+                        continue;
+                    auto it = _source_update_snapshot_.find(h);
+                    if (it == _source_update_snapshot_.end() || !it->second.valid)
+                        continue;
+                    const size_t idx = static_cast<size_t>(h);
+                    _last_realtime_reflection_source_pos_[idx] = it->second.position;
+                    _last_realtime_reflection_source_pos_valid_[idx] = 1;
+                }
             }
+            for (size_t i = 0; i < reflections_pending_.size(); i++)
+                reflections_pending_[i].store(false, std::memory_order_release);
         }
         int cooldown = pathing_crash_cooldown.load();
         if (cooldown > 0)
@@ -736,10 +856,23 @@ bool ResonanceServer::_any_source_needs_reflection_sim_assume_locked() {
     if (handles.empty())
         return false;
     for (int32_t h : handles) {
-        auto it = source_outputs_reflections_.find(h);
-        if (it == source_outputs_reflections_.end())
+        if (h < 0 || h >= kMaxCacheHandles)
             return true;
-        if (it->second)
+        if (source_outputs_reflections_[static_cast<size_t>(h)].load(std::memory_order_relaxed) != 0)
+            return true;
+    }
+    return false;
+}
+
+bool ResonanceServer::_any_source_needs_realtime_reflections_assume_locked() {
+    std::vector<int32_t> handles;
+    source_manager.get_all_handles(handles);
+    if (handles.empty())
+        return false;
+    for (int32_t h : handles) {
+        if (h < 0 || h >= kMaxCacheHandles)
+            continue;
+        if (source_outputs_realtime_reflections_[static_cast<size_t>(h)].load(std::memory_order_relaxed) != 0)
             return true;
     }
     return false;
@@ -867,10 +1000,8 @@ void ResonanceServer::_shutdown_steam_audio() {
     spatial_audio_warmup_passes_remaining_.store(0, std::memory_order_release);
     pathing_ran_this_tick.store(false);
     reflections_have_run_once_.store(false);
-    {
-        std::lock_guard<std::mutex> lock(reflections_pending_mutex_);
-        reflections_pending_handles_.clear();
-    }
+    for (size_t i = 0; i < reflections_pending_.size(); i++)
+        reflections_pending_[i].store(false, std::memory_order_release);
     {
         std::lock_guard<std::mutex> b(source_update_batch_mutex_);
         source_update_batch_.clear();
@@ -913,30 +1044,24 @@ void ResonanceServer::_shutdown_steam_audio() {
     }
     _source_update_snapshot_.clear();
     realtime_reflection_log_once_handles_.clear();
-    {
-        std::lock_guard<std::mutex> c_lock(reverb_cache_mutex_);
-        reverb_param_cache_read_.clear();
-        reverb_param_cache_write_.clear();
-        reverb_cache_dirty_.store(false);
-    }
-    {
-        std::lock_guard<std::mutex> c_lock(reflection_cache_mutex_);
-        reflection_param_cache_read_.clear();
-        reflection_param_cache_write_.clear();
-        reflection_cache_dirty_.store(false);
-    }
-    {
-        std::lock_guard<std::mutex> c_lock(pathing_cache_mutex_);
-        pathing_param_cache_read_.clear();
-        pathing_param_cache_write_.clear();
-        pathing_param_output_.clear();
-        pathing_cache_dirty_.store(false);
-    }
-    {
-        std::lock_guard<std::mutex> c_lock(occlusion_cache_mutex_);
-        occlusion_cache_read_.clear();
-        occlusion_cache_write_.clear();
-        occlusion_cache_dirty_.store(false);
+    // Clear caches via epoch bump (avoid O(N) clears during teardown).
+    reverb_param_cache_front_.store(0, std::memory_order_release);
+    reflection_param_cache_front_.store(0, std::memory_order_release);
+    pathing_param_cache_front_.store(0, std::memory_order_release);
+    occlusion_cache_front_.store(0, std::memory_order_release);
+    for (int slot = 0; slot < kCacheSlots; slot++) {
+        reverb_param_cache_epoch_[slot]++;
+        reflection_param_cache_epoch_[slot]++;
+        pathing_param_cache_epoch_[slot]++;
+        occlusion_cache_epoch_[slot]++;
+        if (reverb_param_cache_epoch_[slot] == 0u)
+            reverb_param_cache_epoch_[slot] = 1u;
+        if (reflection_param_cache_epoch_[slot] == 0u)
+            reflection_param_cache_epoch_[slot] = 1u;
+        if (pathing_param_cache_epoch_[slot] == 0u)
+            pathing_param_cache_epoch_[slot] = 1u;
+        if (occlusion_cache_epoch_[slot] == 0u)
+            occlusion_cache_epoch_[slot] = 1u;
     }
     _clear_reverb_params_likely_available_hints();
 
@@ -984,18 +1109,7 @@ void ResonanceServer::_shutdown_steam_audio() {
             }
         }
 
-        new_reflection_mixer_written_.store(false);
-        {
-            std::lock_guard<std::mutex> m_lock(mixer_access_mutex);
-            if (reflection_mixer_[0]) {
-                iplReflectionMixerRelease(&reflection_mixer_[0]);
-                reflection_mixer_[0] = nullptr;
-            }
-            if (reflection_mixer_[1]) {
-                iplReflectionMixerRelease(&reflection_mixer_[1]);
-                reflection_mixer_[1] = nullptr;
-            }
-        }
+        _set_reflection_mixer(nullptr);
         if (simulator)
             iplSimulatorRelease(&simulator);
         for (IPLStaticMesh m : _runtime_static_meshes) {

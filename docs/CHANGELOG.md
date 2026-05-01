@@ -5,6 +5,24 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),  
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.9.15] - 2026-05-01
+
+### Added
+
+- **ResonanceAmbisonicPlayer (HOA bed orientation)** - Optional bed orientation via `use_bed_scene_orientation` and `ambisonic_orientation_node` (or first `Node3D` parent): decode orientation is built from combined row-major bed local-to-world and listener world-to-head matrices so the HOA field can follow a scene node while the camera supplies the listener pose. Inspector/class reference tooltips were expanded for the Ambisonic decode group (including `apply_output_gain` and related toggles).
+- **Adaptive realtime reflection rays** - When `reflections_adaptive_budget_us` > 0, the worker lowers or restores `numRays` based on measured reflection time vs budget; tune floor/recovery via `reflections_adaptive_ray_min`, `reflections_adaptive_ray_recover_frac`, `reflections_adaptive_ray_recover_cap`, plus interval backoff (`reflections_adaptive_step_sec`, `reflections_adaptive_max_extra_interval`, `reflections_adaptive_decay_per_sec`) on over-budget ticks. Exposed on **ResonanceRuntimeConfig** / server config and covered by config tests.
+
+### Changed
+
+- **ResonanceRuntimeConfig** - Removed `simulation_tick_throttle` and `geometry_update_throttle`. They were Nexus-only extras that duplicated Steam Audio's single **Simulation Update Interval** idea (`simulation_update_interval` plus optional `reflections_sim_update_interval`, `pathing_sim_update_interval`, and `dynamic_scene_commit_min_interval`). The worker now wakes every **ResonanceRuntime** tick without frame skipping; moving-acoustic geometry notifies scene commits every transform as before when throttles were set to 1.
+- **Lock-free audio-thread paths** - Reverb / reflection / pathing parameter caches use atomic double-buffer fronts and epochs; mixer snapshot swaps and reflection pending state avoid mutex work on the mix thread; cross-thread coordination relies on the worker + atomic flags where previously maps/sets were walked under lock (see migration from mutex-heavy fetch paths in prior iterations).
+- **Per-source mix gates Steam Audio simulation flags** - `ResonanceServer` receives `direct_mix_level`, `reflections_mix_level`, and `pathing_mix_level` with each source update. Pathing and reflections simulation are skipped when the corresponding mix is ≤ 0; **direct** simulation is omitted only when **all three** mixes are 0 (if reflections or pathing still need the direct path, e.g. wet occlusion, direct stays enabled). Reduces worker load when sources mute a path via mix alone (Inspector toggles unchanged).
+
+### Fixed
+
+- `ResonancePlayer.finished` now emits reliably (playback no longer gets stuck in a silent "tail" state).
+- **“No reverb params” playback warning** - Only logged when `reflections_mix_level` > 0 (pathing-only / reflections-muted setups no longer trigger a misleading “probe baked?” hint). Message names the **ResonancePlayer** node and distinguishes convolution/TAN vs parametric/hybrid guidance.
+
 ## [0.9.14] - 2026-04-30
 
 ### Fixed

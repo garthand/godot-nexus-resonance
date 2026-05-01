@@ -279,21 +279,11 @@ void ResonanceServerConfig::apply(const Dictionary& config,
     output_reverb_enabled = config_bool(config, "output_reverb", output_reverb_enabled);
     perspective_correction_enabled = config_bool(config, "perspective_correction_enabled", perspective_correction_enabled);
     perspective_correction_factor = config_float(config, "perspective_correction_factor", perspective_correction_factor);
-    geometry_update_throttle = config_int(config, "geometry_update_throttle", geometry_update_throttle);
-    if (geometry_update_throttle < 1)
-        geometry_update_throttle = 1;
-    if (geometry_update_throttle > 64)
-        geometry_update_throttle = 64;
     dynamic_scene_commit_min_interval = config_float(config, "dynamic_scene_commit_min_interval", dynamic_scene_commit_min_interval);
     if (dynamic_scene_commit_min_interval < 0.0f)
         dynamic_scene_commit_min_interval = 0.0f;
     if (dynamic_scene_commit_min_interval > 1.0f)
         dynamic_scene_commit_min_interval = 1.0f;
-    simulation_tick_throttle = config_int(config, "simulation_tick_throttle", simulation_tick_throttle);
-    if (simulation_tick_throttle < 1)
-        simulation_tick_throttle = 1;
-    if (simulation_tick_throttle > 8)
-        simulation_tick_throttle = 8;
     simulation_update_interval = config_float(config, "simulation_update_interval", simulation_update_interval);
     if (simulation_update_interval < 0.0f)
         simulation_update_interval = 0.0f;
@@ -317,6 +307,21 @@ void ResonanceServerConfig::apply(const Dictionary& config,
         reflections_adaptive_budget_us = 0;
     if (reflections_adaptive_budget_us > 2000000)
         reflections_adaptive_budget_us = 2000000;
+    reflections_adaptive_ray_min = config_int(config, "reflections_adaptive_ray_min", reflections_adaptive_ray_min);
+    if (reflections_adaptive_ray_min < 32)
+        reflections_adaptive_ray_min = 32;
+    if (reflections_adaptive_ray_min > 65535)
+        reflections_adaptive_ray_min = 65535;
+    reflections_adaptive_ray_recover_frac = config_float(config, "reflections_adaptive_ray_recover_frac", reflections_adaptive_ray_recover_frac);
+    if (reflections_adaptive_ray_recover_frac < 0.0f)
+        reflections_adaptive_ray_recover_frac = 0.0f;
+    if (reflections_adaptive_ray_recover_frac > 1.0f)
+        reflections_adaptive_ray_recover_frac = 1.0f;
+    reflections_adaptive_ray_recover_cap = config_int(config, "reflections_adaptive_ray_recover_cap", reflections_adaptive_ray_recover_cap);
+    if (reflections_adaptive_ray_recover_cap < 0)
+        reflections_adaptive_ray_recover_cap = 0;
+    if (reflections_adaptive_ray_recover_cap > 65535)
+        reflections_adaptive_ray_recover_cap = 65535;
     reflections_adaptive_step_sec = config_float(config, "reflections_adaptive_step_sec", reflections_adaptive_step_sec);
     if (reflections_adaptive_step_sec < 0.0f)
         reflections_adaptive_step_sec = 0.0f;

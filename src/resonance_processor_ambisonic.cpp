@@ -1,16 +1,38 @@
 #include "resonance_processor_ambisonic.h"
 #include "resonance_log.h"
+#include <cmath>
 #include <cstddef>
 #include <cstring>
 #include <vector>
 
 namespace godot {
 
+namespace {
+
+IPLCoordinateSpace3 identity_orientation() {
+    IPLCoordinateSpace3 u{};
+    u.origin = {0.0f, 0.0f, 0.0f};
+    u.ahead = {0.0f, 0.0f, -1.0f};
+    u.up = {0.0f, 1.0f, 0.0f};
+    u.right = {1.0f, 0.0f, 0.0f};
+    return u;
+}
+
+} // namespace
+
 ResonanceAmbisonicProcessor::~ResonanceAmbisonicProcessor() {
     cleanup();
 }
 
-void ResonanceAmbisonicProcessor::initialize(IPLContext p_context, int p_sample_rate, int p_frame_size, int p_order, bool p_rotation_enabled) {
+bool ResonanceAmbisonicProcessor::matches_config(int p_order, bool p_use_rotation_effect, bool p_apply_hrtf,
+                                                 bool p_input_is_sn3d, bool p_apply_output_gain) const {
+    return ambisonic_order == p_order && use_ip_ambisonics_rotation_effect == p_use_rotation_effect &&
+           apply_hrtf == p_apply_hrtf && input_is_sn3d == p_input_is_sn3d && apply_output_gain == p_apply_output_gain;
+}
+
+void ResonanceAmbisonicProcessor::initialize(IPLContext p_context, int p_sample_rate, int p_frame_size, int p_order,
+                                             bool p_use_rotation_effect, bool p_apply_hrtf, bool p_input_is_sn3d,
+                                             bool p_apply_output_gain, IPLHRTF p_hrtf) {
     if (init_flags != AmbisonicInitFlags::NONE)
         return;
 
@@ -23,7 +45,10 @@ void ResonanceAmbisonicProcessor::initialize(IPLContext p_context, int p_sample_
     frame_size = p_frame_size;
     sample_rate = p_sample_rate;
     ambisonic_order = p_order;
-    rotation_enabled = p_rotation_enabled;
+    use_ip_ambisonics_rotation_effect = p_use_rotation_effect;
+    apply_hrtf = p_apply_hrtf;
+    input_is_sn3d = p_input_is_sn3d;
+    apply_output_gain = p_apply_output_gain;
 
     IPLAudioSettings audioSettings{};
     audioSettings.samplingRate = sample_rate;
@@ -31,8 +56,8 @@ void ResonanceAmbisonicProcessor::initialize(IPLContext p_context, int p_sample_
 
     int num_channels = (ambisonic_order + 1) * (ambisonic_order + 1);
 
-    // 1. Rotation effect: rotates world-space Ambisonics to listener-space (optional, for head-tracking)
-    if (rotation_enabled) {
+    // 1. Rotation effect (optional): world-space HOA -> listener-space (combined-matrix decode path skips this)
+    if (use_ip_ambisonics_rotation_effect) {
         IPLAmbisonicsRotationEffectSettings rotSettings{};
         rotSettings.maxOrder = ambisonic_order;
         IPLerror rot_status = iplAmbisonicsRotationEffectCreate(context, &audioSettings, &rotSettings, &rotation_effect);
@@ -43,11 +68,14 @@ void ResonanceAmbisonicProcessor::initialize(IPLContext p_context, int p_sample_
         }
     }
 
-    // 2. Decode effect: listener-space Ambisonics -> stereo
+    const IPLHRTF hrtf_for_create = (apply_hrtf && p_hrtf) ? p_hrtf : nullptr;
+
+    // 2. Decode effect: HOA -> stereo (panning or binaural)
     IPLAmbisonicsDecodeEffectSettings decSettings{};
     decSettings.speakerLayout.type = IPL_SPEAKERLAYOUTTYPE_STEREO;
     decSettings.speakerLayout.numSpeakers = 2;
     decSettings.maxOrder = ambisonic_order;
+    decSettings.hrtf = hrtf_for_create;
 
     IPLerror dec_status = iplAmbisonicsDecodeEffectCreate(context, &audioSettings, &decSettings, &ambisonics_dec_effect);
     if (dec_status != IPL_STATUS_SUCCESS) {
@@ -63,6 +91,16 @@ void ResonanceAmbisonicProcessor::initialize(IPLContext p_context, int p_sample_
         cleanup();
         return;
     }
+
+    if (input_is_sn3d) {
+        buf_status = iplAudioBufferAllocate(context, num_channels, frame_size, &sa_n3d_buffer);
+        if (buf_status != IPL_STATUS_SUCCESS) {
+            ResonanceLog::error("ResonanceAmbisonicProcessor: N3D buffer allocation failed.");
+            cleanup();
+            return;
+        }
+    }
+
     buf_status = iplAudioBufferAllocate(context, num_channels, frame_size, &sa_rotated_buffer);
     if (buf_status != IPL_STATUS_SUCCESS) {
         ResonanceLog::error("ResonanceAmbisonicProcessor: Ambisonic rotated buffer allocation failed.");
@@ -80,10 +118,13 @@ void ResonanceAmbisonicProcessor::cleanup() {
     if (context) {
         if (sa_in_buffer.data)
             iplAudioBufferFree(context, &sa_in_buffer);
+        if (sa_n3d_buffer.data)
+            iplAudioBufferFree(context, &sa_n3d_buffer);
         if (sa_rotated_buffer.data)
             iplAudioBufferFree(context, &sa_rotated_buffer);
     }
     memset(&sa_in_buffer, 0, sizeof(sa_in_buffer));
+    memset(&sa_n3d_buffer, 0, sizeof(sa_n3d_buffer));
     memset(&sa_rotated_buffer, 0, sizeof(sa_rotated_buffer));
 
     rotation_effect = nullptr;
@@ -93,26 +134,28 @@ void ResonanceAmbisonicProcessor::cleanup() {
 }
 
 void ResonanceAmbisonicProcessor::process(const std::vector<float>& input_data, IPLAudioBuffer& out_buffer,
-                                          const IPLCoordinateSpace3& listener_orient) {
-    process(input_data.data(), input_data.size(), out_buffer, listener_orient);
+                                          bool combined_matrix_decode, const IPLCoordinateSpace3& listener_orient,
+                                          const IPLCoordinateSpace3& combined_decode_orientation, IPLHRTF runtime_hrtf) {
+    process(input_data.data(), input_data.size(), out_buffer, combined_matrix_decode, listener_orient, combined_decode_orientation,
+            runtime_hrtf);
 }
 
 void ResonanceAmbisonicProcessor::process(const float* input_data, size_t sample_count, IPLAudioBuffer& out_buffer,
-                                          const IPLCoordinateSpace3& listener_orient) {
+                                          bool combined_matrix_decode, const IPLCoordinateSpace3& listener_orient,
+                                          const IPLCoordinateSpace3& combined_decode_orientation, IPLHRTF runtime_hrtf) {
 
-    // InitFlags guard: only process when fully initialized
-    // Passthrough fallback: when init failed, pass W (omnidirectional) to stereo instead of silence
     bool init_ok = (init_flags & AmbisonicInitFlags::DECODE) && (init_flags & AmbisonicInitFlags::BUFFERS) && ambisonics_dec_effect && out_buffer.data;
     if (!init_ok) {
         int num_channels = (ambisonic_order + 1) * (ambisonic_order + 1);
         size_t required = (size_t)frame_size * (size_t)num_channels;
         if (input_data && sample_count >= required && out_buffer.data && out_buffer.numChannels >= 2 &&
             out_buffer.data[0] && out_buffer.data[1]) {
-            // Passthrough: decode W channel (index 0) to stereo (1/sqrt(2) for power preservation)
             for (int i = 0; i < frame_size; i++) {
                 float w = input_data[i * num_channels + 0];
-                out_buffer.data[0][i] = w * resonance::kAmbisonicWChannelScale;
-                out_buffer.data[1][i] = w * resonance::kAmbisonicWChannelScale;
+                const float g = apply_output_gain ? (w * resonance::kAmbisonicWChannelScale * resonance::kAmbisonicDecoderOutputScalar)
+                                                  : (w * resonance::kAmbisonicWChannelScale);
+                out_buffer.data[0][i] = g;
+                out_buffer.data[1][i] = g;
             }
         } else {
             for (int i = 0; i < out_buffer.numChannels && out_buffer.data && out_buffer.data[i]; i++) {
@@ -131,32 +174,46 @@ void ResonanceAmbisonicProcessor::process(const float* input_data, size_t sample
         return;
     }
 
-    // 1. Deinterleave Input (interleaved -> IPLAudioBuffer)
-    // Input data: N channels interleaved (N = (order+1)^2), B-Format [W, Y, Z, X, ...]
-    // IPL API has non-const param; input is read-only
     iplAudioBufferDeinterleave(context, const_cast<float*>(input_data), &sa_in_buffer);
 
-    // 2. Rotation: world-space Ambisonics -> listener-space (optional; when disabled, pass through)
-    IPLAudioBuffer* decode_input = &sa_in_buffer;
-    if (rotation_effect) {
+    IPLAudioBuffer* post_convert = &sa_in_buffer;
+    if (input_is_sn3d) {
+        iplAudioBufferConvertAmbisonics(context, IPL_AMBISONICSTYPE_SN3D, IPL_AMBISONICSTYPE_N3D, &sa_in_buffer, &sa_n3d_buffer);
+        post_convert = &sa_n3d_buffer;
+    }
+
+    IPLAudioBuffer* decode_input = post_convert;
+    IPLCoordinateSpace3 decode_orientation{};
+    if (combined_matrix_decode)
+        decode_orientation = combined_decode_orientation;
+    else
+        decode_orientation = listener_orient;
+
+    if (!combined_matrix_decode && rotation_effect && (init_flags & AmbisonicInitFlags::ROTATION)) {
         IPLAmbisonicsRotationEffectParams rotParams{};
         rotParams.orientation = listener_orient;
         rotParams.order = ambisonic_order;
-        iplAmbisonicsRotationEffectApply(rotation_effect, &rotParams, &sa_in_buffer, &sa_rotated_buffer);
+        iplAmbisonicsRotationEffectApply(rotation_effect, &rotParams, post_convert, &sa_rotated_buffer);
         decode_input = &sa_rotated_buffer;
+        decode_orientation = identity_orientation();
     }
 
-    // 3. Decode: Ambisonics -> stereo
     IPLAmbisonicsDecodeEffectParams decParams{};
     decParams.order = ambisonic_order;
-    decParams.hrtf = nullptr;
-    decParams.orientation.ahead = {0, 0, -1};
-    decParams.orientation.up = {0, 1, 0};
-    decParams.orientation.right = {1, 0, 0};
-    decParams.orientation.origin = {0, 0, 0};
-    decParams.binaural = IPL_FALSE;
+    const bool use_bin = apply_hrtf && runtime_hrtf;
+    decParams.hrtf = use_bin ? runtime_hrtf : nullptr;
+    decParams.binaural = use_bin ? IPL_TRUE : IPL_FALSE;
+    decParams.orientation = decode_orientation;
 
     iplAmbisonicsDecodeEffectApply(ambisonics_dec_effect, &decParams, decode_input, &out_buffer);
+
+    if (apply_output_gain && out_buffer.data && out_buffer.data[0] && out_buffer.data[1]) {
+        const float s = resonance::kAmbisonicDecoderOutputScalar;
+        for (int i = 0; i < frame_size; i++) {
+            out_buffer.data[0][i] *= s;
+            out_buffer.data[1][i] *= s;
+        }
+    }
 }
 
 } // namespace godot

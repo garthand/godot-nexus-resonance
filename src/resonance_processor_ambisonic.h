@@ -26,14 +26,19 @@ class ResonanceAmbisonicProcessor {
     IPLAmbisonicsDecodeEffect ambisonics_dec_effect = nullptr;
 
     // Buffers
-    IPLAudioBuffer sa_in_buffer{};      // (order+1)^2 Channels (Ambisonic B-Format)
+    IPLAudioBuffer sa_in_buffer{};      // Deinterleaved input (SN3D if input_sn3d, else N3D)
+    IPLAudioBuffer sa_n3d_buffer{};     // After SN3D->N3D when input_sn3d
     IPLAudioBuffer sa_rotated_buffer{}; // Rotated Ambisonics (listener-space)
 
     AmbisonicInitFlags init_flags = AmbisonicInitFlags::NONE;
     int frame_size = resonance::kGodotDefaultFrameSize;
     int sample_rate = 48000;
     int ambisonic_order = 1;
-    bool rotation_enabled = true;
+    /// IPL Ambisonics rotation effect (skipped when using precomputed decode orientation from combined matrices).
+    bool use_ip_ambisonics_rotation_effect = false;
+    bool apply_hrtf = true;
+    bool input_is_sn3d = true;
+    bool apply_output_gain = true;
 
   public:
     ResonanceAmbisonicProcessor() = default;
@@ -44,14 +49,23 @@ class ResonanceAmbisonicProcessor {
     ResonanceAmbisonicProcessor(ResonanceAmbisonicProcessor&&) = delete;
     ResonanceAmbisonicProcessor& operator=(ResonanceAmbisonicProcessor&&) = delete;
 
-    void initialize(IPLContext p_context, int p_sample_rate, int p_frame_size, int p_order, bool p_rotation_enabled = true);
+    void initialize(IPLContext p_context, int p_sample_rate, int p_frame_size, int p_order,
+                    bool p_use_rotation_effect, bool p_apply_hrtf, bool p_input_is_sn3d, bool p_apply_output_gain,
+                    IPLHRTF p_hrtf);
     void cleanup();
 
-    // Process N-channel Ambisonic input (N=(order+1)^2) -> 2-channel output based on orientation
-    void process(const float* input_data, size_t sample_count, IPLAudioBuffer& out_buffer,
-                 const IPLCoordinateSpace3& listener_orient);
-    void process(const std::vector<float>& input_data, IPLAudioBuffer& out_buffer,
-                 const IPLCoordinateSpace3& listener_orient);
+    bool matches_config(int p_order, bool p_use_rotation_effect, bool p_apply_hrtf, bool p_input_is_sn3d,
+                        bool p_apply_output_gain) const;
+
+    // Process N-channel Ambisonic input (N=(order+1)^2) -> 2-channel output based on orientation.
+    /// runtime_hrtf: pass ResonanceServer::get_hrtf_handle() each block when apply_hrtf is enabled (may change after SOFA load).
+    /// When combined_matrix_decode: decode_input is N3D HOA in world space; combined_decode_orientation is the decode frame.
+    void process(const float* input_data, size_t sample_count, IPLAudioBuffer& out_buffer, bool combined_matrix_decode,
+                 const IPLCoordinateSpace3& listener_orient, const IPLCoordinateSpace3& combined_decode_orientation,
+                 IPLHRTF runtime_hrtf);
+    void process(const std::vector<float>& input_data, IPLAudioBuffer& out_buffer, bool combined_matrix_decode,
+                 const IPLCoordinateSpace3& listener_orient, const IPLCoordinateSpace3& combined_decode_orientation,
+                 IPLHRTF runtime_hrtf);
 };
 
 } // namespace godot

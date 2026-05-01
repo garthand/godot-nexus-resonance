@@ -1,4 +1,5 @@
 #include "resonance_ambisonic_player.h"
+#include "resonance_ambisonics_decode_orientation.h"
 #include "resonance_constants.h"
 #include "resonance_log.h"
 #include "resonance_server.h"
@@ -6,13 +7,92 @@
 #include <cstring>
 #include <godot_cpp/classes/audio_stream.hpp>
 #include <godot_cpp/classes/camera3d.hpp>
+#include <godot_cpp/classes/node.hpp>
+#include <godot_cpp/classes/node3d.hpp>
 #include <godot_cpp/classes/object.hpp>
 #include <godot_cpp/classes/viewport.hpp>
 #include <godot_cpp/core/class_db.hpp>
+#include <godot_cpp/variant/basis.hpp>
+#include <godot_cpp/variant/transform3d.hpp>
 #include <godot_cpp/variant/utility_functions.hpp>
 #include <godot_cpp/variant/variant.hpp>
 
 using namespace godot;
+
+namespace {
+
+inline bool ambisonic_needs_rotation_effect(const AmbisonicPlaybackParameters& p) {
+    return !p.combined_matrix_decode && p.rotation_enabled;
+}
+
+Vector3 godot_world_dir_to_decoder_row_axis(const Vector3& v_world) {
+    return Vector3(v_world.x, v_world.y, -v_world.z);
+}
+
+void fill_ambisonics_bed_local_to_world_row16(const Transform3D& src_world, float matrix_row_major[16]) {
+    Basis b = src_world.get_basis();
+    Vector3 fwd_w = (-b.get_column(2)).normalized();
+    Vector3 up_w = b.get_column(1).normalized();
+    Vector3 right_w = fwd_w.cross(up_w).normalized();
+    up_w = right_w.cross(fwd_w).normalized();
+    Vector3 ru = godot_world_dir_to_decoder_row_axis(right_w);
+    Vector3 uu = godot_world_dir_to_decoder_row_axis(up_w);
+    Vector3 fu = godot_world_dir_to_decoder_row_axis(fwd_w);
+    std::memset(matrix_row_major, 0, 16 * sizeof(float));
+    matrix_row_major[0] = ru.x;
+    matrix_row_major[1] = ru.y;
+    matrix_row_major[2] = ru.z;
+    matrix_row_major[4] = uu.x;
+    matrix_row_major[5] = uu.y;
+    matrix_row_major[6] = uu.z;
+    matrix_row_major[8] = fu.x;
+    matrix_row_major[9] = fu.y;
+    matrix_row_major[10] = fu.z;
+    Vector3 ou = godot_world_dir_to_decoder_row_axis(src_world.get_origin());
+    matrix_row_major[12] = ou.x;
+    matrix_row_major[13] = ou.y;
+    matrix_row_major[14] = ou.z;
+    matrix_row_major[15] = 1.0f;
+}
+
+void basis_to_ambisonics_listener_rotation_row16(const Basis& rotary_world_to_listener, float L[16]) {
+    // Caller zeroes matrix; row-major 4×4 with columns stored at indices (0,4,8), (1,5,9), (2,6,10).
+    for (int col = 0; col < 3; ++col) {
+        Vector3 c = rotary_world_to_listener.get_column(col);
+        L[0 + col * 4 + 0] = c.x;
+        L[0 + col * 4 + 1] = c.y;
+        L[0 + col * 4 + 2] = c.z;
+    }
+}
+
+void fill_ambisonics_listener_world_to_listener_row16(const Transform3D& listener_world_inverse, float L[16]) {
+    const Basis flip = Basis::from_scale(Vector3(1.0f, 1.0f, -1.0f));
+    Basis conjugated = flip * listener_world_inverse.get_basis() * flip;
+    std::memset(L, 0, 16 * sizeof(float));
+    basis_to_ambisonics_listener_rotation_row16(conjugated, L);
+    Vector3 t = godot_world_dir_to_decoder_row_axis(listener_world_inverse.get_origin());
+    L[12] = t.x;
+    L[13] = t.y;
+    L[14] = t.z;
+    L[15] = 1.0f;
+}
+
+Node3D* resolve_ambisonic_bed_orientation_node(ResonanceAmbisonicPlayer* player) {
+    if (!player || !player->get_use_bed_scene_orientation())
+        return nullptr;
+    const NodePath p = player->get_ambisonic_orientation_node();
+    if (!p.is_empty()) {
+        Node* hit = player->get_node_or_null(p);
+        return Object::cast_to<Node3D>(hit);
+    }
+    for (Node* cur = player->get_parent(); cur != nullptr; cur = cur->get_parent()) {
+        if (Node3D* spatial = Object::cast_to<Node3D>(cur))
+            return spatial;
+    }
+    return nullptr;
+}
+
+} // namespace
 
 // ============================================================================
 // PLAYBACK
@@ -94,6 +174,19 @@ void ResonanceAmbisonicInternalPlayback::_cleanup_steam_audio() {
     output_ring_r.clear();
 }
 
+void ResonanceAmbisonicInternalPlayback::_ensure_ambisonic_processor(ResonanceServer* srv) {
+    if (!srv || !srv->is_initialized() || !context)
+        return;
+    _sync_params();
+    const AmbisonicPlaybackParameters& p = params_current;
+    const bool use_rot_eff = ambisonic_needs_rotation_effect(p);
+    if (processor.matches_config(ambisonic_order, use_rot_eff, p.apply_hrtf, p.input_is_sn3d, p.apply_output_gain))
+        return;
+    processor.cleanup();
+    processor.initialize(context, current_sample_rate, frame_size_, ambisonic_order, use_rot_eff, p.apply_hrtf, p.input_is_sn3d,
+                         p.apply_output_gain, srv->get_hrtf_handle());
+}
+
 void ResonanceAmbisonicInternalPlayback::_lazy_init_steam_audio() {
     ResonanceServer* srv = ResonanceServer::get_singleton();
     if (!srv || !srv->is_initialized())
@@ -106,7 +199,9 @@ void ResonanceAmbisonicInternalPlayback::_lazy_init_steam_audio() {
     int num_channels = resonance::ambisonic_num_channels_for_order(ambisonic_order);
     temp_interleaved_input.resize(static_cast<size_t>(frame_size_) * static_cast<size_t>(num_channels));
 
-    processor.initialize(context, current_sample_rate, frame_size_, ambisonic_order, params_current.rotation_enabled);
+    processor.initialize(context, current_sample_rate, frame_size_, ambisonic_order, ambisonic_needs_rotation_effect(params_current),
+                         params_current.apply_hrtf, params_current.input_is_sn3d, params_current.apply_output_gain,
+                         srv->get_hrtf_handle());
 
     // Allocate Output Buffer (Stereo)
     if (iplAudioBufferAllocate(context, 2, frame_size_, &sa_out_buffer) != IPL_STATUS_SUCCESS) {
@@ -138,12 +233,14 @@ void ResonanceAmbisonicInternalPlayback::_process_steam_audio_block() {
     input_ring.read(temp_interleaved_input.data(), block_samples);
 
     ResonanceServer* srv = ResonanceServer::get_singleton();
+    _ensure_ambisonic_processor(srv);
     if (srv && srv->is_initialized() && !srv->is_spatial_audio_output_ready()) {
         for (int ch = 0; ch < sa_out_buffer.numChannels && sa_out_buffer.data && sa_out_buffer.data[ch]; ch++)
             memset(sa_out_buffer.data[ch], 0, frame_size_ * sizeof(float));
     } else {
-        // 2. Process (Vector-based input)
-        processor.process(temp_interleaved_input.data(), block_samples, sa_out_buffer, params_current.listener_orientation);
+        IPLHRTF hrtf = (srv && params_current.apply_hrtf) ? srv->get_hrtf_handle() : nullptr;
+        processor.process(temp_interleaved_input.data(), block_samples, sa_out_buffer, params_current.combined_matrix_decode,
+                          params_current.listener_orientation, params_current.combined_decode_orientation, hrtf);
     }
 
     // 3. Write de-interleaved stereo output to rings
@@ -407,30 +504,49 @@ void ResonanceAmbisonicPlayer::_process(double delta) {
     if (!is_playing())
         return;
 
+    AmbisonicPlaybackParameters params{};
     IPLCoordinateSpace3 listener_orient{};
 
     Viewport* vp = get_viewport();
+    Transform3D listener_world_inverse{};
+    bool have_camera = false;
     if (vp && vp->get_camera_3d()) {
         Camera3D* cam = vp->get_camera_3d();
-        Vector3 forward = -cam->get_global_transform().basis.get_column(2);
-        Vector3 up = cam->get_global_transform().basis.get_column(1);
-        Vector3 right = cam->get_global_transform().basis.get_column(0);
+        have_camera = true;
+        Transform3D cam_xform = cam->get_global_transform();
+        listener_world_inverse = cam_xform.affine_inverse();
 
-        listener_orient.origin = {0, 0, 0};
+        Vector3 forward = -cam_xform.basis.get_column(2);
+        Vector3 up = cam_xform.basis.get_column(1);
+        Vector3 right = cam_xform.basis.get_column(0);
+
+        listener_orient.origin = {0.0f, 0.0f, 0.0f};
         listener_orient.ahead = {forward.x, forward.y, forward.z};
         listener_orient.up = {up.x, up.y, up.z};
         listener_orient.right = {right.x, right.y, right.z};
     } else {
-        // Fallback: use identity orientation when no viewport/camera (avoids degenerate coord system)
-        listener_orient.origin = {0, 0, 0};
-        listener_orient.ahead = {0, 0, -1};
-        listener_orient.up = {0, 1, 0};
-        listener_orient.right = {1, 0, 0};
+        listener_orient.origin = {0.0f, 0.0f, 0.0f};
+        listener_orient.ahead = {0.0f, 0.0f, -1.0f};
+        listener_orient.up = {0.0f, 1.0f, 0.0f};
+        listener_orient.right = {1.0f, 0.0f, 0.0f};
     }
 
-    AmbisonicPlaybackParameters params;
     params.listener_orientation = listener_orient;
     params.rotation_enabled = rotation_enabled;
+    params.apply_hrtf = apply_hrtf;
+    params.input_is_sn3d = input_is_sn3d;
+    params.apply_output_gain = apply_output_gain;
+
+    Node3D* bed = resolve_ambisonic_bed_orientation_node(this);
+    const bool use_combined_bed_listener_matrices = rotation_enabled && bed != nullptr && have_camera;
+    params.combined_matrix_decode = use_combined_bed_listener_matrices;
+    if (use_combined_bed_listener_matrices) {
+        float S[16]{};
+        float L[16]{};
+        fill_ambisonics_bed_local_to_world_row16(bed->get_global_transform(), S);
+        fill_ambisonics_listener_world_to_listener_row16(listener_world_inverse, L);
+        resonance::ambisonics_decode_orientation_row_major(S, L, &params.combined_decode_orientation);
+    }
 
     Ref<AudioStreamPlayback> pb = get_stream_playback();
     if (pb.is_valid()) {
@@ -444,9 +560,45 @@ void ResonanceAmbisonicPlayer::set_rotation_enabled(bool p_enabled) {
     rotation_enabled = p_enabled;
 }
 
+void ResonanceAmbisonicPlayer::set_use_bed_scene_orientation(bool p_enabled) {
+    use_bed_scene_orientation = p_enabled;
+}
+
+void ResonanceAmbisonicPlayer::set_ambisonic_orientation_node(const NodePath& p_path) {
+    ambisonic_orientation_node = p_path;
+}
+
+void ResonanceAmbisonicPlayer::set_apply_hrtf(bool p_enabled) {
+    apply_hrtf = p_enabled;
+}
+
+void ResonanceAmbisonicPlayer::set_input_is_sn3d(bool p_sn3d) {
+    input_is_sn3d = p_sn3d;
+}
+
+void ResonanceAmbisonicPlayer::set_apply_output_gain(bool p_enabled) {
+    apply_output_gain = p_enabled;
+}
+
 void ResonanceAmbisonicPlayer::_bind_methods() {
     ClassDB::bind_method(D_METHOD("set_rotation_enabled", "enabled"), &ResonanceAmbisonicPlayer::set_rotation_enabled);
     ClassDB::bind_method(D_METHOD("is_rotation_enabled"), &ResonanceAmbisonicPlayer::is_rotation_enabled);
+    ClassDB::bind_method(D_METHOD("set_use_bed_scene_orientation", "enabled"), &ResonanceAmbisonicPlayer::set_use_bed_scene_orientation);
+    ClassDB::bind_method(D_METHOD("get_use_bed_scene_orientation"), &ResonanceAmbisonicPlayer::get_use_bed_scene_orientation);
+    ClassDB::bind_method(D_METHOD("set_ambisonic_orientation_node", "node_path"), &ResonanceAmbisonicPlayer::set_ambisonic_orientation_node);
+    ClassDB::bind_method(D_METHOD("get_ambisonic_orientation_node"), &ResonanceAmbisonicPlayer::get_ambisonic_orientation_node);
+    ClassDB::bind_method(D_METHOD("set_apply_hrtf", "enabled"), &ResonanceAmbisonicPlayer::set_apply_hrtf);
+    ClassDB::bind_method(D_METHOD("get_apply_hrtf"), &ResonanceAmbisonicPlayer::get_apply_hrtf);
+    ClassDB::bind_method(D_METHOD("set_input_is_sn3d", "sn3d"), &ResonanceAmbisonicPlayer::set_input_is_sn3d);
+    ClassDB::bind_method(D_METHOD("get_input_is_sn3d"), &ResonanceAmbisonicPlayer::get_input_is_sn3d);
+    ClassDB::bind_method(D_METHOD("set_apply_output_gain", "enabled"), &ResonanceAmbisonicPlayer::set_apply_output_gain);
+    ClassDB::bind_method(D_METHOD("get_apply_output_gain"), &ResonanceAmbisonicPlayer::get_apply_output_gain);
     ADD_GROUP("Ambisonic decode", "");
     ADD_PROPERTY(PropertyInfo(Variant::BOOL, "rotation_enabled"), "set_rotation_enabled", "is_rotation_enabled");
+    ADD_PROPERTY(PropertyInfo(Variant::BOOL, "use_bed_scene_orientation"), "set_use_bed_scene_orientation", "get_use_bed_scene_orientation");
+    ADD_PROPERTY(PropertyInfo(Variant::NODE_PATH, "ambisonic_orientation_node", PROPERTY_HINT_NODE_PATH_VALID_TYPES, "Node3D"),
+                 "set_ambisonic_orientation_node", "get_ambisonic_orientation_node");
+    ADD_PROPERTY(PropertyInfo(Variant::BOOL, "apply_hrtf"), "set_apply_hrtf", "get_apply_hrtf");
+    ADD_PROPERTY(PropertyInfo(Variant::BOOL, "input_is_sn3d"), "set_input_is_sn3d", "get_input_is_sn3d");
+    ADD_PROPERTY(PropertyInfo(Variant::BOOL, "apply_output_gain"), "set_apply_output_gain", "get_apply_output_gain");
 }

@@ -209,7 +209,7 @@ var _pathing_enabled: bool = false
 var _performance_schedule_selector: int = 0
 var _applying_performance_schedule_preset: bool = false
 
-## Preset for a few key scheduling knobs (simulation interval, throttles).
+## Preset for a few key scheduling knobs (simulation intervals, direct cadence).
 ## The selected value is kept until you manually tweak one of those knobs, then it switches back to Custom.
 @export_enum("Custom:0", "Quality:1", "Balanced:2", "Performance:3")
 var apply_performance_schedule_preset: int = 0:
@@ -224,62 +224,35 @@ var apply_performance_schedule_preset: int = 0:
 		match v:
 			1:
 				simulation_update_interval = 0.1
-				simulation_tick_throttle = 1
 				direct_sim_interval = 0.0
-				geometry_update_throttle = 4
 			2:
 				simulation_update_interval = 0.2
-				simulation_tick_throttle = 2
 				direct_sim_interval = 0.03
-				geometry_update_throttle = 6
 			3:
 				simulation_update_interval = 0.3
-				simulation_tick_throttle = 4
 				direct_sim_interval = 0.1
-				geometry_update_throttle = 8
 		_applying_performance_schedule_preset = false
 		notify_property_list_changed()
 
 ## Fraction of CPU cores for Steam Audio simulation threads (0–1). 0.15 ≈ 15% of logical cores; raise for heavier realtime reflections/pathing.
 @export_range(0.0, 1.0, 0.01) var simulation_cpu_cores_percent: float = 0.15
-## Minimum seconds between reflection/pathing worker ticks when the split intervals below are unset.
-## Direct simulation still runs each worker wake. 0 = run heavy sim every worker tick (highest CPU). 0.1 = 100 ms default; 0.15–0.25 = cheaper pathing/reflection follow. Increase when using path validation + alternate paths with Embree to cap pathing frequency.
 var _simulation_update_interval: float = 0.1
+## [b]Simulation Update Interval[/b] — Minimum seconds between scheduling reflection-heavy ([code]iplSimulatorRunReflections[/code]) and pathing-heavy ([code]iplSimulatorRunPathing[/code]) work on the worker (Steam Audio Unity: [i]Simulation Update Interval[/i]).
+## [code]0[/code] = heavy passes every worker tick (most CPU). [code]0.1[/code] ≈ 100 ms default. Larger values reduce CPU; reflections/pathing follow may lag slightly.
+## Does not throttle direct/occlusion — see [member direct_sim_interval]. Use [member reflections_sim_update_interval] / [member pathing_sim_update_interval] for per-axis overrides ([code]-1[/code] = use this value).
 @export_range(0.0, 1.0, 0.01) var simulation_update_interval: float:
 	get:
 		return _simulation_update_interval
 	set(v):
 		_simulation_update_interval = v
 		_on_performance_knob_changed()
-## Reflections update interval override (seconds).
-## -1 = inherit [member simulation_update_interval] (recommended default).
-## >= 0 = minimum seconds between reflection-heavy ticks (lower = higher CPU, faster reverb changes).
+## Seconds between reflection-heavy ticks only. [code]-1[/code] = use [member simulation_update_interval]. [code]≥ 0[/code] = minimum seconds between [code]RunReflections[/code] scheduling (lower = higher CPU, faster IR updates).
 @export_range(-1.0, 1.0, 0.01) var reflections_sim_update_interval: float = -1.0
-## Pathing update interval override (seconds).
-## -1 = inherit [member simulation_update_interval] (recommended default).
-## >= 0 = minimum seconds between pathing-heavy ticks (lower = much higher CPU when validation/alternate paths are enabled).
+## Seconds between pathing-heavy ticks only. [code]-1[/code] = use [member simulation_update_interval]. [code]≥ 0[/code] = minimum seconds between [code]RunPathing[/code] scheduling (path validation / alternate paths can make this expensive).
 @export_range(-1.0, 1.0, 0.01) var pathing_sim_update_interval: float = -1.0
-## Throttle simulation worker wake: every Nth frame tick from ResonanceRuntime (1 = every frame).
-## Higher values reduce CPU from [code]iplSimulatorRunDirect[/code] and cache sync; occlusion/listener react slower.
-var _simulation_tick_throttle: int = 1
-@export_range(1, 8, 1) var simulation_tick_throttle: int:
-	get:
-		return _simulation_tick_throttle
-	set(v):
-		_simulation_tick_throttle = v
-		_on_performance_knob_changed()
-## Throttle scene commits from moving acoustic geometry. Higher values reduce CPU during tweens.
-## Call [method ResonanceGeometry.flush_dynamic_acoustic_transform] at motion end for an exact final pose.
-var _geometry_update_throttle: int = 4
-@export_range(1, 64, 1) var geometry_update_throttle: int:
-	get:
-		return _geometry_update_throttle
-	set(v):
-		_geometry_update_throttle = v
-		_on_performance_knob_changed()
-## Minimum seconds between [code]iplSimulatorRunDirect[/code] on worker ticks that do not run reflections/pathing.
-## 0 = run direct every worker wake. 0.02–0.05 reduces direct/occlusion cost at the expense of responsiveness.
 var _direct_sim_interval: float = 0.0
+## [b]Direct Sim Interval[/b] — Minimum seconds between [code]iplSimulatorRunDirect[/code] on worker wakes when reflection/pathing heavy work is not scheduled for that wake (or after heavy work is skipped). Throttles **direct-path occlusion, transmission, air absorption** independently of [member simulation_update_interval].
+## [code]0[/code] = run direct every eligible worker wake (default). Try [code]0.02[/code]–[code]0.05[/code] to lower CPU; occlusion may update slightly less often.
 @export_range(0.0, 1.0, 0.005) var direct_sim_interval: float:
 	get:
 		return _direct_sim_interval
@@ -288,14 +261,10 @@ var _direct_sim_interval: float = 0.0
 		_on_performance_knob_changed()
 ## Maximum simultaneous sources for realtime reflection simulation (Steam Audio [code]maxNumSources[/code]). Higher values use more CPU and memory.
 @export_range(8, 128, 1) var max_simulation_sources: int = 32
-var _realtime_reflection_max_distance_m: float = 0.0
-## Max distance for realtime reflections (meters). 0 disables the distance cull.
-## Sources farther than this omit reflections simulation flags (cheaper [code]RunReflections[/code]).
-@export_range(0.0, 10000.0, 1.0) var realtime_reflection_max_distance: float:
-	get:
-		return _realtime_reflection_max_distance_m
-	set(v):
-		_realtime_reflection_max_distance_m = v
+## Minimum seconds between worker applications of queued dynamic geometry transforms to Steam Audio (scene commit cost control).
+@export_range(0.0, 1.0, 0.005) var dynamic_scene_commit_min_interval: float = 0.0
+## When on, players enqueue source updates and ResonanceRuntime applies them once per frame (reduces lock contention).
+@export var batch_source_updates: bool = true
 
 # --- Scene Backend & Physics Integration ---
 @export_group("Scene Backend & Physics")
@@ -322,13 +291,15 @@ var scene_type: int:
 
 # --- Expert ---
 @export_group("Expert")
-## Minimum seconds between worker applications of queued dynamic geometry transforms to Steam Audio (scene commit cost control).
-@export_range(0.0, 1.0, 0.005) var dynamic_scene_commit_min_interval: float = 0.0
-## When on, players enqueue source updates and ResonanceRuntime applies them once per frame (reduces lock contention).
-@export var batch_source_updates: bool = true
 ## Adaptive scheduling: when the last reflections tick exceeds this many microseconds, increase the effective reflection interval.
 ## 0 = off.
 @export_range(0, 2000000, 1000) var reflections_adaptive_budget_us: int = 0
+## Lower bound for adaptive realtime [code]numRays[/code] when [member reflections_adaptive_budget_us] > 0.
+@export_range(32, 65535, 1) var reflections_adaptive_ray_min: int = 128
+## How fast adaptive rays recover toward [member realtime_rays] when under budget (fraction of max rays per reflections tick).
+@export_range(0.0, 1.0, 0.005) var reflections_adaptive_ray_recover_frac: float = 0.125
+## Cap for per-tick ray recovery (0 = unlimited; useful to prevent big jumps after a long under-budget stretch).
+@export_range(0, 65535, 32) var reflections_adaptive_ray_recover_cap: int = 512
 ## Seconds added to the effective reflection interval each time the worker exceeds [member reflections_adaptive_budget_us].
 @export_range(0.0, 1.0, 0.005) var reflections_adaptive_step_sec: float = 0.02
 ## Upper bound (seconds) for extra delay from adaptive reflection scheduling.
@@ -341,6 +312,14 @@ var scene_type: int:
 ## Convolution / hybrid / TAN apply path: clamp IR length to this many samples (min with allocated effect IR).
 ## 0 = no cap.
 @export_range(0, 480000, 256) var convolution_ir_max_samples: int = 0
+var _realtime_reflection_max_distance_m: float = 0.0
+## Max distance for realtime reflections (meters). 0 disables the distance cull.
+## Sources farther than this omit reflections simulation flags (cheaper [code]RunReflections[/code]).
+@export_range(0.0, 10000.0, 1.0) var realtime_reflection_max_distance: float:
+	get:
+		return _realtime_reflection_max_distance_m
+	set(v):
+		_realtime_reflection_max_distance_m = v
 
 
 func _validate_property(property: Dictionary) -> void:
@@ -499,14 +478,15 @@ func get_config() -> Dictionary:
 		"occlusion_type": occlusion_type,
 		"max_occlusion_samples": max_occlusion_samples,
 		"max_simulation_sources": max_simulation_sources,
-		"geometry_update_throttle": geometry_update_throttle,
 		"dynamic_scene_commit_min_interval": dynamic_scene_commit_min_interval,
-		"simulation_tick_throttle": simulation_tick_throttle,
 		"simulation_update_interval": simulation_update_interval,
 		"reflections_sim_update_interval": reflections_sim_update_interval,
 		"pathing_sim_update_interval": pathing_sim_update_interval,
 		"realtime_reflection_max_distance_m": _realtime_reflection_max_distance_m,
 		"reflections_adaptive_budget_us": reflections_adaptive_budget_us,
+		"reflections_adaptive_ray_min": reflections_adaptive_ray_min,
+		"reflections_adaptive_ray_recover_frac": reflections_adaptive_ray_recover_frac,
+		"reflections_adaptive_ray_recover_cap": reflections_adaptive_ray_recover_cap,
 		"reflections_adaptive_step_sec": reflections_adaptive_step_sec,
 		"reflections_adaptive_max_extra_interval": reflections_adaptive_max_extra_interval,
 		"reflections_adaptive_decay_per_sec": reflections_adaptive_decay_per_sec,

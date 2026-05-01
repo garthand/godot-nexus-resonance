@@ -42,9 +42,6 @@ class ResonanceGeometry : public Node3D {
     bool server_init_retry_pending_ = false;
     int server_init_retry_count_ = 0;
 
-    /// Counts transform notifications for [ResonanceServer::get_geometry_update_throttle]; reset by flush.
-    uint32_t dynamic_transform_notify_count_ = 0;
-
     void _create_meshes();
     void _schedule_retry_create_meshes_when_server_ready();
     void _deferred_retry_create_meshes();

@@ -46,6 +46,8 @@ var _audio_instrumentation_label: RichTextLabel
 var _reverb_compact_label: RichTextLabel
 var _update_timer: float = 0.0
 var _audio_show_details: bool = false
+var _worker_spike_hold_until_ms: int = 0
+var _worker_spike_hold_line: String = ""
 
 
 func _ready() -> void:
@@ -324,8 +326,9 @@ func _refresh_status() -> void:
 		ptu = int(_pt) if _pt != null else 0
 	var w_sum := 0
 	var w_heavy_tag := ""
+	var wtim: Dictionary = {}
 	if init_ok and srv.has_method("get_simulation_worker_timing"):
-		var wtim: Dictionary = srv.get_simulation_worker_timing()
+		wtim = srv.get_simulation_worker_timing()
 		w_sum = ResonanceRuntimePerfMonitors.simulation_worker_timing_sum(wtim)
 		var wh: Variant = wtim.get("worker_last_wake_heavy", false)
 		var w_heavy: bool = wh if wh is bool else bool(wh)
@@ -348,6 +351,65 @@ func _refresh_status() -> void:
 				)
 			)
 		)
+		# Show a quick breakdown when the worker spikes (helps diagnose "absurd" values).
+		var now_ms: int = Time.get_ticks_msec()
+		var spike_line: String = ""
+		if w_sum >= 10000 and not wtim.is_empty():
+			var keys := [
+				"us_run_reflections",
+				"us_run_pathing",
+				"us_scene_graph_commit",
+				"us_simulator_commit",
+				"us_sync_fetch",
+				"us_dynamic_instanced_apply",
+				"us_run_direct",
+			]
+			var best_key := ""
+			var best_val := -1
+			for k in keys:
+				var v := int(wtim.get(k, 0))
+				if v > best_val:
+					best_val = v
+					best_key = k
+			if best_key != "":
+				spike_line = (
+					"[color=%s]Worker spike:[/color] top=%s %d µs | sceneCommit=%d µs | refl=%d µs | path=%d µs | sync=%d µs"
+					% [
+						COLOR_HINT,
+						best_key,
+						best_val,
+						int(wtim.get("us_scene_graph_commit", 0)),
+						int(wtim.get("us_run_reflections", 0)),
+						int(wtim.get("us_run_pathing", 0)),
+						int(wtim.get("us_sync_fetch", 0)),
+					]
+				)
+				_worker_spike_hold_line = spike_line
+				_worker_spike_hold_until_ms = now_ms + 2000
+		# Hold the last spike line for easier screenshots.
+		if spike_line != "":
+			parts.append(spike_line)
+		elif _worker_spike_hold_line != "" and now_ms < _worker_spike_hold_until_ms:
+			parts.append(_worker_spike_hold_line)
+		# Diagnostics: explain whether we're actually tracing realtime reflection rays.
+		if not wtim.is_empty():
+			var nr := int(wtim.get("shared_num_rays", -1))
+			var art := int(wtim.get("shared_adaptive_num_rays_target", -1))
+			var ar := int(wtim.get("active_reflection_sources", -1))
+			var rr := int(wtim.get("active_realtime_reflection_sources", -1))
+			var sk := int(wtim.get("refl_skip_no_change", -1))
+			if nr >= 0 or ar >= 0 or rr >= 0:
+				var extra := ""
+				if sk >= 0:
+					extra = " | skip_no_change=%d" % maxi(sk, 0)
+				if art >= 0:
+					extra += " | adaptive_target=%d" % maxi(art, 0)
+				parts.append(
+					(
+						"[color=%s]Reflections:[/color] active=%d realtime=%d | shared numRays=%d%s"
+						% [COLOR_HINT, maxi(ar, 0), maxi(rr, 0), maxi(nr, 0), extra]
+					)
+				)
 	else:
 		(
 			parts
@@ -698,6 +760,7 @@ func _refresh_reverb_bus() -> void:
 	var fetch_lock := int(ri.get("fetch_lock_ok", 0))
 	var fetch_hit := int(ri.get("fetch_cache_hit", 0))
 	var fetch_miss := int(ri.get("fetch_cache_miss", 0))
+	var fetch_skip := int(ri.get("fetch_cache_skip", 0))
 	var fetch_total := fetch_lock + fetch_hit + fetch_miss
 	var miss_pct := (100.0 * fetch_miss / fetch_total) if fetch_total > 0 else 0.0
 	var miss_col := (
@@ -743,8 +806,8 @@ func _refresh_reverb_bus() -> void:
 		compact
 		. append(
 			(
-				"[color=%s]Fetch reverb:[/color] [color=%s]cache miss %.1f%%[/color] (hit=%d miss=%d lock_ok=%d)"
-				% [COLOR_NEUTRAL, miss_col, miss_pct, fetch_hit, fetch_miss, fetch_lock]
+				"[color=%s]Fetch reverb:[/color] [color=%s]miss %.1f%%[/color] (hit=%d miss=%d skip=%d lock_ok=%d)"
+				% [COLOR_NEUTRAL, miss_col, miss_pct, fetch_hit, fetch_miss, fetch_skip, fetch_lock]
 			)
 		)
 	)

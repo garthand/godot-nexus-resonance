@@ -6,6 +6,7 @@
 #include <godot_cpp/classes/node3d.hpp>
 #include <godot_cpp/core/object.hpp>
 #include <godot_cpp/variant/utility_functions.hpp>
+#include <thread>
 
 using namespace godot;
 
@@ -17,18 +18,24 @@ IPLCoordinateSpace3 ResonanceServer::get_current_listener_coords() {
 }
 
 IPLReflectionMixer ResonanceServer::get_reflection_mixer_handle() const {
-    std::lock_guard<std::mutex> lock(mixer_access_mutex);
-    if (new_reflection_mixer_written_.exchange(false, std::memory_order_acq_rel)) {
-        if (reflection_mixer_[0]) {
-            iplReflectionMixerRelease(&reflection_mixer_[0]);
-            reflection_mixer_[0] = nullptr;
-        }
-        if (reflection_mixer_[1]) {
-            reflection_mixer_[0] = reflection_mixer_[1];
-            reflection_mixer_[1] = nullptr;
-        }
+    return reflection_mixer_.load(std::memory_order_acquire);
+}
+
+void ResonanceServer::_release_reflection_mixer_when_unused(IPLReflectionMixer mixer) const {
+    if (!mixer)
+        return;
+    // Reflection mixer swaps are rare (init/reinit/shutdown). Avoid blocking the audio thread; the writer waits.
+    while (reflection_mixer_readers_.load(std::memory_order_acquire) > 0) {
+        std::this_thread::yield();
     }
-    return reflection_mixer_[0];
+    IPLReflectionMixer tmp = mixer;
+    iplReflectionMixerRelease(&tmp);
+}
+
+void ResonanceServer::_set_reflection_mixer(IPLReflectionMixer new_mixer) {
+    IPLReflectionMixer old = reflection_mixer_.exchange(new_mixer, std::memory_order_acq_rel);
+    if (old)
+        _release_reflection_mixer_when_unused(old);
 }
 
 void ResonanceServer::fill_reflection_mixer_apply_params(IPLReflectionEffectParams* p) const {

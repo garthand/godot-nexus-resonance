@@ -49,7 +49,7 @@
 		</method>
 		<method name="flush_dynamic_acoustic_transform">
 			<description>
-				For [member dynamic] geometry with an instanced mesh: applies the current transform on the simulation thread path immediately (under [code]simulation_mutex[/code]), clears any queued worker update for this mesh, and marks the scene for commit. Call when an animation or tween finishes (or after killing a tween) so dynamic occlusion and path validation match the final pose—required when using [member ResonanceRuntimeConfig.dynamic_scene_commit_min_interval] &gt; 0 or a high [member ResonanceRuntimeConfig.geometry_update_throttle].
+				For [member dynamic] geometry with an instanced mesh: applies the current transform on the simulation thread path immediately (under [code]simulation_mutex[/code]), clears any queued worker update for this mesh, and marks the scene for commit. Call when an animation or tween finishes (or after killing a tween) so dynamic occlusion and path validation match the final pose—especially when using [member ResonanceRuntimeConfig.dynamic_scene_commit_min_interval] &gt; 0.
 			</description>
 		</method>
 	</methods>

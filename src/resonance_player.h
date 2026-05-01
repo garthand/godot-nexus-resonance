@@ -14,6 +14,7 @@
 #include <godot_cpp/variant/node_path.hpp>
 #include <godot_cpp/variant/transform3d.hpp>
 
+#include <array>
 #include <atomic>
 #include <chrono>
 #include <limits>
@@ -190,6 +191,8 @@ class ResonanceStreamPlayback : public AudioStreamPlayback {
     /// Pathing EOS tail: Unity advances via iplPathEffectApply every tick; cache last params so we can Apply(silence) after EOS.
     IPLPathEffectParams pathing_tail_params_{};
     bool pathing_tail_have_params_ = false;
+    /// Stable storage for tail SH coeffs (max order 3 => 16 coeffs). Avoids dangling pointers when server swaps caches.
+    std::array<float, 16> pathing_tail_sh_coeffs_{};
 
     /// Set when the dry signal has been halted (either via Godot's _stop() or via a soft-stop
     /// request from ResonancePlayer::stop()). Marks the start of the tail-drain window: _mix
@@ -208,15 +211,21 @@ class ResonanceStreamPlayback : public AudioStreamPlayback {
 
     // --- AUDIO INSTRUMENTATION (for dropout debugging) ---
     // Atomic counters updated from audio thread; read from main thread
-    std::atomic<uint64_t> instrumentation_input_dropped{0};                                   // Samples dropped when input ring full
-    std::atomic<uint64_t> instrumentation_output_underrun{0};                                 // Output frames filled with silence
-    std::atomic<uint64_t> instrumentation_output_blocked{0};                                  // Processing skipped (output ring full)
-    std::atomic<uint64_t> instrumentation_mix_call_count{0};                                  // Total _mix calls
-    std::atomic<uint64_t> instrumentation_blocks_processed{0};                                // Blocks processed (512 frames each)
-    std::atomic<uint64_t> instrumentation_passthrough_blocks{0};                              // Blocks in passthrough (no local_source)
-    std::atomic<uint64_t> instrumentation_reverb_miss_blocks{0};                              // Wanted reverb but fetch_reverb_params=false
-    std::atomic<uint64_t> instrumentation_max_block_time_us{0};                               // Max _process_steam_audio_block duration (us)
-    std::atomic<uint64_t> instrumentation_late_mix_count{0};                                  // _mix calls with inter-callback time >15ms
+    std::atomic<uint64_t> instrumentation_input_dropped{0};      // Samples dropped when input ring full
+    std::atomic<uint64_t> instrumentation_output_underrun{0};    // Output frames filled with silence
+    std::atomic<uint64_t> instrumentation_output_blocked{0};     // Processing skipped (output ring full)
+    std::atomic<uint64_t> instrumentation_mix_call_count{0};     // Total _mix calls
+    std::atomic<uint64_t> instrumentation_blocks_processed{0};   // Blocks processed (512 frames each)
+    std::atomic<uint64_t> instrumentation_passthrough_blocks{0}; // Blocks in passthrough (no local_source)
+    std::atomic<uint64_t> instrumentation_reverb_miss_blocks{0}; // Wanted reverb but fetch_reverb_params=false
+    std::atomic<uint64_t> instrumentation_max_block_time_us{0};  // Max _process_steam_audio_block duration (us)
+    std::atomic<uint64_t> instrumentation_late_mix_count{0};     // _mix calls with inter-callback time >15ms
+    /// Last measured inter-callback gap (microseconds). Helps determine if late_mix_count is real or threshold mismatch.
+    std::atomic<uint64_t> instrumentation_last_mix_gap_us_{0};
+    /// Maximum measured inter-callback gap (microseconds) since last reset.
+    std::atomic<uint64_t> instrumentation_max_mix_gap_us_{0};
+    /// Expected callback gap from requested frames and current sample rate (microseconds).
+    std::atomic<uint64_t> instrumentation_expected_mix_gap_us_{0};
     std::atomic<uint64_t> instrumentation_param_sync_count{0};                                // Times params were synced (params_dirty)
     std::atomic<uint64_t> instrumentation_zero_input_count{0};                                // _mix calls with samples_read==0 (tail drain)
     std::atomic<int32_t> instrumentation_mix_frames_min{std::numeric_limits<int32_t>::max()}; // Min samples_read per _mix (when >0)
@@ -273,7 +282,8 @@ class ResonanceStreamPlayback : public AudioStreamPlayback {
     void get_instrumentation_snapshot(uint64_t& out_input_dropped, uint64_t& out_output_underrun,
                                       uint64_t& out_output_blocked, uint64_t& out_mix_calls, uint64_t& out_blocks_processed,
                                       uint64_t& out_passthrough_blocks, uint64_t& out_reverb_miss_blocks, uint64_t& out_max_block_time_us,
-                                      uint64_t& out_late_mix, uint64_t& out_param_syncs, uint64_t& out_zero_input,
+                                      uint64_t& out_late_mix, uint64_t& out_last_mix_gap_us, uint64_t& out_max_mix_gap_us,
+                                      uint64_t& out_expected_mix_gap_us, uint64_t& out_param_syncs, uint64_t& out_zero_input,
                                       int32_t& out_mix_frames_min, int32_t& out_mix_frames_max,
                                       uint64_t& out_silent_blocks, float& out_last_rms,
                                       float& out_pathing_sh_rms, float& out_pathing_sh_energy, float& out_pathing_out_rms,

@@ -652,21 +652,12 @@ void ResonanceGeometry::_update_dynamic_transform() {
     if (!server)
         return;
 
-    uint32_t throttle = (uint32_t)server->get_geometry_update_throttle();
-    if (throttle < 1u)
-        throttle = 1u;
-    if (throttle > 1u) {
-        dynamic_transform_notify_count_++;
-        // Apply on 1st notify and every Nth thereafter (1, N+1, 2N+1, …) so the first move is never skipped.
-        if ((dynamic_transform_notify_count_ % throttle) != 1u) {
-            return;
-        }
-    }
-
     IPLMatrix4x4 mat = ResonanceUtils::to_ipl_matrix(get_mesh_bake_transform());
 
     // Queue for worker: avoids simulation_mutex on the main thread; see ResonanceServer::_apply_queued_dynamic_instanced_mesh_transforms_assume_locked.
-    // Throttle reduces enqueue rate; use flush_dynamic_acoustic_transform at motion end for an exact final pose.
+    // Coalesce with transform-only geometry notifies (consume_geometry_transform_coalesce_tick); use flush_dynamic_acoustic_transform at motion end for an exact final pose when using dynamic_scene_commit_min_interval > 0.
+    if (!server->consume_geometry_transform_coalesce_tick())
+        return;
     server->enqueue_dynamic_instanced_mesh_transform(instanced_mesh, mat);
 }
 
@@ -676,7 +667,6 @@ void ResonanceGeometry::flush_dynamic_acoustic_transform() {
     ResonanceServer* server = ResonanceServer::get_singleton();
     if (!server)
         return;
-    dynamic_transform_notify_count_ = 0;
     // Phase 1: do not take simulation_mutex on the main thread. The dynamic instanced mesh transform queue
     // drained by the worker in _apply_queued_dynamic_instanced_mesh_transforms_assume_locked already covers
     // this transform; the synchronous iplInstancedMeshUpdateTransform here was redundant with the queue and

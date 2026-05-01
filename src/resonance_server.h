@@ -1,6 +1,7 @@
 #ifndef RESONANCE_SERVER_H
 #define RESONANCE_SERVER_H
 
+#include <array>
 #include <atomic>
 #include <chrono>
 #include <condition_variable>
@@ -100,6 +101,9 @@ class ResonanceServer : public Object {
         int occlusion_type_override = -1;
         bool simulation_occlusion_enabled = true;
         bool simulation_transmission_enabled = true;
+        float direct_mix_level = 1.0f;
+        float reflections_mix_level = 1.0f;
+        float pathing_mix_level = 1.0f;
         bool valid = false;
     };
 
@@ -132,14 +136,56 @@ class ResonanceServer : public Object {
     std::recursive_mutex _attenuation_callback_mutex;
     IPLSimulator simulator = nullptr;
 
-    // Mixer (processing done in ResonanceMixerProcessor). Double-buffer: init/main writes [1], audio reads [0].
-    // Phase 5 (optional follow-up, not yet implemented): the audio thread still holds mixer_access_mutex during
-    // iplReflectionMixerApply (ResonanceAudioEffect) so the mixer handle cannot be released mid-process. Making
-    // this path fully lock-free (like Unity's gReflectionMixer[2] + std::atomic<bool>) requires epoch-based reclamation
-    // of the previous mixer handle so the audio thread can load the pointer via std::atomic and never take a mutex.
-    mutable IPLReflectionMixer reflection_mixer_[2] = {nullptr, nullptr};
-    mutable std::atomic<bool> new_reflection_mixer_written_{false};
-    mutable std::mutex mixer_access_mutex;
+    // Mixer (shared reflection mixer): must be safe in audio callbacks without blocking.
+    // We use a lock-free reader guard (atomic reader count + atomic pointer) so the mixer can be swapped/released
+    // on the main/worker threads without ever taking a mutex in the audio thread.
+    std::atomic<IPLReflectionMixer> reflection_mixer_{nullptr};
+    mutable std::atomic<int> reflection_mixer_readers_{0};
+
+    struct MixerReadGuard {
+        const ResonanceServer* srv = nullptr;
+        IPLReflectionMixer mixer = nullptr;
+
+        MixerReadGuard() = default;
+        explicit MixerReadGuard(const ResonanceServer* p_srv) : srv(p_srv) {
+            if (!srv)
+                return;
+            srv->reflection_mixer_readers_.fetch_add(1, std::memory_order_acq_rel);
+            mixer = srv->reflection_mixer_.load(std::memory_order_acquire);
+        }
+        MixerReadGuard(const MixerReadGuard&) = delete;
+        MixerReadGuard& operator=(const MixerReadGuard&) = delete;
+        MixerReadGuard(MixerReadGuard&& other) noexcept {
+            srv = other.srv;
+            mixer = other.mixer;
+            other.srv = nullptr;
+            other.mixer = nullptr;
+        }
+        MixerReadGuard& operator=(MixerReadGuard&& other) noexcept {
+            if (this == &other)
+                return *this;
+            release();
+            srv = other.srv;
+            mixer = other.mixer;
+            other.srv = nullptr;
+            other.mixer = nullptr;
+            return *this;
+        }
+        ~MixerReadGuard() { release(); }
+
+        void release() {
+            if (!srv)
+                return;
+            srv->reflection_mixer_readers_.fetch_sub(1, std::memory_order_acq_rel);
+            srv = nullptr;
+            mixer = nullptr;
+        }
+        IPLReflectionMixer get() const { return mixer; }
+        explicit operator bool() const { return mixer != nullptr; }
+    };
+
+    void _set_reflection_mixer(IPLReflectionMixer new_mixer);
+    void _release_reflection_mixer_when_unused(IPLReflectionMixer mixer) const;
 
     // Reverb Bus instrumentation (updated from audio thread; read from main)
     std::atomic<uint64_t> reverb_effect_process_calls{0};
@@ -156,6 +202,8 @@ class ResonanceServer : public Object {
     std::atomic<uint64_t> instrumentation_fetch_cache_hit{0};
     /// Crackling debug: try_lock missed, cache empty, returned false
     std::atomic<uint64_t> instrumentation_fetch_cache_miss{0};
+    /// Fetch was skipped intentionally (disabled or no data expected yet) — do not count as a miss.
+    std::atomic<uint64_t> instrumentation_fetch_cache_skip{0};
     /// Pathing: fetch_pathing_params returned immediately (bad handle, no context, or pathing off)
     std::atomic<uint64_t> instrumentation_pathing_fetch_early_exit{0};
     /// Pathing: audio thread acquired simulation_mutex for pathing fetch
@@ -193,11 +241,20 @@ class ResonanceServer : public Object {
     std::atomic<uint64_t> instrumentation_worker_us_run_reflections{0};
     std::atomic<uint64_t> instrumentation_worker_us_run_pathing{0};
     std::atomic<uint64_t> instrumentation_worker_us_sync_fetch{0};
+    /// Last tick: effective sharedInputs.numRays (0 when no realtime reflection sources).
+    std::atomic<int32_t> instrumentation_worker_last_num_rays_{0};
+    /// Last tick: adaptive realtime ray target before clamping to max_rays (debug).
+    std::atomic<int32_t> instrumentation_worker_last_adaptive_num_rays_target_{0};
+    /// Last tick: number of sources currently flagged for reflections / realtime reflections.
+    std::atomic<int32_t> instrumentation_worker_active_reflection_sources_{0};
+    std::atomic<int32_t> instrumentation_worker_active_realtime_reflection_sources_{0};
+    /// Reflections: heavy tick skipped because nothing relevant changed (listener/sources/scene).
+    std::atomic<uint64_t> instrumentation_reflections_sim_skip_no_change{0};
     /// Last tick: time in iplSimulatorCommit (Steam Audio requires this after SetSharedInputs; excludes scene graph commit).
     std::atomic<uint64_t> instrumentation_worker_us_simulator_commit{0};
     /// Last tick: iplSceneCommit(scene) + iplSimulatorSetScene when scene was dirty (geometry / instanced mesh updates).
     std::atomic<uint64_t> instrumentation_worker_us_scene_graph_commit{0};
-    /// Last tick: wall time in _apply_queued_dynamic_instanced_mesh_transforms_assume_locked (queue drain + iplInstancedMeshUpdateTransform).
+    /// Last tick: wall time in _apply_queued_dynamic_instanced_mesh_transforms_assume_locked (queue drain + optional iplInstancedMeshUpdateTransform).
     std::atomic<uint64_t> instrumentation_worker_us_dynamic_instanced_apply{0};
     /// Last completed simulation pass: true if reflections/pathing interval requested a "heavy" tick (r/p timings apply).
     std::atomic<bool> instrumentation_worker_last_wake_was_heavy{false};
@@ -205,6 +262,12 @@ class ResonanceServer : public Object {
     std::atomic<uint64_t> instrumentation_worker_us_sync_fetch_occlusion{0};
     std::atomic<uint64_t> instrumentation_worker_us_sync_fetch_reflections{0};
     std::atomic<uint64_t> instrumentation_worker_us_sync_fetch_pathing{0};
+
+    // Worker-only state for reflections dirty gating (protected by simulation_mutex).
+    Vector3 _last_reflections_listener_pos_{0, 0, 0};
+    bool _last_reflections_listener_pos_valid_ = false;
+    std::array<Vector3, resonance::kMaxSimulationSourcesUserMax> _last_realtime_reflection_source_pos_{};
+    std::array<uint8_t, resonance::kMaxSimulationSourcesUserMax> _last_realtime_reflection_source_pos_valid_{}; // 0/1
     /// Audio thread: last iplReflectionEffectApply (convolution path to mixer) block, microseconds.
     std::atomic<uint64_t> instrumentation_audio_conv_refl_apply_last_us_{0};
     /// Audio thread: last reverb bus iplReflectionMixerApply + decode block, microseconds.
@@ -348,28 +411,31 @@ class ResonanceServer : public Object {
     RayTraceDebugContext ray_trace_debug_context_;
     std::atomic<int> ray_debug_bounce_index_{0};
 
+    // --- Audio-thread caches (lock-free double buffer) ---
+    // Worker writes into back slot, publishes by flipping the front index.
+    static constexpr int kCacheSlots = 2;
+    static constexpr int kMaxPathingSHCoeffs = 16; // max HOA channels for order 3: (3+1)^2
+    static constexpr int kMaxCacheHandles = resonance::kMaxSimulationSourcesUserMax;
+
     // Parametric reverb cache: when audio thread can't get simulation_mutex, use last-known-good values.
-    // Double-buffer: audio reads from _read without lock; main/audio writes to _write, swap on consume.
     struct CachedParametricReverb {
         float reverbTimes[3] = {0};
         float eq[3] = {0};
-        bool valid = false;
+        uint32_t epoch = 0;
     };
-    std::unordered_map<int32_t, CachedParametricReverb> reverb_param_cache_read_;
-    std::unordered_map<int32_t, CachedParametricReverb> reverb_param_cache_write_;
-    std::mutex reverb_cache_mutex_;
-    std::atomic<bool> reverb_cache_dirty_{false};
+    std::array<std::array<CachedParametricReverb, kMaxCacheHandles>, kCacheSlots> reverb_param_cache_{};
+    std::atomic<int> reverb_param_cache_front_{0};
+    uint32_t reverb_param_cache_epoch_[kCacheSlots] = {1, 1};
 
     // Convolution/Hybrid/TAN reflection cache: when audio thread can't get simulation_mutex, use last-known-good params.
     // ir pointer (TripleBuffer) is stable; caching full IPLReflectionEffectParams is safe.
     struct CachedReflectionParams {
         IPLReflectionEffectParams params{};
-        bool valid = false;
+        uint32_t epoch = 0;
     };
-    std::unordered_map<int32_t, CachedReflectionParams> reflection_param_cache_read_;
-    std::unordered_map<int32_t, CachedReflectionParams> reflection_param_cache_write_;
-    std::mutex reflection_cache_mutex_;
-    std::atomic<bool> reflection_cache_dirty_{false};
+    std::array<std::array<CachedReflectionParams, kMaxCacheHandles>, kCacheSlots> reflection_param_cache_{};
+    std::atomic<int> reflection_param_cache_front_{0};
+    uint32_t reflection_param_cache_epoch_[kCacheSlots] = {1, 1};
 
     /// Last known result of a live reflection fetch (worker sync or fetch_reverb_params with simulation_mutex).
     /// Lets the main thread avoid calling fetch_reverb_params only for has_reverb UI/state (see peek_reverb_params_likely_available).
@@ -382,27 +448,23 @@ class ResonanceServer : public Object {
     // shCoeffs points to source's single buffer (overwritten each RunPathing); must copy SH data.
     struct CachedPathingParams {
         float eqCoeffs[3] = {0};
-        std::vector<float> sh_coeffs;
+        std::array<float, kMaxPathingSHCoeffs> shCoeffs{};
         int order = 1;
-        bool valid = false;
+        uint32_t epoch = 0;
     };
-    std::unordered_map<int32_t, CachedPathingParams> pathing_param_cache_read_;
-    std::unordered_map<int32_t, CachedPathingParams> pathing_param_cache_write_;
-    /// Stable output buffer: copy when returning from cache; pointer stays valid until next fetch for same handle.
-    std::unordered_map<int32_t, CachedPathingParams> pathing_param_output_;
-    std::mutex pathing_cache_mutex_;
-    std::atomic<bool> pathing_cache_dirty_{false};
+    std::array<std::array<CachedPathingParams, kMaxCacheHandles>, kCacheSlots> pathing_param_cache_{};
+    std::atomic<int> pathing_param_cache_front_{0};
+    uint32_t pathing_param_cache_epoch_[kCacheSlots] = {1, 1};
 
     // Direct simulation outputs (occlusion, etc.): ResonancePlayer::_process calls get_source_occlusion_data every frame
     // from the main thread. It must not block on simulation_mutex while the worker holds it during RunReflections.
     struct CachedOcclusionData {
         OcclusionData data{};
-        bool valid = false;
+        uint32_t epoch = 0;
     };
-    std::unordered_map<int32_t, CachedOcclusionData> occlusion_cache_read_;
-    std::unordered_map<int32_t, CachedOcclusionData> occlusion_cache_write_;
-    std::mutex occlusion_cache_mutex_;
-    std::atomic<bool> occlusion_cache_dirty_{false};
+    std::array<std::array<CachedOcclusionData, kMaxCacheHandles>, kCacheSlots> occlusion_cache_{};
+    std::atomic<int> occlusion_cache_front_{0};
+    uint32_t occlusion_cache_epoch_[kCacheSlots] = {1, 1};
 
     // Threading
     //
@@ -452,8 +514,8 @@ class ResonanceServer : public Object {
     std::atomic<bool> thread_running = false;
     std::atomic<bool> simulation_requested = false;
     std::atomic<bool> scene_dirty = false;
-    std::atomic<uint32_t> geometry_update_throttle_counter{0};
-    int geometry_update_throttle = 4; // Scene commit throttle: notify_geometry_changed (transform-only) + dynamic instanced mesh notifies
+    /// Shared with consume_geometry_transform_coalesce_tick (former geometry_update_throttle counter).
+    std::atomic<uint32_t> geometry_transform_coalesce_counter_{0};
     float dynamic_scene_commit_min_interval_ = 0.0f;
     std::chrono::steady_clock::time_point last_dynamic_scene_commit_time_{};
     std::mutex dynamic_instanced_transform_queue_mutex_;
@@ -462,8 +524,6 @@ class ResonanceServer : public Object {
     /// Microseconds of the most recent enqueue_dynamic_instanced_mesh_transform call (main thread).
     std::atomic<uint64_t> instrumentation_main_us_last_dynamic_transform_enqueue_{0};
     std::atomic<uint64_t> instrumentation_dynamic_transform_enqueue_events_{0};
-    int simulation_tick_throttle = 1; // Run simulation every Nth tick (1=every frame, 2=every 2nd)
-    std::atomic<uint32_t> tick_throttle_counter{0};
     // Simulation update interval: Direct runs every tick; reflection/pathing heavy ticks use separate cadences when configured.
     float simulation_update_interval = 0.1f; // Seconds (0.1 = 100ms default); base when sub-intervals are < 0
     float simulation_update_time_elapsed = 0.0f;
@@ -474,8 +534,11 @@ class ResonanceServer : public Object {
     float realtime_reflection_max_distance_m = 0.0f;
     std::atomic<bool> reflection_sim_heavy_requested{false};
     std::atomic<bool> pathing_sim_heavy_requested{false};
-    /// Last known per-handle: source SetInputs included IPL_SIMULATIONFLAGS_REFLECTIONS (worker fetch skips REFLECTIONS getOutputs when false).
-    std::unordered_map<int32_t, bool> source_outputs_reflections_;
+    // Per-handle flags (lock-free; used from worker/audio threads without data races).
+    // 0 = false, 1 = true. Index is the user handle (0..kMaxCacheHandles-1).
+    std::array<std::atomic<uint8_t>, kMaxCacheHandles> source_outputs_reflections_{};
+    std::array<std::atomic<uint8_t>, kMaxCacheHandles> source_outputs_realtime_reflections_{};
+    std::array<std::atomic<uint8_t>, kMaxCacheHandles> source_outputs_pathing_{};
     /// When > 0, worker may skip RunDirect on non-heavy ticks until this much time has passed (see tick()).
     float direct_sim_interval = 0.0f;
     float direct_sim_time_elapsed = 0.0f;
@@ -485,11 +548,18 @@ class ResonanceServer : public Object {
     /// Extra seconds added to reflection-heavy interval when reflections_adaptive_budget_us_ > 0 (see tick()).
     float reflections_adaptive_extra_interval_ = 0.0f;
     uint32_t reflections_adaptive_budget_us_ = 0;
+    int reflections_adaptive_ray_min_ = 128;
+    float reflections_adaptive_ray_recover_frac_ = 0.125f;
+    int reflections_adaptive_ray_recover_cap_ = 512;
     float reflections_adaptive_step_sec_ = 0.02f;
     float reflections_adaptive_max_extra_interval_ = 0.2f;
     float reflections_adaptive_decay_per_sec_ = 0.05f;
     uint32_t reflections_defer_after_scene_commit_us_ = 0;
     int convolution_ir_max_samples_ = 0;
+
+    // Adaptive realtime reflections rays (worker-only; protected by simulation_mutex).
+    int _adaptive_realtime_num_rays_ = 0;
+    bool _adaptive_realtime_num_rays_initialized_ = false;
 
     struct PendingSourceUpdate {
         Vector3 position{};
@@ -514,6 +584,9 @@ class ResonanceServer : public Object {
         int occlusion_type_override = -1;
         bool simulation_occlusion_enabled = true;
         bool simulation_transmission_enabled = true;
+        float direct_mix_level = 1.0f;
+        float reflections_mix_level = 1.0f;
+        float pathing_mix_level = 1.0f;
     };
     bool batch_source_updates = true;
     std::mutex source_update_batch_mutex_;
@@ -546,9 +619,9 @@ class ResonanceServer : public Object {
     std::atomic<bool> pathing_ran_this_tick{false};
     /// True after first iplSimulatorRunReflections (avoids Steam Audio reverbTimes=0 validation warning at game start)
     std::atomic<bool> reflections_have_run_once_{false};
-    /// Handles of sources added before their first RunReflections; skip getOutputs(REFLECTIONS) until cleared
-    std::unordered_set<int32_t> reflections_pending_handles_;
-    std::mutex reflections_pending_mutex_;
+    /// Per-handle: true for sources added before their first RunReflections (Parametric/Hybrid gate).
+    /// Must be lock-free for the audio thread.
+    std::array<std::atomic<bool>, resonance::kMaxSimulationSourcesUserMax> reflections_pending_{};
     /// Ticks to skip RunPathing after Windows SEH catch (reduces repeated access violations)
     std::atomic<int> pathing_crash_cooldown{0};
     /// Extra retains from iplProbeBatchRetain in _update_source_internal; released after iplSimulatorRunPathing.
@@ -639,7 +712,10 @@ class ResonanceServer : public Object {
                                  int pathing_enabled_override = -1,
                                  int occlusion_type_override = -1,
                                  bool simulation_occlusion_enabled = true,
-                                 bool simulation_transmission_enabled = true);
+                                 bool simulation_transmission_enabled = true,
+                                 float direct_mix_level = 1.0f,
+                                 float reflections_mix_level = 1.0f,
+                                 float pathing_mix_level = 1.0f);
 
     int _get_bake_num_rays() const;
     int _get_bake_num_bounces() const;
@@ -652,10 +728,9 @@ class ResonanceServer : public Object {
     IPLScene _prepare_bake_scene(IPLScene* out_temp_scene, IPLStaticMesh* out_temp_mesh);
     /// Runs bake_fn with prepared bake scene; handles lock, scene commit, and temp scene/mesh cleanup.
     bool _with_bake_scene(std::function<bool(IPLScene bake_scene)> bake_fn);
-    /// Returns true when throttled logic should run (counter incremented). When throttle<=1 always returns true.
-    bool _should_run_throttled(std::atomic<uint32_t>& counter, int throttle);
     /// Call under simulation_mutex before scene commit: apply queued [code]iplInstancedMeshUpdateTransform[/code] when due.
-    void _apply_queued_dynamic_instanced_mesh_transforms_assume_locked();
+    /// Returns true if at least one transform was applied to the IPL scene (not when batching defers back to the queue).
+    bool _apply_queued_dynamic_instanced_mesh_transforms_assume_locked();
     /// Returns probe batch for pathing: preferred_handle if valid and has pathing, else first with pathing.
     /// IMPORTANT: Return value is retained (iplProbeBatchRetain). Caller MUST call iplProbeBatchRelease when done;
     /// failure to release causes IPL handle leaks.
@@ -668,6 +743,8 @@ class ResonanceServer : public Object {
     bool _uses_convolution_or_hybrid_or_tan() const;
     /// True when reflection type uses parametric reverb (Parametric or Hybrid)
     bool _uses_parametric_or_hybrid() const;
+    /// True when any source is using realtime reflections (baked_data_variation == -1) and reflections are enabled.
+    bool _any_source_needs_realtime_reflections_assume_locked();
     /// True when baked_type is compatible with current reflection_type
     bool _is_reflection_type_compatible(int baked_type) const;
 
@@ -723,11 +800,10 @@ class ResonanceServer : public Object {
     IPLSceneType get_scene_type() const { return steam_audio_context_ ? steam_audio_context_->get_scene_type() : IPL_SCENETYPE_DEFAULT; }
     /// Scene type for iplStaticMeshLoad / sub-scenes / bake temp scenes. When runtime uses CUSTOM, returns Default (meshes are not added to the global CUSTOM scene).
     IPLSceneType get_phonon_mesh_scene_type() const { return _tracer_type_for_mesh_operations(); }
-    /// Same N as [code]notify_geometry_changed_assume_locked[/code] for triangle_delta==0 and [ResonanceGeometry] dynamic instanced-mesh transform path.
-    int get_geometry_update_throttle() const { return geometry_update_throttle; }
-
     /// Queue dynamic instanced-mesh transform for worker (no simulation_mutex on main thread). Coalesces to latest matrix per mesh.
     void enqueue_dynamic_instanced_mesh_transform(IPLInstancedMesh mesh, const IPLMatrix4x4& transform);
+    /// Every Nth call returns true (shared counter with transform-only notify_geometry_changed); interval matches [code]kGeometryTransformCoalesceInterval[/code]. Does not apply to [code]triangle_delta != 0[/code] notifies or unconditional enqueue from flush.
+    bool consume_geometry_transform_coalesce_tick();
     /// Remove pending transforms for mesh (e.g. before releasing instanced mesh).
     void cancel_pending_dynamic_instanced_mesh_transform(IPLInstancedMesh mesh);
 
@@ -742,10 +818,8 @@ class ResonanceServer : public Object {
     void unregister_physics_ray_auto_exclude_rid(RID rid);
 
     // Thread Safety
-    void lock_mixer() { mixer_access_mutex.lock(); }
-    void unlock_mixer() { mixer_access_mutex.unlock(); }
-    /// RAII guard for mixer mutex; prefer over manual lock/unlock for exception safety
-    std::unique_lock<std::mutex> scoped_mixer_lock() { return std::unique_lock<std::mutex>(mixer_access_mutex); }
+    /// Lock-free RAII guard for reading the shared reflection mixer in audio callbacks.
+    MixerReadGuard scoped_mixer_read() const { return MixerReadGuard(this); }
     /// Manual lock; prefer scoped_simulation_lock() for RAII and exception safety
     void lock_simulation() { simulation_mutex.lock(); }
     void unlock_simulation() { simulation_mutex.unlock(); }
@@ -950,8 +1024,7 @@ class ResonanceServer : public Object {
     /// Same as notify_geometry_changed but caller already holds simulation_mutex (e.g. _clear_meshes_impl).
     void notify_geometry_changed_assume_locked(int triangle_delta);
     /// Mark that iplSceneCommit is required before the next simulation step. Caller must hold simulation_mutex.
-    /// Used for dynamic instanced-mesh transform updates (no triangle count change); frequency is throttled in
-    /// ResonanceGeometry using the same [code]geometry_update_throttle[/code] as [code]notify_geometry_changed_assume_locked[/code] (triangle_delta==0).
+    /// Used for dynamic instanced-mesh transform updates (no triangle count change).
     void mark_scene_commit_pending_assume_locked();
     /// Thread-safe variant: flips the atomic scene_dirty flag without requiring simulation_mutex.
     /// Used by main-thread dynamic geometry flush paths that intentionally avoid blocking on the worker tick.
@@ -984,7 +1057,10 @@ class ResonanceServer : public Object {
                        int pathing_enabled_override = -1,
                        int occlusion_type_override = -1,
                        bool simulation_occlusion_enabled = true,
-                       bool simulation_transmission_enabled = true);
+                       bool simulation_transmission_enabled = true,
+                       float direct_mix_level = 1.0f,
+                       float reflections_mix_level = 1.0f,
+                       float pathing_mix_level = 1.0f);
     /// Same as update_source; returns false if simulation_mutex is held (worker in RunReflections, etc.).
     bool try_update_source(int32_t handle, Vector3 position, float radius,
                            Vector3 source_forward = Vector3(0, 0, -1),
@@ -1006,7 +1082,10 @@ class ResonanceServer : public Object {
                            int pathing_enabled_override = -1,
                            int occlusion_type_override = -1,
                            bool simulation_occlusion_enabled = true,
-                           bool simulation_transmission_enabled = true);
+                           bool simulation_transmission_enabled = true,
+                           float direct_mix_level = 1.0f,
+                           float reflections_mix_level = 1.0f,
+                           float pathing_mix_level = 1.0f);
     /// Queue a source update to apply under one simulation_mutex lock when [method flush_pending_source_updates] runs (main thread).
     void enqueue_source_update(int32_t handle, Vector3 position, float radius,
                                Vector3 source_forward = Vector3(0, 0, -1),
@@ -1028,7 +1107,10 @@ class ResonanceServer : public Object {
                                int pathing_enabled_override = -1,
                                int occlusion_type_override = -1,
                                bool simulation_occlusion_enabled = true,
-                               bool simulation_transmission_enabled = true);
+                               bool simulation_transmission_enabled = true,
+                               float direct_mix_level = 1.0f,
+                               float reflections_mix_level = 1.0f,
+                               float pathing_mix_level = 1.0f);
     /// Apply all [method enqueue_source_update] entries (try_lock; re-queues on failure). Call once per frame after [method tick] when batching is on.
     void flush_pending_source_updates();
     bool uses_batch_source_updates() const { return batch_source_updates; }

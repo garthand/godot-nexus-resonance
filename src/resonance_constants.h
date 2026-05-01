@@ -8,7 +8,7 @@ namespace resonance {
 
 /// Version string (centralized; override via NEXUS_RESONANCE_VERSION when building)
 #ifndef NEXUS_RESONANCE_VERSION
-#define NEXUS_RESONANCE_VERSION "0.9.14"
+#define NEXUS_RESONANCE_VERSION "0.9.15"
 #endif
 constexpr const char* kVersion = NEXUS_RESONANCE_VERSION;
 
@@ -102,6 +102,8 @@ constexpr int kPlayerNoReverbWarnSkipInitial = 3;
 constexpr int kPlayerNoReverbWarnThreshold = 200;
 /// Ambisonics W-channel normalization (1/sqrt(2))
 constexpr float kAmbisonicWChannelScale = 0.7071067811865475f;
+/// Nominal Ambisonic decoder output scaling (1/sqrt(4*pi)) so a constant omnidirectional (W-only) field matches mono peak level.
+constexpr float kAmbisonicDecoderOutputScalar = 0.28209479177387814f;
 /// Valid Ambisonic channel counts: 4 (1st order), 9 (2nd), 16 (3rd)
 inline bool is_valid_ambisonic_channel_count(int n) { return n == 4 || n == 9 || n == 16; }
 /// Ambisonic channel count (order+1)^2 for order in 1..3 (Steam Audio HOA)
@@ -117,6 +119,9 @@ inline int ambisonic_num_channels_for_order(int order) {
 constexpr float kDegenerateVectorEpsilon = 1e-8f;
 /// Squared epsilon for length_sq comparisons (kDegenerateVectorEpsilon^2)
 constexpr float kDegenerateVectorEpsilonSq = 1e-16f;
+
+/// Transform-only geometry notifies + dynamic instanced-mesh enqueue share this cadence so scene_dirty / queues do not fire every frame (matches former geometry_update_throttle default of 4).
+constexpr int kGeometryTransformCoalesceInterval = 4;
 
 /// Ray debug visualization max distance for reflection ray tracing
 constexpr float kRayDebugMaxDistance = 500.0f;

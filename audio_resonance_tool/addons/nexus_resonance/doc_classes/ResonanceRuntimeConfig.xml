@@ -198,17 +198,28 @@
 		<member name="max_simulation_sources" type="int" default="32">
 			Maximum simultaneous sources for realtime reflection simulation ([code]maxNumSources[/code]) and TrueAudio Next [code]maxSources[/code].
 		</member>
-		<member name="geometry_update_throttle" type="int" default="4">
-			Throttle transform updates from moving geometry: every Nth transform-only [code]notify_geometry_changed[/code] (no triangle change) and every Nth dynamic [ResonanceGeometry] [code]NOTIFICATION_TRANSFORM_CHANGED[/code] (queues [code]iplInstancedMeshUpdateTransform[/code] for [ResonanceDynamicGeometry], etc.). [code]1[/code] = enqueue every notify; higher values reduce CPU during animation. Range [code]1–64[/code]. Call [method ResonanceGeometry.flush_dynamic_acoustic_transform] after motion ends for an exact final pose. Use [code]1[/code] when [member path_validation_enabled] must track very fast dynamic occluders with minimal lag.
-		</member>
 		<member name="dynamic_scene_commit_min_interval" type="float" default="0.0">
 			Minimum seconds between worker applications of queued dynamic instanced-mesh transforms to Steam Audio (one [code]iplSceneCommit[/code] batch per apply). [code]0[/code] = apply every simulation tick that has queued updates. [code]&gt; 0[/code] can lower [code]rtcCommitScene[/code] cost on large Embree scenes at the cost of stale occlusion during motion. Pair with [method ResonanceGeometry.flush_dynamic_acoustic_transform] when motion stops.
 		</member>
-		<member name="simulation_tick_throttle" type="int" default="1">
-			Run the simulation worker every Nth frame from [ResonanceRuntime] (1 = every frame). Higher values reduce CPU from direct simulation and cache sync; occlusion updates less often. Pairs with [member simulation_update_interval] (Steam Audio Unity: combined simulation load vs. frame rate).
-		</member>
 		<member name="simulation_update_interval" type="float" default="0.1">
-			Minimum seconds between [code]RunReflections[/code] and [code]RunPathing[/code] on the worker (Steam Audio Unity: [i]Simulation Update Interval[/i]). Direct simulation still runs each worker wake. [code]0[/code] = heavy sim every worker tick; [code]0.1[/code] = 100 ms; larger values (e.g. 0.15–0.25) reduce CPU when pathing/reflection follow can lag slightly.
+			[b]Simulation Update Interval[/b] — Minimum time in seconds between scheduling reflection-heavy ([code]iplSimulatorRunReflections[/code]) and pathing-heavy ([code]iplSimulatorRunPathing[/code]) work on the simulation worker. Same intent as Steam Audio Unity’s [i]Simulation Update Interval[/i] (global pacing for environmental simulation vs CPU).
+			[b]0[/b]: schedule those heavy passes every worker tick (highest CPU; quickest reflections/pathing follow).
+			[b]0.1[/b]: at most one reflection/pathing scheduling wave every ~100 ms (good default balance).
+			Higher values (e.g. 0.15–0.25): cheaper pathing/reflection follow-up on crowded scenes.
+			Does not replace [member direct_sim_interval]: direct/occlusion ([code]iplSimulatorRunDirect[/code]) cadence is controlled separately below.
+			Optional per-axis overrides (below): [member reflections_sim_update_interval] and [member pathing_sim_update_interval].
+		</member>
+		<member name="reflections_sim_update_interval" type="float" default="-1.0">
+			Seconds between reflection-heavy simulation ticks ([code]iplSimulatorRunReflections[/code] scheduling). [b]-1[/b]: inherit [member simulation_update_interval] (default). [b]≥ 0[/b]: use this minimum interval for reflections only — lower = higher CPU and faster realtime reverb IR updates; pathing uses [member pathing_sim_update_interval] or [member simulation_update_interval].
+		</member>
+		<member name="pathing_sim_update_interval" type="float" default="-1.0">
+			Seconds between pathing-heavy simulation ticks ([code]iplSimulatorRunPathing[/code] scheduling). [b]-1[/b]: inherit [member simulation_update_interval]. [b]≥ 0[/b]: use this minimum interval for pathing only — with path validation / alternate paths this can dominate CPU; raise to stagger pathing from reflections.
+		</member>
+		<member name="direct_sim_interval" type="float" default="0.0">
+			[b]Direct Sim Interval[/b] — Minimum seconds between [code]iplSimulatorRunDirect[/code] runs on worker ticks that do not already schedule reflections or pathing heavy passes (or when those are skipped). Use this to throttle **direct-path occlusion/transmission/air absorption** updates independently of [member simulation_update_interval].
+			[b]0[/b] (default): run direct simulation on every worker wake where the worker runs (same responsiveness as before this knob existed).
+			Small values (e.g. [b]0.02[/b]–[b]0.05[/b]): fewer direct updates when reflections/pathing are already sparse — lowers CPU; occlusion may react slightly slower until the next eligible tick.
+			If a tick schedules reflections or pathing, direct simulation behavior follows the worker logic for that tick ([member simulation_update_interval] still gates how often those heavy requests fire).
 		</member>
 		<member name="simulation_cpu_cores_percent" type="float" default="0.15">
 			Fraction of CPU cores for Steam Audio simulation threads (0–1). Default 0.15; higher = more parallelism for reflections/pathing, more CPU.

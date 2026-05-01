@@ -256,13 +256,6 @@ IPLScene ResonanceServer::_prepare_bake_scene(IPLScene* out_temp_scene, IPLStati
     return scene;
 }
 
-bool ResonanceServer::_should_run_throttled(std::atomic<uint32_t>& counter, int throttle) {
-    if (throttle <= 1)
-        return true;
-    uint32_t c = counter.fetch_add(1, std::memory_order_relaxed);
-    return (c % (uint32_t)throttle) == 0;
-}
-
 bool ResonanceServer::_with_bake_scene(std::function<bool(IPLScene)> bake_fn) {
     std::lock_guard<std::mutex> lock(simulation_mutex);
     if (scene_dirty) {
@@ -461,22 +454,22 @@ int32_t ResonanceServer::load_probe_batch(Ref<ResonanceProbeData> data) {
 
 void ResonanceServer::_clear_all_param_caches() {
     _clear_reverb_params_likely_available_hints();
-    {
-        std::lock_guard<std::mutex> c_lock(reverb_cache_mutex_);
-        reverb_param_cache_write_.clear();
-        reverb_cache_dirty_.store(true);
-    }
-    {
-        std::lock_guard<std::mutex> r_lock(reflection_cache_mutex_);
-        reflection_param_cache_write_.clear();
-        reflection_cache_dirty_.store(true);
-    }
-    {
-        std::lock_guard<std::mutex> p_lock(pathing_cache_mutex_);
-        pathing_param_cache_write_.clear();
-        pathing_param_output_.clear();
-        pathing_cache_dirty_.store(true);
-    }
+    // Invalidate lock-free caches so audio thread won't use stale params after probe batch changes.
+    const int reverb_back = 1 - reverb_param_cache_front_.load(std::memory_order_acquire);
+    const int refl_back = 1 - reflection_param_cache_front_.load(std::memory_order_acquire);
+    const int path_back = 1 - pathing_param_cache_front_.load(std::memory_order_acquire);
+    reverb_param_cache_epoch_[reverb_back]++;
+    reflection_param_cache_epoch_[refl_back]++;
+    pathing_param_cache_epoch_[path_back]++;
+    if (reverb_param_cache_epoch_[reverb_back] == 0u)
+        reverb_param_cache_epoch_[reverb_back] = 1u;
+    if (reflection_param_cache_epoch_[refl_back] == 0u)
+        reflection_param_cache_epoch_[refl_back] = 1u;
+    if (pathing_param_cache_epoch_[path_back] == 0u)
+        pathing_param_cache_epoch_[path_back] = 1u;
+    reverb_param_cache_front_.store(reverb_back, std::memory_order_release);
+    reflection_param_cache_front_.store(refl_back, std::memory_order_release);
+    pathing_param_cache_front_.store(path_back, std::memory_order_release);
 }
 
 void ResonanceServer::remove_probe_batch(int32_t handle) {

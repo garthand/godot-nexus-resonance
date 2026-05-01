@@ -2,6 +2,7 @@
 #include "resonance_math.h"
 #include "resonance_server.h"
 #include "resonance_utils.h"
+#include <array>
 #include <chrono>
 #include <cstring>
 #include <godot_cpp/classes/engine.hpp>
@@ -14,14 +15,16 @@ using namespace godot;
 
 namespace {
 
-void pathing_copy_sh_coeffs(std::vector<float>& dst, const float* src, int sh_count) {
-    if (sh_count <= 0 || !src) {
-        dst.clear();
-        return;
-    }
-    const size_t n = static_cast<size_t>(sh_count);
-    dst.resize(n);
-    std::memcpy(dst.data(), src, n * sizeof(float));
+constexpr int kMaxPathingShCoeffs = 16; // order 3 max: (3+1)^2
+
+bool pathing_copy_sh_coeffs(std::array<float, kMaxPathingShCoeffs>& dst, const float* src, int sh_count) {
+    if (sh_count <= 0 || !src || sh_count > kMaxPathingShCoeffs)
+        return false;
+    std::memcpy(dst.data(), src, static_cast<size_t>(sh_count) * sizeof(float));
+    // Zero unused tail for determinism.
+    for (int i = sh_count; i < kMaxPathingShCoeffs; i++)
+        dst[static_cast<size_t>(i)] = 0.0f;
+    return true;
 }
 
 } // namespace
@@ -38,17 +41,14 @@ OcclusionData ResonanceServer::get_source_occlusion_data(int32_t handle) {
     result.air_absorption[2] = 1.0f;
     result.directivity = 1.0f;
     result.distance_attenuation = 1.0f;
-    if (handle < 0 || !_ctx())
+    if (handle < 0 || !_ctx() || handle >= kMaxCacheHandles)
         return result;
 
-    // Phase 2: lock-free read from the worker-populated double-buffered cache. The worker publishes fresh
-    // direct outputs from _worker_sync_fetch_caches after every RunDirect tick. No simulation_mutex needed.
-    std::lock_guard<std::mutex> c_lock(occlusion_cache_mutex_);
-    if (occlusion_cache_dirty_.exchange(false, std::memory_order_relaxed))
-        occlusion_cache_read_.swap(occlusion_cache_write_);
-    auto it = occlusion_cache_read_.find(handle);
-    if (it != occlusion_cache_read_.end() && it->second.valid)
-        return it->second.data;
+    const int front = occlusion_cache_front_.load(std::memory_order_acquire);
+    const uint32_t epoch = occlusion_cache_epoch_[front];
+    const CachedOcclusionData& e = occlusion_cache_[static_cast<size_t>(front)][static_cast<size_t>(handle)];
+    if (e.epoch == epoch)
+        return e.data;
     return result;
 }
 
@@ -71,7 +71,7 @@ bool ResonanceServer::peek_reverb_params_likely_available(int32_t handle) const 
 }
 
 bool ResonanceServer::fetch_reverb_params(int32_t handle, IPLReflectionEffectParams& out_params) {
-    if (handle < 0 || !_ctx())
+    if (handle < 0 || !_ctx() || handle >= kMaxCacheHandles)
         return false;
     // Phase 1: skip until worker has run iplSourceAdd for this handle.
     if (_is_source_attach_pending(handle))
@@ -91,46 +91,47 @@ bool ResonanceServer::fetch_reverb_params(int32_t handle, IPLReflectionEffectPar
     if (_uses_parametric_or_hybrid() && !reflections_have_run_once_.load(std::memory_order_acquire))
         return false;
     // Per-source: only after this source has been through at least one RunReflections.
-    if (_uses_parametric_or_hybrid()) {
-        std::lock_guard<std::mutex> lock(reflections_pending_mutex_);
-        if (reflections_pending_handles_.count(handle) != 0)
-            return false;
-    }
+    if (_uses_parametric_or_hybrid() && reflections_pending_[static_cast<size_t>(handle)].load(std::memory_order_acquire))
+        return false;
 
-    // Phase 2: Unity-style lock-free read. The worker populates reverb_param_cache_write_ (Parametric) /
-    // reflection_param_cache_write_ (Convolution/Hybrid/TAN) from _worker_sync_fetch_caches and flips the
-    // _dirty atomic. Audio/main threads only swap-on-dirty + read from the _read slot. No simulation_mutex.
+    // Phase 2: lock-free read from the worker-populated double-buffered cache. No simulation_mutex.
     bool result = false;
     if (reflection_type == resonance::kReflectionParametric) {
-        std::lock_guard<std::mutex> c_lock(reverb_cache_mutex_);
-        if (reverb_cache_dirty_.exchange(false, std::memory_order_acq_rel))
-            reverb_param_cache_read_.swap(reverb_param_cache_write_);
-        auto it = reverb_param_cache_read_.find(handle);
-        if (it != reverb_param_cache_read_.end() && it->second.valid) {
+        const int front = reverb_param_cache_front_.load(std::memory_order_acquire);
+        const uint32_t epoch = reverb_param_cache_epoch_[front];
+        const CachedParametricReverb& e = reverb_param_cache_[static_cast<size_t>(front)][static_cast<size_t>(handle)];
+        if (e.epoch == epoch) {
             memset(&out_params, 0, sizeof(out_params));
             out_params.type = IPL_REFLECTIONEFFECTTYPE_PARAMETRIC;
             for (int i = 0; i < resonance::kReverbBandCount; i++) {
-                out_params.reverbTimes[i] = resonance::clamp_reverb_time(it->second.reverbTimes[i]);
-                out_params.eq[i] = resonance::sanitize_audio_float(it->second.eq[i]);
+                out_params.reverbTimes[i] = resonance::clamp_reverb_time(e.reverbTimes[i]);
+                out_params.eq[i] = resonance::sanitize_audio_float(e.eq[i]);
             }
             result = true;
             instrumentation_fetch_cache_hit.fetch_add(1, std::memory_order_relaxed);
         } else {
-            instrumentation_fetch_cache_miss.fetch_add(1, std::memory_order_relaxed);
+            if (source_outputs_reflections_[static_cast<size_t>(handle)].load(std::memory_order_relaxed) == 0) {
+                instrumentation_fetch_cache_skip.fetch_add(1, std::memory_order_relaxed);
+            } else {
+                instrumentation_fetch_cache_miss.fetch_add(1, std::memory_order_relaxed);
+            }
         }
     } else if (_uses_convolution_or_hybrid_or_tan()) {
-        std::lock_guard<std::mutex> c_lock(reflection_cache_mutex_);
-        if (reflection_cache_dirty_.exchange(false, std::memory_order_acq_rel))
-            reflection_param_cache_read_.swap(reflection_param_cache_write_);
-        auto it = reflection_param_cache_read_.find(handle);
-        if (it != reflection_param_cache_read_.end() && it->second.valid) {
-            out_params = it->second.params;
+        const int front = reflection_param_cache_front_.load(std::memory_order_acquire);
+        const uint32_t epoch = reflection_param_cache_epoch_[front];
+        const CachedReflectionParams& e = reflection_param_cache_[static_cast<size_t>(front)][static_cast<size_t>(handle)];
+        if (e.epoch == epoch) {
+            out_params = e.params;
             if (reflection_type == resonance::kReflectionTan)
                 out_params.tanDevice = _tan();
             result = true;
             instrumentation_fetch_cache_hit.fetch_add(1, std::memory_order_relaxed);
         } else {
-            instrumentation_fetch_cache_miss.fetch_add(1, std::memory_order_relaxed);
+            if (source_outputs_reflections_[static_cast<size_t>(handle)].load(std::memory_order_relaxed) == 0) {
+                instrumentation_fetch_cache_skip.fetch_add(1, std::memory_order_relaxed);
+            } else {
+                instrumentation_fetch_cache_miss.fetch_add(1, std::memory_order_relaxed);
+            }
         }
     }
 
@@ -138,7 +139,11 @@ bool ResonanceServer::fetch_reverb_params(int32_t handle, IPLReflectionEffectPar
 }
 
 bool ResonanceServer::fetch_pathing_params(int32_t handle, IPLPathEffectParams& out_params) {
-    if (handle < 0 || !_ctx() || !pathing_enabled) {
+    if (handle < 0 || !_ctx() || !pathing_enabled || handle >= kMaxCacheHandles) {
+        instrumentation_pathing_fetch_early_exit.fetch_add(1, std::memory_order_relaxed);
+        return false;
+    }
+    if (source_outputs_pathing_[static_cast<size_t>(handle)].load(std::memory_order_relaxed) == 0) {
         instrumentation_pathing_fetch_early_exit.fetch_add(1, std::memory_order_relaxed);
         return false;
     }
@@ -148,29 +153,17 @@ bool ResonanceServer::fetch_pathing_params(int32_t handle, IPLPathEffectParams& 
         return false;
     }
 
-    // Phase 2: Unity-style lock-free read. The worker populates pathing_param_cache_write_ in
-    // _worker_sync_fetch_caches after every RunPathing tick. No simulation_mutex; read from the _read slot.
+    // Phase 2: lock-free read from the worker-populated double-buffered cache. No simulation_mutex.
     bool result = false;
-    std::lock_guard<std::mutex> c_lock(pathing_cache_mutex_);
-    if (pathing_cache_dirty_.exchange(false, std::memory_order_acq_rel)) {
-        pathing_param_cache_read_.swap(pathing_param_cache_write_);
-    }
-    auto it = pathing_param_cache_read_.find(handle);
-    if (it != pathing_param_cache_read_.end() && it->second.valid && !it->second.sh_coeffs.empty()) {
-        // Copy sh_coeffs into the stable pathing_param_output_ buffer so out_params.shCoeffs stays valid
-        // after this function returns (caller uses the pointer during iplPathEffectApply).
-        CachedPathingParams& out_entry = pathing_param_output_[handle];
-        out_entry.eqCoeffs[0] = it->second.eqCoeffs[0];
-        out_entry.eqCoeffs[1] = it->second.eqCoeffs[1];
-        out_entry.eqCoeffs[2] = it->second.eqCoeffs[2];
-        out_entry.sh_coeffs = it->second.sh_coeffs;
-        out_entry.order = it->second.order;
-        out_entry.valid = true;
+    const int front = pathing_param_cache_front_.load(std::memory_order_acquire);
+    const uint32_t epoch = pathing_param_cache_epoch_[front];
+    const CachedPathingParams& e = pathing_param_cache_[static_cast<size_t>(front)][static_cast<size_t>(handle)];
+    if (e.epoch == epoch && e.order >= 0) {
         memset(&out_params, 0, sizeof(out_params));
         for (int i = 0; i < resonance::kReverbBandCount; i++)
-            out_params.eqCoeffs[i] = out_entry.eqCoeffs[i];
-        out_params.shCoeffs = out_entry.sh_coeffs.data();
-        out_params.order = out_entry.order;
+            out_params.eqCoeffs[i] = e.eqCoeffs[i];
+        out_params.shCoeffs = const_cast<float*>(e.shCoeffs.data());
+        out_params.order = e.order;
         out_params.binaural = reverb_binaural ? IPL_TRUE : IPL_FALSE;
         out_params.hrtf = _hrtf();
         out_params.normalizeEQ = pathing_normalize_eq ? IPL_TRUE : IPL_FALSE;
@@ -193,27 +186,44 @@ void ResonanceServer::_worker_sync_fetch_caches(bool refresh_direct_outputs, boo
     std::vector<int32_t> handles;
     source_manager.get_all_handles(handles);
 
-    std::vector<std::pair<int32_t, CachedOcclusionData>> occ_batch;
-    occ_batch.reserve(handles.size());
-    std::vector<std::pair<int32_t, CachedParametricReverb>> reverb_batch;
-    reverb_batch.reserve(handles.size());
-    std::vector<std::pair<int32_t, CachedReflectionParams>> refl_batch;
-    refl_batch.reserve(handles.size());
-    std::vector<std::pair<int32_t, CachedPathingParams>> path_batch;
-    path_batch.reserve(handles.size());
+    const int occ_back = 1 - occlusion_cache_front_.load(std::memory_order_acquire);
+    const int reverb_back = 1 - reverb_param_cache_front_.load(std::memory_order_acquire);
+    const int refl_back = 1 - reflection_param_cache_front_.load(std::memory_order_acquire);
+    const int path_back = 1 - pathing_param_cache_front_.load(std::memory_order_acquire);
+
+    // Epoch-based invalidation: bump the back-slot epoch instead of clearing O(kMaxCacheHandles) entries.
+    if (refresh_direct_outputs) {
+        uint32_t e = occlusion_cache_epoch_[occ_back] + 1u;
+        occlusion_cache_epoch_[occ_back] = (e == 0u) ? 1u : e;
+    }
+    if (refresh_reflection_outputs && reflection_type == resonance::kReflectionParametric) {
+        uint32_t e = reverb_param_cache_epoch_[reverb_back] + 1u;
+        reverb_param_cache_epoch_[reverb_back] = (e == 0u) ? 1u : e;
+    }
+    if (refresh_reflection_outputs && _uses_convolution_or_hybrid_or_tan()) {
+        uint32_t e = reflection_param_cache_epoch_[refl_back] + 1u;
+        reflection_param_cache_epoch_[refl_back] = (e == 0u) ? 1u : e;
+    }
+    if (pathing_enabled) {
+        uint32_t e = pathing_param_cache_epoch_[path_back] + 1u;
+        pathing_param_cache_epoch_[path_back] = (e == 0u) ? 1u : e;
+    }
     std::vector<std::pair<int32_t, bool>> reverb_hint_batch;
     reverb_hint_batch.reserve(handles.size());
 
-    std::unordered_set<int32_t> reflections_pending_snapshot;
+    // Snapshot pending flags for this tick (avoid atomic loads inside hot loop).
+    std::array<bool, kMaxCacheHandles> reflections_pending_snapshot{};
     if (refresh_reflection_outputs && _uses_parametric_or_hybrid()) {
-        std::lock_guard<std::mutex> lock(reflections_pending_mutex_);
-        reflections_pending_snapshot = reflections_pending_handles_;
+        for (int i = 0; i < kMaxCacheHandles; i++)
+            reflections_pending_snapshot[static_cast<size_t>(i)] = reflections_pending_[static_cast<size_t>(i)].load(std::memory_order_relaxed);
     }
 
     const bool pathing_refresh = pathing_enabled && pathing_ran_this_tick.load(std::memory_order_acquire);
     const bool reflections_have_run = reflections_have_run_once_.load(std::memory_order_acquire);
 
     for (int32_t handle : handles) {
+        if (handle < 0 || handle >= kMaxCacheHandles)
+            continue;
         // Phase 1: new sources whose iplSourceAdd has not run yet (shouldn't happen here since the worker
         // drains pending adds at the start of the tick, but defensive against races with destroy + re-create).
         if (_is_source_attach_pending(handle))
@@ -236,8 +246,8 @@ void ResonanceServer::_worker_sync_fetch_caches(bool refresh_direct_outputs, boo
             cd.data.air_absorption[2] = direct_out.direct.airAbsorption[2];
             cd.data.directivity = direct_out.direct.directivity;
             cd.data.distance_attenuation = direct_out.direct.distanceAttenuation;
-            cd.valid = true;
-            occ_batch.emplace_back(handle, std::move(cd));
+            cd.epoch = occlusion_cache_epoch_[occ_back];
+            occlusion_cache_[static_cast<size_t>(occ_back)][static_cast<size_t>(handle)] = std::move(cd);
             const auto t1 = std::chrono::steady_clock::now();
             us_occ += static_cast<uint64_t>(std::chrono::duration_cast<std::chrono::microseconds>(t1 - t0).count());
         }
@@ -249,15 +259,11 @@ void ResonanceServer::_worker_sync_fetch_caches(bool refresh_direct_outputs, boo
         }
         if (allow_reverb_fetch && _uses_parametric_or_hybrid() && !reflections_have_run)
             allow_reverb_fetch = false;
-        if (allow_reverb_fetch && _uses_parametric_or_hybrid() && reflections_pending_snapshot.count(handle) != 0)
+        if (allow_reverb_fetch && _uses_parametric_or_hybrid() && reflections_pending_snapshot[static_cast<size_t>(handle)])
             allow_reverb_fetch = false;
 
         bool source_refl_sim = true;
-        {
-            auto it = source_outputs_reflections_.find(handle);
-            if (it != source_outputs_reflections_.end())
-                source_refl_sim = it->second;
-        }
+        source_refl_sim = (source_outputs_reflections_[static_cast<size_t>(handle)].load(std::memory_order_relaxed) != 0);
 
         if (refresh_reflection_outputs && allow_reverb_fetch && source_refl_sim) {
             const auto t0 = std::chrono::steady_clock::now();
@@ -301,14 +307,14 @@ void ResonanceServer::_worker_sync_fetch_caches(bool refresh_direct_outputs, boo
                         cr.reverbTimes[i] = resonance::clamp_reverb_time(outputs.reflections.reverbTimes[i]);
                         cr.eq[i] = outputs.reflections.eq[i];
                     }
-                    cr.valid = true;
-                    reverb_batch.emplace_back(handle, std::move(cr));
+                    cr.epoch = reverb_param_cache_epoch_[reverb_back];
+                    reverb_param_cache_[static_cast<size_t>(reverb_back)][static_cast<size_t>(handle)] = std::move(cr);
                 }
                 if (_uses_convolution_or_hybrid_or_tan() && (has_convolution || has_hybrid || has_tan)) {
                     CachedReflectionParams rp{};
                     rp.params = out_params;
-                    rp.valid = true;
-                    refl_batch.emplace_back(handle, std::move(rp));
+                    rp.epoch = reflection_param_cache_epoch_[refl_back];
+                    reflection_param_cache_[static_cast<size_t>(refl_back)][static_cast<size_t>(handle)] = std::move(rp);
                 }
                 refl_hint = true;
             }
@@ -318,6 +324,11 @@ void ResonanceServer::_worker_sync_fetch_caches(bool refresh_direct_outputs, boo
         }
 
         if (pathing_refresh) {
+            bool source_pathing = (source_outputs_pathing_[static_cast<size_t>(handle)].load(std::memory_order_relaxed) != 0);
+            if (!source_pathing) {
+                iplSourceRelease(&src);
+                continue;
+            }
             const auto t0 = std::chrono::steady_clock::now();
             IPLSimulationOutputs pout{};
             iplSourceGetOutputs(src, IPL_SIMULATIONFLAGS_PATHING, &pout);
@@ -329,10 +340,11 @@ void ResonanceServer::_worker_sync_fetch_caches(bool refresh_direct_outputs, boo
                     pm.eqCoeffs[0] = pout.pathing.eqCoeffs[0];
                     pm.eqCoeffs[1] = pout.pathing.eqCoeffs[1];
                     pm.eqCoeffs[2] = pout.pathing.eqCoeffs[2];
-                    pathing_copy_sh_coeffs(pm.sh_coeffs, pout.pathing.shCoeffs, sh_count);
-                    pm.order = order;
-                    pm.valid = true;
-                    path_batch.emplace_back(handle, std::move(pm));
+                    if (pathing_copy_sh_coeffs(pm.shCoeffs, pout.pathing.shCoeffs, sh_count)) {
+                        pm.order = order;
+                        pm.epoch = pathing_param_cache_epoch_[path_back];
+                        pathing_param_cache_[static_cast<size_t>(path_back)][static_cast<size_t>(handle)] = std::move(pm);
+                    }
                 }
             }
             const auto t1 = std::chrono::steady_clock::now();
@@ -348,38 +360,15 @@ void ResonanceServer::_worker_sync_fetch_caches(bool refresh_direct_outputs, boo
             reverb_params_likely_available_[kv.first] = kv.second;
     }
 
-    if (!occ_batch.empty()) {
-        std::lock_guard<std::mutex> c_lock(occlusion_cache_mutex_);
-        for (auto& kv : occ_batch) {
-            occlusion_cache_write_[kv.first] = std::move(kv.second);
-        }
-        occlusion_cache_dirty_.store(true);
-    }
-
-    if (!reverb_batch.empty()) {
-        std::lock_guard<std::mutex> c_lock(reverb_cache_mutex_);
-        for (auto& kv : reverb_batch) {
-            reverb_param_cache_write_[kv.first] = std::move(kv.second);
-        }
-        reverb_cache_dirty_.store(true);
-    }
-
-    if (!refl_batch.empty()) {
-        std::lock_guard<std::mutex> c_lock(reflection_cache_mutex_);
-        for (auto& kv : refl_batch) {
-            reflection_param_cache_write_[kv.first] = std::move(kv.second);
-        }
-        reflection_cache_dirty_.store(true);
-    }
-
-    if (!path_batch.empty()) {
-        std::lock_guard<std::mutex> c_lock(pathing_cache_mutex_);
-        for (auto& kv : path_batch) {
-            pathing_param_output_[kv.first] = kv.second;
-            pathing_param_cache_write_[kv.first] = kv.second;
-        }
-        pathing_cache_dirty_.store(true);
-    }
+    // Publish freshly written back slots (even if empty; front flip is cheap and avoids extra state).
+    if (refresh_direct_outputs)
+        occlusion_cache_front_.store(occ_back, std::memory_order_release);
+    if (refresh_reflection_outputs && reflection_type == resonance::kReflectionParametric)
+        reverb_param_cache_front_.store(reverb_back, std::memory_order_release);
+    if (refresh_reflection_outputs && _uses_convolution_or_hybrid_or_tan())
+        reflection_param_cache_front_.store(refl_back, std::memory_order_release);
+    if (pathing_enabled && pathing_refresh)
+        pathing_param_cache_front_.store(path_back, std::memory_order_release);
 
     instrumentation_worker_us_sync_fetch_occlusion.store(us_occ, std::memory_order_relaxed);
     instrumentation_worker_us_sync_fetch_reflections.store(us_refl, std::memory_order_relaxed);

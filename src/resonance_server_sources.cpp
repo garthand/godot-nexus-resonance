@@ -29,15 +29,19 @@ int32_t ResonanceServer::create_source_handle(Vector3 pos, float radius) {
         iplSourceRelease(&src);
         return -1;
     }
-    {
-        std::lock_guard<std::mutex> pc(pathing_cache_mutex_);
-        pathing_param_output_.erase(handle);
-        pathing_param_cache_read_.erase(handle);
-        pathing_param_cache_write_.erase(handle);
-    }
-    {
-        std::lock_guard<std::mutex> lock(reflections_pending_mutex_);
-        reflections_pending_handles_.insert(handle);
+    if (handle >= 0 && handle < kMaxCacheHandles) {
+        // Clear caches for recycled handle IDs.
+        for (int slot = 0; slot < kCacheSlots; slot++) {
+            occlusion_cache_[static_cast<size_t>(slot)][static_cast<size_t>(handle)].epoch = 0;
+            reverb_param_cache_[static_cast<size_t>(slot)][static_cast<size_t>(handle)].epoch = 0;
+            reflection_param_cache_[static_cast<size_t>(slot)][static_cast<size_t>(handle)].epoch = 0;
+            pathing_param_cache_[static_cast<size_t>(slot)][static_cast<size_t>(handle)].epoch = 0;
+        }
+        reflections_pending_[static_cast<size_t>(handle)].store(true, std::memory_order_release);
+        // Default per-handle flags until first _update_source_internal runs on the worker.
+        source_outputs_reflections_[static_cast<size_t>(handle)].store(1, std::memory_order_release);
+        source_outputs_realtime_reflections_[static_cast<size_t>(handle)].store(0, std::memory_order_release);
+        source_outputs_pathing_[static_cast<size_t>(handle)].store(pathing_enabled ? 1 : 0, std::memory_order_release);
     }
     {
         std::lock_guard<std::mutex> lock(pending_attach_handles_mutex_);
@@ -68,6 +72,9 @@ int32_t ResonanceServer::create_source_handle(Vector3 pos, float radius) {
         pa.initial.occlusion_type_override = -1;
         pa.initial.simulation_occlusion_enabled = true;
         pa.initial.simulation_transmission_enabled = true;
+        pa.initial.direct_mix_level = 1.0f;
+        pa.initial.reflections_mix_level = 1.0f;
+        pa.initial.pathing_mix_level = 1.0f;
         std::lock_guard<std::mutex> lock(pending_source_lifecycle_mutex_);
         pending_source_adds_.push_back(pa);
     }
@@ -110,7 +117,11 @@ void ResonanceServer::_destroy_source_handle_under_simulation_lock(int32_t handl
     }
     _source_update_snapshot_.erase(handle);
     realtime_reflection_log_once_handles_.erase(handle);
-    source_outputs_reflections_.erase(handle);
+    if (handle >= 0 && handle < kMaxCacheHandles) {
+        source_outputs_reflections_[static_cast<size_t>(handle)].store(0, std::memory_order_release);
+        source_outputs_realtime_reflections_[static_cast<size_t>(handle)].store(0, std::memory_order_release);
+        source_outputs_pathing_[static_cast<size_t>(handle)].store(0, std::memory_order_release);
+    }
     source_manager.remove_source(handle);
 }
 
@@ -130,38 +141,23 @@ void ResonanceServer::destroy_source_handle(int32_t handle) {
         pending_source_removes_.push_back(src);
         pending_source_post_remove_cleanup_.push_back(handle);
     }
-    {
-        std::lock_guard<std::mutex> c_lock(reverb_cache_mutex_);
-        reverb_param_cache_write_.erase(handle);
-        reverb_cache_dirty_.store(true);
-    }
-    {
-        std::lock_guard<std::mutex> c_lock(reflection_cache_mutex_);
-        reflection_param_cache_write_.erase(handle);
-        reflection_cache_dirty_.store(true);
+    if (handle >= 0 && handle < kMaxCacheHandles) {
+        for (int slot = 0; slot < kCacheSlots; slot++) {
+            reverb_param_cache_[static_cast<size_t>(slot)][static_cast<size_t>(handle)].epoch = 0;
+            reflection_param_cache_[static_cast<size_t>(slot)][static_cast<size_t>(handle)].epoch = 0;
+            pathing_param_cache_[static_cast<size_t>(slot)][static_cast<size_t>(handle)].epoch = 0;
+            occlusion_cache_[static_cast<size_t>(slot)][static_cast<size_t>(handle)].epoch = 0;
+        }
+        reflections_pending_[static_cast<size_t>(handle)].store(false, std::memory_order_release);
+        source_outputs_reflections_[static_cast<size_t>(handle)].store(0, std::memory_order_release);
+        source_outputs_realtime_reflections_[static_cast<size_t>(handle)].store(0, std::memory_order_release);
+        source_outputs_pathing_[static_cast<size_t>(handle)].store(0, std::memory_order_release);
     }
     {
         std::lock_guard<std::mutex> h_lock(reverb_params_likely_available_mutex_);
         reverb_params_likely_available_.erase(handle);
     }
-    {
-        std::lock_guard<std::mutex> c_lock(pathing_cache_mutex_);
-        pathing_param_cache_write_.erase(handle);
-        // Do NOT erase pathing_param_output_[handle] here: the audio thread may still hold path_params.shCoeffs
-        // pointing to pathing_param_output_[handle].sh_coeffs.data() from a recent fetch_pathing_params.
-        // Stale entries are cleared on full shutdown (_shutdown_steam_audio). Memory footprint is small.
-        pathing_cache_dirty_.store(true);
-    }
-    {
-        std::lock_guard<std::mutex> c_lock(occlusion_cache_mutex_);
-        occlusion_cache_read_.erase(handle);
-        occlusion_cache_write_.erase(handle);
-        occlusion_cache_dirty_.store(true);
-    }
-    {
-        std::lock_guard<std::mutex> lock(reflections_pending_mutex_);
-        reflections_pending_handles_.erase(handle);
-    }
+    // Cache invalidation now handled by the lock-free cache arrays above.
     {
         std::lock_guard<std::mutex> b(source_update_batch_mutex_);
         source_update_batch_.erase(handle);
@@ -185,7 +181,10 @@ void ResonanceServer::update_source(int32_t handle, Vector3 pos, float radius,
                                     int pathing_enabled_override,
                                     int occlusion_type_override,
                                     bool simulation_occlusion_enabled,
-                                    bool simulation_transmission_enabled) {
+                                    bool simulation_transmission_enabled,
+                                    float direct_mix_level,
+                                    float reflections_mix_level,
+                                    float pathing_mix_level) {
     // Phase 1: no blocking simulation_mutex on main thread. Forwards to enqueue_source_update; the
     // pending batch is drained by [method flush_pending_source_updates] (called by ResonanceRuntime
     // once per frame) and by the worker's lifecycle drain when ticks fire.
@@ -196,7 +195,8 @@ void ResonanceServer::update_source(int32_t handle, Vector3 pos, float radius,
                           occlusion_samples, num_transmission_rays,
                           baked_data_variation, baked_endpoint_center, baked_endpoint_radius,
                           pathing_probe_batch_handle, reflections_enabled_override, pathing_enabled_override,
-                          occlusion_type_override, simulation_occlusion_enabled, simulation_transmission_enabled);
+                          occlusion_type_override, simulation_occlusion_enabled, simulation_transmission_enabled,
+                          direct_mix_level, reflections_mix_level, pathing_mix_level);
 }
 
 bool ResonanceServer::try_update_source(int32_t handle, Vector3 pos, float radius,
@@ -211,7 +211,10 @@ bool ResonanceServer::try_update_source(int32_t handle, Vector3 pos, float radiu
                                         int pathing_enabled_override,
                                         int occlusion_type_override,
                                         bool simulation_occlusion_enabled,
-                                        bool simulation_transmission_enabled) {
+                                        bool simulation_transmission_enabled,
+                                        float direct_mix_level,
+                                        float reflections_mix_level,
+                                        float pathing_mix_level) {
     if (handle < 0)
         return false;
     std::unique_lock<std::mutex> lock(simulation_mutex, std::defer_lock);
@@ -227,7 +230,8 @@ bool ResonanceServer::try_update_source(int32_t handle, Vector3 pos, float radiu
                             occlusion_samples, num_transmission_rays,
                             baked_data_variation, baked_endpoint_center, baked_endpoint_radius,
                             pathing_probe_batch_handle, reflections_enabled_override, pathing_enabled_override,
-                            occlusion_type_override, simulation_occlusion_enabled, simulation_transmission_enabled);
+                            occlusion_type_override, simulation_occlusion_enabled, simulation_transmission_enabled,
+                            direct_mix_level, reflections_mix_level, pathing_mix_level);
     iplSourceRelease(&src);
     return true;
 }
@@ -244,7 +248,10 @@ void ResonanceServer::enqueue_source_update(int32_t handle, Vector3 pos, float r
                                             int pathing_enabled_override,
                                             int occlusion_type_override,
                                             bool simulation_occlusion_enabled,
-                                            bool simulation_transmission_enabled) {
+                                            bool simulation_transmission_enabled,
+                                            float direct_mix_level,
+                                            float reflections_mix_level,
+                                            float pathing_mix_level) {
     if (handle < 0)
         return;
     PendingSourceUpdate u{};
@@ -270,6 +277,9 @@ void ResonanceServer::enqueue_source_update(int32_t handle, Vector3 pos, float r
     u.occlusion_type_override = occlusion_type_override;
     u.simulation_occlusion_enabled = simulation_occlusion_enabled;
     u.simulation_transmission_enabled = simulation_transmission_enabled;
+    u.direct_mix_level = direct_mix_level;
+    u.reflections_mix_level = reflections_mix_level;
+    u.pathing_mix_level = pathing_mix_level;
     std::lock_guard<std::mutex> lock(source_update_batch_mutex_);
     source_update_batch_[handle] = u;
 }
@@ -309,7 +319,8 @@ void ResonanceServer::flush_pending_source_updates() {
                                 u.occlusion_samples, u.num_transmission_rays,
                                 u.baked_data_variation, u.baked_endpoint_center, u.baked_endpoint_radius,
                                 u.pathing_probe_batch_handle, u.reflections_enabled_override, u.pathing_enabled_override,
-                                u.occlusion_type_override, u.simulation_occlusion_enabled, u.simulation_transmission_enabled);
+                                u.occlusion_type_override, u.simulation_occlusion_enabled, u.simulation_transmission_enabled,
+                                u.direct_mix_level, u.reflections_mix_level, u.pathing_mix_level);
         iplSourceRelease(&src);
     }
 }
@@ -356,7 +367,8 @@ void ResonanceServer::clear_source_attenuation_callback_data(int32_t handle) {
                             p.air_absorption_enabled, p.use_sim_distance_attenuation, p.min_distance, p.path_validation_enabled, p.find_alternate_paths,
                             p.occlusion_samples, p.num_transmission_rays, p.baked_data_variation, p.baked_endpoint_center, p.baked_endpoint_radius,
                             p.pathing_probe_batch_handle, p.reflections_enabled_override, p.pathing_enabled_override,
-                            p.occlusion_type_override, p.simulation_occlusion_enabled, p.simulation_transmission_enabled);
+                            p.occlusion_type_override, p.simulation_occlusion_enabled, p.simulation_transmission_enabled,
+                            p.direct_mix_level, p.reflections_mix_level, p.pathing_mix_level);
     iplSourceRelease(&src);
 }
 
@@ -400,7 +412,10 @@ void ResonanceServer::_update_source_internal(IPLSource src, int32_t handle, Vec
                                               int pathing_enabled_override,
                                               int occlusion_type_override,
                                               bool simulation_occlusion_enabled,
-                                              bool simulation_transmission_enabled) {
+                                              bool simulation_transmission_enabled,
+                                              float direct_mix_level,
+                                              float reflections_mix_level,
+                                              float pathing_mix_level) {
     if (!src || !_ctx())
         return;
     SourceUpdateSnapshot& snap = _source_update_snapshot_[handle];
@@ -426,18 +441,30 @@ void ResonanceServer::_update_source_internal(IPLSource src, int32_t handle, Vec
     snap.occlusion_type_override = occlusion_type_override;
     snap.simulation_occlusion_enabled = simulation_occlusion_enabled;
     snap.simulation_transmission_enabled = simulation_transmission_enabled;
+    snap.direct_mix_level = direct_mix_level;
+    snap.reflections_mix_level = reflections_mix_level;
+    snap.pathing_mix_level = pathing_mix_level;
     snap.valid = true;
     IPLSimulationInputs inputs{};
+    const float dm = resonance::sanitize_audio_float(direct_mix_level);
+    const float rm = resonance::sanitize_audio_float(reflections_mix_level);
+    const float pm = resonance::sanitize_audio_float(pathing_mix_level);
+    const bool any_mix = (dm > 0.0f) || (rm > 0.0f) || (pm > 0.0f);
     bool enable_reflections = (reflections_enabled_override == -1) ? true : (reflections_enabled_override != 0);
+    enable_reflections = enable_reflections && (rm > 0.0f);
     if (enable_reflections && baked_data_variation == -1 && realtime_reflection_max_distance_m > 0.0f) {
         Vector3 lip = ResonanceUtils::to_godot_vector3(listener_coords_[0].origin);
         if (pos.distance_to(lip) > static_cast<real_t>(realtime_reflection_max_distance_m))
             enable_reflections = false;
     }
     bool enable_pathing = (pathing_enabled_override == -1) ? pathing_enabled : (pathing_enabled_override != 0);
-    IPLSimulationFlags sim_flags = static_cast<IPLSimulationFlags>(IPL_SIMULATIONFLAGS_DIRECT);
-    if (enable_reflections)
-        sim_flags = static_cast<IPLSimulationFlags>(sim_flags | IPL_SIMULATIONFLAGS_REFLECTIONS);
+    enable_pathing = enable_pathing && (pm > 0.0f);
+    IPLSimulationFlags sim_flags = static_cast<IPLSimulationFlags>(0);
+    if (any_mix) {
+        sim_flags = static_cast<IPLSimulationFlags>(IPL_SIMULATIONFLAGS_DIRECT);
+        if (enable_reflections)
+            sim_flags = static_cast<IPLSimulationFlags>(sim_flags | IPL_SIMULATIONFLAGS_REFLECTIONS);
+    }
     IPLDirectSimulationFlags dflags = (IPLDirectSimulationFlags)0;
     if (simulation_occlusion_enabled)
         dflags = (IPLDirectSimulationFlags)(dflags | IPL_DIRECTSIMULATIONFLAGS_OCCLUSION);
@@ -570,7 +597,11 @@ void ResonanceServer::_update_source_internal(IPLSource src, int32_t handle, Vec
     }
     inputs.flags = sim_flags;
 
-    source_outputs_reflections_[handle] = enable_reflections;
+    if (handle >= 0 && handle < kMaxCacheHandles) {
+        source_outputs_reflections_[static_cast<size_t>(handle)].store(enable_reflections ? 1 : 0, std::memory_order_release);
+        source_outputs_realtime_reflections_[static_cast<size_t>(handle)].store((enable_reflections && baked_data_variation == -1) ? 1 : 0, std::memory_order_release);
+        source_outputs_pathing_[static_cast<size_t>(handle)].store(((sim_flags & IPL_SIMULATIONFLAGS_PATHING) != 0) ? 1 : 0, std::memory_order_release);
+    }
 
     iplSourceSetInputs(src, sim_flags, &inputs);
 
@@ -629,7 +660,11 @@ void ResonanceServer::_drain_pending_source_lifecycle_assume_locked() {
         }
         _source_update_snapshot_.erase(handle);
         realtime_reflection_log_once_handles_.erase(handle);
-        source_outputs_reflections_.erase(handle);
+        if (handle >= 0 && handle < kMaxCacheHandles) {
+            source_outputs_reflections_[static_cast<size_t>(handle)].store(0, std::memory_order_release);
+            source_outputs_realtime_reflections_[static_cast<size_t>(handle)].store(0, std::memory_order_release);
+            source_outputs_pathing_[static_cast<size_t>(handle)].store(0, std::memory_order_release);
+        }
     }
     // Apply initial inputs now that iplSourceAdd + Commit have run.
     for (const PendingSourceAdd& pa : local_adds) {
@@ -644,7 +679,8 @@ void ResonanceServer::_drain_pending_source_lifecycle_assume_locked() {
                                 u.occlusion_samples, u.num_transmission_rays,
                                 u.baked_data_variation, u.baked_endpoint_center, u.baked_endpoint_radius,
                                 u.pathing_probe_batch_handle, u.reflections_enabled_override, u.pathing_enabled_override,
-                                u.occlusion_type_override, u.simulation_occlusion_enabled, u.simulation_transmission_enabled);
+                                u.occlusion_type_override, u.simulation_occlusion_enabled, u.simulation_transmission_enabled,
+                                u.direct_mix_level, u.reflections_mix_level, u.pathing_mix_level);
         iplSourceRelease(&src);
     }
 }

@@ -113,10 +113,8 @@ struct ResonanceServerConfig {
 
     // Throttling
     /// Scene commit every Nth transform-only geometry notify and every Nth dynamic instanced-mesh transform notify (1 = every time).
-    int geometry_update_throttle = 4;
     /// Minimum seconds between applying queued dynamic instanced-mesh transforms + scene commit (0 = apply every worker tick that drains the queue). Trade-off: lower CPU vs. stale occlusion for moving objects.
     float dynamic_scene_commit_min_interval = 0.0f;
-    int simulation_tick_throttle = 1;
     float simulation_update_interval = 0.1f;
     /// < 0: use [member simulation_update_interval] for reflection-heavy cadence. >= 0: seconds between iplSimulatorRunReflections scheduling.
     float reflections_sim_update_interval = -1.0f;
@@ -126,6 +124,12 @@ struct ResonanceServerConfig {
     float realtime_reflection_max_distance_m = 0.0f;
     /// 0 = off. If last RunReflections exceeded this many microseconds, increase reflection cadence spacing (see reflections_adaptive_*).
     int reflections_adaptive_budget_us = 0;
+    /// Minimum sharedInputs.numRays used when adaptive realtime ray scaling is active (budget > 0).
+    int reflections_adaptive_ray_min = 128;
+    /// Fraction of max realtime rays to add back per under-budget reflections tick when adaptive ray scaling is active.
+    float reflections_adaptive_ray_recover_frac = 0.125f;
+    /// Upper bound for per-tick ray recovery when adaptive ray scaling is active (prevents jumping straight back to max_rays).
+    int reflections_adaptive_ray_recover_cap = 512;
     /// Seconds added to effective reflection interval per over-budget worker tick (capped by reflections_adaptive_max_extra_interval).
     float reflections_adaptive_step_sec = 0.02f;
     /// Upper bound for extra delay from adaptive scheduling (seconds).

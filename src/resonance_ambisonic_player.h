@@ -9,6 +9,7 @@
 #include <godot_cpp/classes/audio_stream_player.hpp>
 #include <godot_cpp/classes/ref.hpp>
 #include <godot_cpp/variant/array.hpp>
+#include <godot_cpp/variant/node_path.hpp>
 #include <godot_cpp/variant/vector3.hpp>
 #include <phonon.h>
 #include <vector>
@@ -18,9 +19,19 @@
 
 namespace godot {
 
+class ResonanceServer;
+
 struct AmbisonicPlaybackParameters {
+    /// Listener/camera-facing basis in Godot world space (Steam Audio IPL). Used when
+    /// [member combined_matrix_decode] is false.
     IPLCoordinateSpace3 listener_orientation{};
+    /// When true: decode orientation is taken from combined bed + listener row-major matrices (IPL Ambisonics rotation bypassed).
+    bool combined_matrix_decode = false;
+    IPLCoordinateSpace3 combined_decode_orientation{};
     bool rotation_enabled = true;
+    bool apply_hrtf = true;
+    bool input_is_sn3d = true;
+    bool apply_output_gain = true;
 };
 
 class ResonanceAmbisonicInternalPlayback : public AudioStreamPlayback {
@@ -69,6 +80,7 @@ class ResonanceAmbisonicInternalPlayback : public AudioStreamPlayback {
 
     void _lazy_init_steam_audio();
     void _cleanup_steam_audio();
+    void _ensure_ambisonic_processor(ResonanceServer* srv);
     void _process_steam_audio_block();
     void _sync_params();
 
@@ -124,7 +136,13 @@ class ResonanceAmbisonicInternalStream : public AudioStream {
 class ResonanceAmbisonicPlayer : public AudioStreamPlayer {
     GDCLASS(ResonanceAmbisonicPlayer, AudioStreamPlayer)
   private:
-    bool rotation_enabled = true; ///< Apply Ambisonics rotation (listener orientation). Disable for fixed/world-space decode.
+    bool rotation_enabled = true;          ///< Apply Ambisonics rotation (listener orientation). Disable for fixed/world-space decode.
+    bool use_bed_scene_orientation = true; ///< When true, resolve HOA bed orientation from [member ambisonic_orientation_node] or parent Node3D.
+    NodePath ambisonic_orientation_node{}; ///< Optional Node3D for HOA bed basis; empty uses first Node3D ancestor.
+    bool apply_hrtf = true;
+    bool input_is_sn3d = true;
+    bool apply_output_gain = true;
+
   protected:
     static void _bind_methods();
 
@@ -137,6 +155,21 @@ class ResonanceAmbisonicPlayer : public AudioStreamPlayer {
 
     void set_rotation_enabled(bool p_enabled);
     bool is_rotation_enabled() const { return rotation_enabled; }
+
+    void set_use_bed_scene_orientation(bool p_enabled);
+    bool get_use_bed_scene_orientation() const { return use_bed_scene_orientation; }
+
+    void set_ambisonic_orientation_node(const NodePath& p_path);
+    NodePath get_ambisonic_orientation_node() const { return ambisonic_orientation_node; }
+
+    void set_apply_hrtf(bool p_enabled);
+    bool get_apply_hrtf() const { return apply_hrtf; }
+
+    void set_input_is_sn3d(bool p_sn3d);
+    bool get_input_is_sn3d() const { return input_is_sn3d; }
+
+    void set_apply_output_gain(bool p_enabled);
+    bool get_apply_output_gain() const { return apply_output_gain; }
 
     // This player uses the standard "stream" property of AudioStreamPlayer.
     // The user must assign a ResonanceAmbisonicInternalStream to it.
