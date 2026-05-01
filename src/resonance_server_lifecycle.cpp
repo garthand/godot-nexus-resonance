@@ -629,46 +629,49 @@ void ResonanceServer::_run_phonon_simulation_locked(const IPLCoordinateSpace3& c
 
     // Dirty gating for reflections: if nothing relevant changed since last RunReflections, skip the heavy work.
     // This reduces base load and sporadic spikes when the listener is idle (Unity parity: avoid no-op ray tracing).
+    constexpr bool kReflectionsDirtyGatingDisabled = true; // TEMPORARY: set false to re-enable skip_no_change
     constexpr float kListenerMoveEps = 0.0025f; // meters
     constexpr float kSourceMoveEps = 0.0025f;   // meters
     bool reflections_dirty = true;
     if (run_reflection_sim && shared_reflections) {
-        reflections_dirty = false;
-        if (dynamic_instanced_transforms_applied)
-            reflections_dirty = true;
-        if (!reflections_dirty && scene_dirty.load(std::memory_order_relaxed))
-            reflections_dirty = true;
-
-        const Vector3 listener_pos(current_listener.origin.x, current_listener.origin.y, current_listener.origin.z);
-        if (!reflections_dirty) {
-            if (!_last_reflections_listener_pos_valid_ || _last_reflections_listener_pos_.distance_to(listener_pos) > kListenerMoveEps) {
+        if (!kReflectionsDirtyGatingDisabled) {
+            reflections_dirty = false;
+            if (dynamic_instanced_transforms_applied)
                 reflections_dirty = true;
-            }
-        }
-        if (!reflections_dirty && active_realtime_sources > 0) {
-            std::vector<int32_t> handles;
-            source_manager.get_all_handles(handles);
-            for (int32_t h : handles) {
-                if (h < 0 || h >= kMaxCacheHandles)
-                    continue;
-                if (source_outputs_realtime_reflections_[static_cast<size_t>(h)].load(std::memory_order_relaxed) == 0)
-                    continue;
-                auto it = _source_update_snapshot_.find(h);
-                if (it == _source_update_snapshot_.end() || !it->second.valid) {
+            if (!reflections_dirty && scene_dirty.load(std::memory_order_relaxed))
+                reflections_dirty = true;
+
+            const Vector3 listener_pos(current_listener.origin.x, current_listener.origin.y, current_listener.origin.z);
+            if (!reflections_dirty) {
+                if (!_last_reflections_listener_pos_valid_ || _last_reflections_listener_pos_.distance_to(listener_pos) > kListenerMoveEps) {
                     reflections_dirty = true;
-                    break;
-                }
-                const Vector3& p = it->second.position;
-                const size_t idx = static_cast<size_t>(h);
-                if (!_last_realtime_reflection_source_pos_valid_[idx] ||
-                    _last_realtime_reflection_source_pos_[idx].distance_to(p) > kSourceMoveEps) {
-                    reflections_dirty = true;
-                    break;
                 }
             }
-        }
-        if (!reflections_dirty) {
-            instrumentation_reflections_sim_skip_no_change.fetch_add(1, std::memory_order_relaxed);
+            if (!reflections_dirty && active_realtime_sources > 0) {
+                std::vector<int32_t> handles;
+                source_manager.get_all_handles(handles);
+                for (int32_t h : handles) {
+                    if (h < 0 || h >= kMaxCacheHandles)
+                        continue;
+                    if (source_outputs_realtime_reflections_[static_cast<size_t>(h)].load(std::memory_order_relaxed) == 0)
+                        continue;
+                    auto it = _source_update_snapshot_.find(h);
+                    if (it == _source_update_snapshot_.end() || !it->second.valid) {
+                        reflections_dirty = true;
+                        break;
+                    }
+                    const Vector3& p = it->second.position;
+                    const size_t idx = static_cast<size_t>(h);
+                    if (!_last_realtime_reflection_source_pos_valid_[idx] ||
+                        _last_realtime_reflection_source_pos_[idx].distance_to(p) > kSourceMoveEps) {
+                        reflections_dirty = true;
+                        break;
+                    }
+                }
+            }
+            if (!reflections_dirty) {
+                instrumentation_reflections_sim_skip_no_change.fetch_add(1, std::memory_order_relaxed);
+            }
         }
     }
 
