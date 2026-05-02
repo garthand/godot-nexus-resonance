@@ -1552,8 +1552,22 @@ void ResonancePlayer::_refresh_config_cache() {
     config_cache_.reflections_type = _config_int("reflections_type", -1);
     config_cache_.reflections_enabled = _config_int("reflections_enabled", -1);
     config_cache_.pathing_enabled_override = _config_int("pathing_enabled_override", -1);
-    config_cache_.apply_hrtf_to_reflections_override = _config_int("apply_hrtf_to_reflections", -1);
-    config_cache_.apply_hrtf_to_pathing_override = _config_int("apply_hrtf_to_pathing", -1);
+    {
+        auto read_tri_state_hrtf = [this](const char* new_key, const char* legacy_key) -> int {
+            if (!player_config.is_valid())
+                return -1;
+            Variant v_new = player_config->get(StringName(new_key));
+            if (v_new.get_type() != Variant::NIL) {
+                int o = static_cast<int>(v_new);
+                if (o < -1 || o > 1)
+                    o = -1;
+                return o;
+            }
+            return _config_int(legacy_key, -1);
+        };
+        config_cache_.reverb_binaural_override = read_tri_state_hrtf("reverb_binaural_override", "apply_hrtf_to_reflections");
+        config_cache_.pathing_binaural_override = read_tri_state_hrtf("pathing_binaural_override", "apply_hrtf_to_pathing");
+    }
     config_cache_.occlusion_input = _config_int("occlusion_input", 0);
     config_cache_.transmission_input = _config_int("transmission_input", 0);
     config_cache_.directivity_input = _config_int("directivity_input", 0);
@@ -2014,7 +2028,7 @@ PlaybackParameters ResonancePlayer::_build_playback_params(const Vector3& listen
     new_params.reverb_pathing_attenuation = reverb_pathing_attenuation;
     new_params.distance = dist;
     new_params.source_position = effective_source_pos;
-    bool eff_use_binaural = (c.direct_binaural_override == -1) ? srv->use_reverb_binaural() : (c.direct_binaural_override == 1);
+    bool eff_use_binaural = (c.direct_binaural_override == -1) ? srv->use_direct_binaural() : (c.direct_binaural_override == 1);
     new_params.use_binaural = eff_use_binaural;
     new_params.apply_air_absorption = c.air_absorption_enabled;
     new_params.air_absorption[0] = air_abs.x;
@@ -2022,8 +2036,8 @@ PlaybackParameters ResonancePlayer::_build_playback_params(const Vector3& listen
     new_params.air_absorption[2] = air_abs.z;
     new_params.apply_directivity = c.directivity_enabled;
     new_params.directivity_value = directivity_val;
-    new_params.apply_hrtf_to_reflections = (c.apply_hrtf_to_reflections_override == -1) ? srv->use_reverb_binaural() : (c.apply_hrtf_to_reflections_override == 1);
-    new_params.apply_hrtf_to_pathing = (c.apply_hrtf_to_pathing_override == -1) ? srv->use_reverb_binaural() : (c.apply_hrtf_to_pathing_override == 1);
+    new_params.apply_hrtf_to_reflections = (c.reverb_binaural_override == -1) ? srv->use_reverb_binaural() : (c.reverb_binaural_override == 1);
+    new_params.apply_hrtf_to_pathing = (c.pathing_binaural_override == -1) ? srv->use_pathing_binaural() : (c.pathing_binaural_override == 1);
     new_params.listener_orientation = listener_orient;
     new_params.enable_direct = direct_enabled;
     new_params.enable_reverb = reverb_enabled;

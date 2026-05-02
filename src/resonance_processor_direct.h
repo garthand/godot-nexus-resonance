@@ -15,6 +15,7 @@ enum class DirectInitFlags : int {
     AMBISONICS_ENCODE = 1 << 4,
     AMBISONICS_PANNING = 1 << 5,
     BINAURAL_STEREO_SCRATCH = 1 << 6,
+    HOA_BINAURAL_STEREO_SCRATCH = 1 << 7,
 };
 inline DirectInitFlags operator|(DirectInitFlags a, DirectInitFlags b) {
     return static_cast<DirectInitFlags>(static_cast<int>(a) | static_cast<int>(b));
@@ -44,6 +45,8 @@ class ResonanceDirectProcessor {
     IPLAudioBuffer internal_ambi_buffer{};
     /// Binaural effects write stereo here first; copied to FL/FR when output layout has >2 channels.
     IPLAudioBuffer internal_binaural_stereo_out{};
+    /// HOA encode+binaural stereo before blending with standard `iplBinauralEffectApply` (spatial_blend parity).
+    IPLAudioBuffer internal_hoa_stereo_scratch{};
 
     // Stored for tail processing when source stops
     IPLVector3 last_direction = {0.0f, 0.0f, -1.0f};

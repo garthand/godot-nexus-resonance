@@ -86,6 +86,12 @@ void ResonanceDirectProcessor::initialize(IPLContext p_context, int p_sample_rat
             int num_ambi_channels = (ambisonic_order + 1) * (ambisonic_order + 1);
             if (iplAudioBufferAllocate(context, num_ambi_channels, frame_size, &internal_ambi_buffer) == IPL_STATUS_SUCCESS && internal_ambi_buffer.data) {
                 init_flags |= DirectInitFlags::AMBISONICS_ENCODE;
+                if (iplAudioBufferAllocate(context, 2, frame_size, &internal_hoa_stereo_scratch) != IPL_STATUS_SUCCESS ||
+                    !internal_hoa_stereo_scratch.data || !internal_hoa_stereo_scratch.data[0] || !internal_hoa_stereo_scratch.data[1]) {
+                    ResonanceLog::warn("DirectProcessor: HOA stereo scratch allocation failed; spatial_blend blend with Ambisonics path unavailable.");
+                } else {
+                    init_flags |= DirectInitFlags::HOA_BINAURAL_STEREO_SCRATCH;
+                }
                 // Non-HRTF surround: decode Ambisonics to speakers (optional; stereo uses cheaper panning path).
                 if (speaker_channels > 2) {
                     IPLAmbisonicsPanningEffectSettings ambiPanSettings{};
@@ -175,9 +181,13 @@ void ResonanceDirectProcessor::cleanup() {
     if (context && internal_ambi_buffer.data != nullptr) {
         iplAudioBufferFree(context, &internal_ambi_buffer);
     }
+    if (context && internal_hoa_stereo_scratch.data != nullptr) {
+        iplAudioBufferFree(context, &internal_hoa_stereo_scratch);
+    }
     memset(&internal_mono_buffer, 0, sizeof(internal_mono_buffer));
     memset(&internal_direct_output, 0, sizeof(internal_direct_output));
     memset(&internal_ambi_buffer, 0, sizeof(internal_ambi_buffer));
+    memset(&internal_hoa_stereo_scratch, 0, sizeof(internal_hoa_stereo_scratch));
     hrtf_handle = nullptr;
     context = nullptr;
     init_flags = DirectInitFlags::NONE;
@@ -341,19 +351,90 @@ void ResonanceDirectProcessor::apply_spatialization(const IPLVector3& dir, const
     }
 
     if (use_ambi_path && ambisonics_encode_effect && ambisonics_binaural_effect && internal_ambi_buffer.data && use_binaural && hrtf_handle) {
-        IPLAmbisonicsEncodeEffectParams encParams{};
-        encParams.direction = dir;
-        encParams.order = ambisonic_order;
-        iplAmbisonicsEncodeEffectApply(ambisonics_encode_effect, &encParams, const_cast<IPLAudioBuffer*>(&direct_out), &internal_ambi_buffer);
+        // AmbisonicsBinauralEffect has no spatialBlend; blend with iplBinauralEffectApply (same as non-HOA path) so
+        // spatial_blend crossfades from standard binaural (weight 1-sb) to HOA (weight sb). At sb=0: binaural only; at
+        // sb=1: HOA only. Mid values differ from a single BinauralEffect(sb) call — unavoidable without Steam exposing
+        // spatialBlend on AmbisonicsBinauralEffect.
+        float sb = spatial_blend;
+        if (sb < 0.0f)
+            sb = 0.0f;
+        else if (sb > 1.0f)
+            sb = 1.0f;
+        constexpr float k_spatial_blend_eps = 1e-5f;
+        const bool have_hoa_blend_scratch = (init_flags & DirectInitFlags::HOA_BINAURAL_STEREO_SCRATCH) &&
+                                            internal_hoa_stereo_scratch.data && internal_hoa_stereo_scratch.data[0] &&
+                                            internal_hoa_stereo_scratch.data[1];
 
-        IPLAmbisonicsBinauralEffectParams ambBinParams{};
-        ambBinParams.hrtf = hrtf_handle;
-        ambBinParams.order = ambisonic_order;
-        iplAmbisonicsBinauralEffectApply(ambisonics_binaural_effect, &ambBinParams, &internal_ambi_buffer, binaural_out);
-        if (binaural_out != &out)
-            copy_binaural_stereo_to_output(out);
-        else
-            clear_surround_tail_after_direct_stereo_effect(out, binaural_out);
+        if (sb <= k_spatial_blend_eps) {
+            IPLBinauralEffectParams binParams{};
+            binParams.direction = dir;
+            binParams.interpolation = hrtf_bilinear ? IPL_HRTFINTERPOLATION_BILINEAR : IPL_HRTFINTERPOLATION_NEAREST;
+            binParams.spatialBlend = sb;
+            binParams.hrtf = hrtf_handle;
+            binParams.peakDelays = nullptr;
+            iplBinauralEffectApply(binaural_effect, &binParams, const_cast<IPLAudioBuffer*>(&direct_out), binaural_out);
+            if (binaural_out != &out)
+                copy_binaural_stereo_to_output(out);
+            else
+                clear_surround_tail_after_direct_stereo_effect(out, binaural_out);
+        } else if (sb >= 1.0f - k_spatial_blend_eps) {
+            IPLAmbisonicsEncodeEffectParams encParams{};
+            encParams.direction = dir;
+            encParams.order = ambisonic_order;
+            iplAmbisonicsEncodeEffectApply(ambisonics_encode_effect, &encParams, const_cast<IPLAudioBuffer*>(&direct_out), &internal_ambi_buffer);
+
+            IPLAmbisonicsBinauralEffectParams ambBinParams{};
+            ambBinParams.hrtf = hrtf_handle;
+            ambBinParams.order = ambisonic_order;
+            iplAmbisonicsBinauralEffectApply(ambisonics_binaural_effect, &ambBinParams, &internal_ambi_buffer, binaural_out);
+            if (binaural_out != &out)
+                copy_binaural_stereo_to_output(out);
+            else
+                clear_surround_tail_after_direct_stereo_effect(out, binaural_out);
+        } else if (have_hoa_blend_scratch) {
+            IPLAmbisonicsEncodeEffectParams encParams{};
+            encParams.direction = dir;
+            encParams.order = ambisonic_order;
+            iplAmbisonicsEncodeEffectApply(ambisonics_encode_effect, &encParams, const_cast<IPLAudioBuffer*>(&direct_out), &internal_ambi_buffer);
+
+            IPLAmbisonicsBinauralEffectParams ambBinParams{};
+            ambBinParams.hrtf = hrtf_handle;
+            ambBinParams.order = ambisonic_order;
+            iplAmbisonicsBinauralEffectApply(ambisonics_binaural_effect, &ambBinParams, &internal_ambi_buffer, &internal_hoa_stereo_scratch);
+
+            IPLBinauralEffectParams binParams{};
+            binParams.direction = dir;
+            binParams.interpolation = hrtf_bilinear ? IPL_HRTFINTERPOLATION_BILINEAR : IPL_HRTFINTERPOLATION_NEAREST;
+            binParams.spatialBlend = sb;
+            binParams.hrtf = hrtf_handle;
+            binParams.peakDelays = nullptr;
+            iplBinauralEffectApply(binaural_effect, &binParams, const_cast<IPLAudioBuffer*>(&direct_out), binaural_out);
+
+            const float w_hoa = sb;
+            const float w_bin = 1.0f - sb;
+            if (binaural_out->data && binaural_out->data[0] && binaural_out->data[1]) {
+                for (int i = 0; i < frame_size; ++i) {
+                    binaural_out->data[0][i] = w_bin * binaural_out->data[0][i] + w_hoa * internal_hoa_stereo_scratch.data[0][i];
+                    binaural_out->data[1][i] = w_bin * binaural_out->data[1][i] + w_hoa * internal_hoa_stereo_scratch.data[1][i];
+                }
+            }
+            if (binaural_out != &out)
+                copy_binaural_stereo_to_output(out);
+            else
+                clear_surround_tail_after_direct_stereo_effect(out, binaural_out);
+        } else {
+            IPLBinauralEffectParams binParams{};
+            binParams.direction = dir;
+            binParams.interpolation = hrtf_bilinear ? IPL_HRTFINTERPOLATION_BILINEAR : IPL_HRTFINTERPOLATION_NEAREST;
+            binParams.spatialBlend = sb;
+            binParams.hrtf = hrtf_handle;
+            binParams.peakDelays = nullptr;
+            iplBinauralEffectApply(binaural_effect, &binParams, const_cast<IPLAudioBuffer*>(&direct_out), binaural_out);
+            if (binaural_out != &out)
+                copy_binaural_stereo_to_output(out);
+            else
+                clear_surround_tail_after_direct_stereo_effect(out, binaural_out);
+        }
     } else if (use_binaural && binaural_effect && hrtf_handle) {
         IPLBinauralEffectParams binParams{};
         binParams.direction = dir;

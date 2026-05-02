@@ -304,8 +304,16 @@ void ResonanceServer::set_perspective_correction_factor(float p_factor) {
 }
 float ResonanceServer::get_perspective_correction_factor() const { return perspective_correction_factor.load(std::memory_order_acquire); }
 
+bool ResonanceServer::use_direct_binaural() const {
+    return direct_binaural && _hrtf() != nullptr;
+}
+
 bool ResonanceServer::use_reverb_binaural() const {
     return reverb_binaural && _hrtf() != nullptr;
+}
+
+bool ResonanceServer::use_pathing_binaural() const {
+    return pathing_binaural && _hrtf() != nullptr;
 }
 void ResonanceServer::_bind_methods() {
     ADD_SIGNAL(MethodInfo("bake_progress", PropertyInfo(Variant::FLOAT, "progress")));

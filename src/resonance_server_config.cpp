@@ -183,7 +183,12 @@ void ResonanceServerConfig::apply(const Dictionary& config,
     if (hrtf_normalization_type > 1)
         hrtf_normalization_type = 1;
     config_sofa_asset(config, "hrtf_sofa_asset", hrtf_sofa_asset);
-    reverb_binaural = config_bool(config, "reverb_binaural", reverb_binaural);
+    {
+        const bool rb_fallback = config_bool(config, "reverb_binaural", true);
+        direct_binaural = config_bool(config, "direct_binaural", rb_fallback);
+        reverb_binaural = config_bool(config, "reverb_binaural", rb_fallback);
+        pathing_binaural = config_bool(config, "pathing_binaural", rb_fallback);
+    }
     use_virtual_surround = config_bool(config, "use_virtual_surround", use_virtual_surround);
     direct_speaker_channels = resonance::clamp_direct_speaker_channels(config_int(config, "direct_speaker_channels", direct_speaker_channels));
     hrtf_interpolation_bilinear = config_bool(config, "hrtf_interpolation_bilinear", hrtf_interpolation_bilinear);

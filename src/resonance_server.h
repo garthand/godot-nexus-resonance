@@ -348,8 +348,10 @@ class ResonanceServer : public Object {
     int hrtf_normalization_type = 0;
     // Custom HRTF: ResonanceSOFAAsset with volume/norm. Null = default embedded HRTF.
     Ref<ResonanceSOFAAsset> hrtf_sofa_asset;
-    // Use HRTF for reverb Ambisonic decode (better spatialization)
+    // Headphone HRTF toggles (see ResonanceRuntimeConfig; require loaded HRTF to take effect)
+    bool direct_binaural = true;
     bool reverb_binaural = true;
+    bool pathing_binaural = true;
     // HRTF interpolation: false = Nearest (faster), true = Bilinear (smoother for moving sources)
     bool hrtf_interpolation_bilinear = false;
     // Virtual Surround: decode reverb Ambisonics to 7.1, then iplVirtualSurroundEffect -> stereo (for speaker layouts without HRTF)
@@ -1000,7 +1002,10 @@ class ResonanceServer : public Object {
     int get_transmission_type() const { return transmission_type; }
     int get_max_transmission_surfaces() const { return max_transmission_surfaces; }
     int get_occlusion_type() const { return occlusion_type; }
+    bool use_direct_binaural() const;
+    /// Reflection mixer / Ambisonics decode to stereo (wet path).
     bool use_reverb_binaural() const;
+    bool use_pathing_binaural() const;
     bool use_virtual_surround_output() const { return use_virtual_surround; }
     bool get_hrtf_interpolation_bilinear() const { return hrtf_interpolation_bilinear; }
     bool is_pathing_enabled() const { return pathing_enabled; }

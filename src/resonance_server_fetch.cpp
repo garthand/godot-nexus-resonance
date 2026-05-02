@@ -164,7 +164,7 @@ bool ResonanceServer::fetch_pathing_params(int32_t handle, IPLPathEffectParams& 
             out_params.eqCoeffs[i] = e.eqCoeffs[i];
         out_params.shCoeffs = const_cast<float*>(e.shCoeffs.data());
         out_params.order = e.order;
-        out_params.binaural = reverb_binaural ? IPL_TRUE : IPL_FALSE;
+        out_params.binaural = pathing_binaural ? IPL_TRUE : IPL_FALSE;
         out_params.hrtf = _hrtf();
         out_params.normalizeEQ = pathing_normalize_eq ? IPL_TRUE : IPL_FALSE;
         result = true;

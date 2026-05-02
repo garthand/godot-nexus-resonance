@@ -420,7 +420,7 @@ class ResonancePlayer : public AudioStreamPlayer3D {
         bool use_ambisonics_encode;
         int path_validation_override, find_alternate_paths_override;
         int reflections_type, reflections_enabled, pathing_enabled_override;
-        int apply_hrtf_to_reflections_override, apply_hrtf_to_pathing_override;
+        int reverb_binaural_override, pathing_binaural_override;
         int occlusion_input, transmission_input, directivity_input;
         float occlusion_value, transmission_low, transmission_mid, transmission_high, directivity_value;
         int occlusion_samples, max_transmission_surfaces;

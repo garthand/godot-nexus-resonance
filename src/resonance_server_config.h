@@ -61,7 +61,12 @@ struct ResonanceServerConfig {
     /// 0=None (IPL_HRTFNORMTYPE_NONE), 1=RMS — applies to embedded default HRTF only; SOFA uses asset norm_type.
     int hrtf_normalization_type = 0;
     Ref<ResonanceSOFAAsset> hrtf_sofa_asset;
+    /// HRTF on direct dry path (vs panning) when ResonancePlayerConfig uses global default.
+    bool direct_binaural = true;
+    /// HRTF when decoding reflection/reverb Ambisonics (mixer return / ResonanceAudioEffect).
     bool reverb_binaural = true;
+    /// HRTF in pathing effect output (indirect paths around obstacles).
+    bool pathing_binaural = true;
     bool hrtf_interpolation_bilinear = false;
     bool use_virtual_surround = false;
     /// Direct path non-HRTF panning: 1,2,4,6,8 (Mono/Stereo/Quad/5.1/7.1). Invalid values become stereo.

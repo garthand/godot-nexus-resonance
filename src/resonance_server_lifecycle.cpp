@@ -177,7 +177,9 @@ void ResonanceServer::_apply_config(Dictionary config) {
     hrtf_volume_db = config_.hrtf_volume_db;
     hrtf_normalization_type = config_.hrtf_normalization_type;
     hrtf_sofa_asset = config_.hrtf_sofa_asset;
+    direct_binaural = config_.direct_binaural;
     reverb_binaural = config_.reverb_binaural;
+    pathing_binaural = config_.pathing_binaural;
     use_virtual_surround = config_.use_virtual_surround;
     direct_speaker_channels = config_.direct_speaker_channels;
     hrtf_interpolation_bilinear = config_.hrtf_interpolation_bilinear;
@@ -630,8 +632,8 @@ void ResonanceServer::_run_phonon_simulation_locked(const IPLCoordinateSpace3& c
     // Dirty gating for reflections: if nothing relevant changed since last RunReflections, skip the heavy work.
     // This reduces base load and sporadic spikes when the listener is idle (Unity parity: avoid no-op ray tracing).
     constexpr bool kReflectionsDirtyGatingDisabled = true; // TEMPORARY: set false to re-enable skip_no_change
-    constexpr float kListenerMoveEps = 0.0025f; // meters
-    constexpr float kSourceMoveEps = 0.0025f;   // meters
+    constexpr float kListenerMoveEps = 0.0025f;            // meters
+    constexpr float kSourceMoveEps = 0.0025f;              // meters
     bool reflections_dirty = true;
     if (run_reflection_sim && shared_reflections) {
         if (!kReflectionsDirtyGatingDisabled) {
