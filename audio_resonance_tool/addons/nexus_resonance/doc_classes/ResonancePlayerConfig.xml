@@ -73,9 +73,6 @@
 		<member name="reverb_bus_name" type="StringName" default="">
 			Bus for Parametric/Hybrid split wet when reverb_bus_override is Custom (must exist in Audio Bus Layout). When dry and wet buses differ, wet is played on this bus. Convolution/TAN wet stays on the runtime [member ResonanceRuntimeConfig.reverb_bus_name] bus; its Godot send follows [member ResonanceRuntimeConfig.bus].
 		</member>
-		<member name="direct_binaural_override" type="int" default="-1">
-			Per-source binaural override. -1 = use global (RuntimeConfig.reverb_binaural), 0 = panning, 1 = force HRTF.
-		</member>
 		<member name="directivity_enabled" type="bool" default="false">
 			Enable directional sound source.
 		</member>
@@ -90,12 +87,6 @@
 		</member>
 		<member name="directivity_value" type="float" default="1.0">
 			Directivity attenuation (0-1). Only when directivity_input is User Defined.
-		</member>
-		<member name="spatial_blend" type="float" default="1.0">
-			Blends output between 2D (0, stereo panning without HRTF on the dry path) and full 3D spatial audio (1). Intermediate values mix both (e.g. UI vs world-attached sources).
-		</member>
-		<member name="use_ambisonics_encode" type="bool" default="false">
-			Encode point source to Ambisonics before binaural.
 		</member>
 		<member name="playback_parameter_min_interval" type="float" default="0.0">
 			Minimum seconds between full playback-parameter updates. 0 = every frame (subject to other gating).
@@ -199,11 +190,20 @@
 		<member name="reflections_delay" type="int" default="-1">
 			Samples before parametric part starts. -1 = use simulation value.
 		</member>
-		<member name="apply_hrtf_to_reflections" type="int" default="-1">
-			Apply HRTF to reflections (reverb) for this source. Shown under Spatialization in the inspector. -1=Use Global, 0=Disabled, 1=Enabled.
+		<member name="direct_binaural_override" type="int" default="-1">
+			Per-source override for [member ResonanceRuntimeConfig.direct_binaural]. -1=Use Global, 0=Disabled (panning on dry path), 1=Enabled (force HRTF).
 		</member>
-		<member name="apply_hrtf_to_pathing" type="int" default="-1">
-			Apply HRTF to pathing for this source. Shown under Spatialization in the inspector. -1=Use Global ([member ResonanceRuntimeConfig.reverb_binaural]), 0=Disabled (less CPU), 1=Enabled.
+		<member name="reverb_binaural_override" type="int" default="-1">
+			Per-source override for [member ResonanceRuntimeConfig.reverb_binaural] (reflection / mixer wet Ambisonics decode). -1=Use Global, 0=Disabled, 1=Enabled.
+		</member>
+		<member name="pathing_binaural_override" type="int" default="-1">
+			Per-source override for [member ResonanceRuntimeConfig.pathing_binaural]. -1=Use Global, 0=Disabled (less CPU), 1=Enabled.
+		</member>
+		<member name="spatial_blend" type="float" default="1.0">
+			Blends output between 2D (0, stereo panning without HRTF on the dry path) and full 3D spatial audio (1). Intermediate values mix both (e.g. UI vs world-attached sources).
+		</member>
+		<member name="use_ambisonics_encode" type="bool" default="false">
+			Encode point source to Ambisonics before binaural.
 		</member>
 		<member name="hrtf_interpolation_override" type="int" default="-1">
 			-1 = use [member ResonanceRuntimeConfig.hrtf_interpolation_bilinear]. 0 = nearest HRTF (faster). 1 = bilinear (smoother motion).

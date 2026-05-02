@@ -123,8 +123,14 @@
 		<member name="hybrid_reverb_overlap_percent" type="int" default="25">
 			Hybrid reverb: overlap percent (0–100) for crossfade between convolution and parametric parts.
 		</member>
+		<member name="direct_binaural" type="bool" default="true">
+			When [ResonancePlayerConfig] uses global direct binaural, apply HRTF on the dry / direct path (vs speaker panning). Requires a loaded HRTF.
+		</member>
 		<member name="reverb_binaural" type="bool" default="true">
-			Apply binaural rendering to reverb.
+			Apply HRTF when decoding Ambisonic convolution / mixer output to stereo (reflection / reverb wet path).
+		</member>
+		<member name="pathing_binaural" type="bool" default="true">
+			Apply HRTF in the pathing effect (indirect paths). When [ResonancePlayerConfig] pathing HRTF uses global, this value is the default.
 		</member>
 		<member name="use_virtual_surround" type="bool" default="false">
 			Use virtual surround instead of HRTF.

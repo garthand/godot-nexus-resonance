@@ -38,7 +38,7 @@ class ResonanceAudioEffectInstance : public AudioEffectInstance {
     static void ipl_context_reinit_cleanup(void* userdata);
 
     virtual void _process(const void* src_buffer, AudioFrame* dst_buffer, int32_t frame_count) override;
-    virtual bool _process_silence() const override { return true; } // Always process - we output mixer, not bus input
+    virtual bool _process_silence() const override { return true; } // Always process: wet from mixer may be non-silent
 
   protected:
     static void _bind_methods() {}

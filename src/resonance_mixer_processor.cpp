@@ -29,13 +29,11 @@ void ResonanceMixerProcessor::initialize(IPLContext p_context, int p_sample_rate
     IPLAudioSettings audioSettings{p_sample_rate, p_frame_size};
     int num_channels = (ambisonic_order + 1) * (ambisonic_order + 1);
     if (iplAudioBufferAllocate(context, num_channels, frame_size, &sa_ambisonic_buffer) != IPL_STATUS_SUCCESS ||
-        iplAudioBufferAllocate(context, num_channels, frame_size, &sa_ambisonic_prev) != IPL_STATUS_SUCCESS ||
         iplAudioBufferAllocate(context, 2, frame_size, &sa_stereo_buffer) != IPL_STATUS_SUCCESS) {
         ResonanceLog::error("ResonanceMixerProcessor: Buffer allocation failed.");
         cleanup();
         return;
     }
-    ambisonic_prev_valid = false;
     last_stereo_left.resize(static_cast<size_t>(frame_size));
     last_stereo_right.resize(static_cast<size_t>(frame_size));
     last_stereo_valid = false;
@@ -111,10 +109,6 @@ void ResonanceMixerProcessor::cleanup() {
             iplAudioBufferFree(context, &sa_ambisonic_buffer);
             sa_ambisonic_buffer.data = nullptr;
         }
-        if (sa_ambisonic_prev.data) {
-            iplAudioBufferFree(context, &sa_ambisonic_prev);
-            sa_ambisonic_prev.data = nullptr;
-        }
         if (sa_stereo_buffer.data) {
             iplAudioBufferFree(context, &sa_stereo_buffer);
             sa_stereo_buffer.data = nullptr;
@@ -129,7 +123,6 @@ void ResonanceMixerProcessor::cleanup() {
     pending_stereo_left.clear();
     pending_stereo_right.clear();
     pending_read_index = 0;
-    ambisonic_prev_valid = false;
     last_stereo_left.clear();
     last_stereo_right.clear();
     last_stereo_valid = false;
@@ -269,24 +262,19 @@ bool ResonanceMixerProcessor::process_mixer_return(IPLReflectionMixer mixer_hand
     // values are still caught at ResonanceAudioEffect output (sanitize + clamp after gain).
     iplReflectionMixerApply(mixer_handle, &params, &sa_ambisonic_buffer);
 
-    // Godot bus scheduling can call the mixer-return effect before sources have fed the reflection mixer
-    // for the current tick. To avoid a feed/pull ordering click at EOS, decode the previous block and
-    // only swap in the newly pulled block for the next callback (1-block wet latency; stable like Unity's DSP chain).
-    if (ambisonic_prev_valid) {
-        _decode_ambisonic_to_stereo_buffer(&sa_ambisonic_prev, listener_coords);
+    // Steam Audio Unity mix_return_effect.cpp: iplAmbisonicsDecodeEffectApply immediately after
+    // iplReflectionMixerApply on the same buffer — same DSP tick, no extra wet latency vs dry at master.
+    _decode_ambisonic_to_stereo_buffer(&sa_ambisonic_buffer, listener_coords);
 
-        if (frame_count < frame_size && !s_frame_count_small_warned) {
-            s_frame_count_small_warned = true;
-            UtilityFunctions::push_warning(
-                "Nexus Resonance: Reverb output frame_count (" + String::num_int64(frame_count) +
-                ") < audio_frame_size (" + String::num_int64(frame_size) +
-                "). Carrying tail samples across callbacks until audio engine reinitializes to a matching frame size.");
-        }
-        _write_stereo_to_audio_frames_with_carry(out_frames, frame_count);
+    if (frame_count < frame_size && !s_frame_count_small_warned) {
+        s_frame_count_small_warned = true;
+        UtilityFunctions::push_warning(
+            "Nexus Resonance: Reverb output frame_count (" + String::num_int64(frame_count) +
+            ") < audio_frame_size (" + String::num_int64(frame_size) +
+            "). Carrying tail samples across callbacks until audio engine reinitializes to a matching frame size.");
     }
+    _write_stereo_to_audio_frames_with_carry(out_frames, frame_count);
 
-    std::swap(sa_ambisonic_prev, sa_ambisonic_buffer);
-    ambisonic_prev_valid = true;
     have_seen_mixer_feed_count_ = true;
     last_seen_mixer_feed_count_ = feed_count_now;
     return true;

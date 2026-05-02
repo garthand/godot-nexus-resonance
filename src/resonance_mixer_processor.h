@@ -33,11 +33,9 @@ class ResonanceMixerProcessor {
     IPLVirtualSurroundEffect virtual_surround_effect = nullptr;
 
     // Buffers
-    IPLAudioBuffer sa_ambisonic_buffer{}; // Mixer -> Decode
-    IPLAudioBuffer sa_ambisonic_prev{};   // Previous mixer block (1-block delay to avoid Godot feed/pull ordering clicks)
-    bool ambisonic_prev_valid = false;
-    IPLAudioBuffer sa_stereo_buffer{}; // Decode -> Godot (or VirtualSurround -> Godot)
-    IPLAudioBuffer sa_7_1_buffer{};    // Decode 7.1 intermediate when use_virtual_surround
+    IPLAudioBuffer sa_ambisonic_buffer{}; // Mixer Apply output -> same-tick Ambisonics decode (Steam Audio Unity mix_return)
+    IPLAudioBuffer sa_stereo_buffer{};    // Decode -> Godot (or VirtualSurround -> Godot)
+    IPLAudioBuffer sa_7_1_buffer{};       // Decode 7.1 intermediate when use_virtual_surround
     std::vector<float> last_stereo_left{};
     std::vector<float> last_stereo_right{};
     bool last_stereo_valid = false;

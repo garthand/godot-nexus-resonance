@@ -12,6 +12,27 @@ using namespace godot;
 // Warn once per process when frame_count != server frame_size to avoid log spam.
 static bool s_frame_size_mismatch_warned = false;
 
+// Steam Audio Unity mix_return_effect.cpp: decoded wet is mixed with bus input via iplAudioBufferMix.
+// Godot passes prior-chain audio as AudioFrame array (same layout as dst_buffer); buffers may alias.
+static void copy_bus_input_to_dst(const void* src_buffer, AudioFrame* dst_buffer, int32_t frame_count) {
+    if (!dst_buffer || frame_count <= 0)
+        return;
+    if (src_buffer == static_cast<const void*>(dst_buffer)) {
+        return;
+    }
+    if (src_buffer) {
+        const AudioFrame* src = static_cast<const AudioFrame*>(src_buffer);
+        for (int32_t i = 0; i < frame_count; i++) {
+            dst_buffer[i] = src[i];
+        }
+        return;
+    }
+    for (int32_t i = 0; i < frame_count; i++) {
+        dst_buffer[i].left = 0.0f;
+        dst_buffer[i].right = 0.0f;
+    }
+}
+
 // --- INSTANCE ---
 // Reinit/shutdown: ResonanceServer drains registered clients under AudioServer::lock before iplContextRelease.
 
@@ -56,6 +77,10 @@ void ResonanceAudioEffectInstance::_process(const void* src_buffer, AudioFrame* 
             srv->get_ambisonic_order());
         if (!processor.is_ready()) {
             ResonanceLog::error("ResonanceAudioEffect: MixerProcessor initialization failed. Reverb will be silent until init succeeds.");
+            for (int i = 0; i < frame_count; i++) {
+                dst_buffer[i].left = 0.0f;
+                dst_buffer[i].right = 0.0f;
+            }
             return;
         }
         if (ResonanceServer* reg_srv = ResonanceServer::get_singleton())
@@ -83,21 +108,15 @@ void ResonanceAudioEffectInstance::_process(const void* src_buffer, AudioFrame* 
         }
         return;
     }
-    // No mixer for Parametric (1) or Hybrid (2) - per Steam Audio docs mixer cannot be used with those
+    // No mixer for Parametric (1) or Hybrid (2) - convolution wet is produced per-source; pass bus audio through.
     if (!mixer) {
-        for (int i = 0; i < frame_count; i++) {
-            dst_buffer[i].left = 0.0f;
-            dst_buffer[i].right = 0.0f;
-        }
+        copy_bus_input_to_dst(src_buffer, dst_buffer, frame_count);
         srv->update_reverb_effect_instrumentation(true, false, 0, 0.0f);
         return;
     }
 
-    // Clear output; we replace with mixer content (ignore bus input)
-    for (int i = 0; i < frame_count; i++) {
-        dst_buffer[i].left = 0.0f;
-        dst_buffer[i].right = 0.0f;
-    }
+    // Bus dry / prior effects (Unity mix_return: iplAudioBufferMix with decoded wet), then add convolution wet via +=.
+    copy_bus_input_to_dst(src_buffer, dst_buffer, frame_count);
 
     // --- PROCESSING ---
     if (ResonanceServer::ipl_audio_teardown_active()) {
@@ -110,10 +129,9 @@ void ResonanceAudioEffectInstance::_process(const void* src_buffer, AudioFrame* 
 
     IPLCoordinateSpace3 listener_coords = srv->get_current_listener_coords();
 
-    // Steam Audio Unity: per-source effects (spatialize) call iplReflectionEffectApply into the shared mixer
-    // before the Mix Return effect runs iplReflectionMixerApply on the same DSP tick. Godot should run
-    // ResonanceStreamPlayback::_mix (which feeds the mixer) before this bus _process for send routing;
-    // matching ResonanceServer::audio_frame_size to the bus frame_count avoids a one-block feed/pull skew.
+    // Steam Audio Unity: sources feed iplReflectionEffectApply into the shared mixer; Mix Return calls
+    // iplReflectionMixerApply then iplAmbisonicsDecodeEffectApply in one callback. Hold-last (mixer_processor)
+    // covers Godot callback ordering when no feed occurred since the last bus tick.
     const auto bus_t0 = std::chrono::steady_clock::now();
     bool success = processor.process_mixer_return(mixer, listener_coords, dst_buffer, frame_count);
     const auto bus_t1 = std::chrono::steady_clock::now();

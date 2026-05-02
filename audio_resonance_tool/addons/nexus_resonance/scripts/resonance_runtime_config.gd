@@ -59,8 +59,16 @@ var audio_frame_size: int:
 ## Direct path without HRTF: speaker layout for IPLPanningEffect (and optional Ambisonics→speaker decode for surround).
 ## Godot player output stays stereo (fold-down). Use 1/2/4/6/8 only; other values become stereo at runtime.
 @export_enum("Mono:1", "Stereo:2", "Quad:4", "5.1:6", "7.1:8") var direct_speaker_channels: int = 2
-## Apply binaural rendering to reverb for headphone playback.
+
+@export_subgroup("Headphone HRTF", "")
+## Apply directional HRTF on the **direct** dry path (vs speaker panning). Requires a loaded HRTF.
+@export var direct_binaural: bool = true
+## Apply HRTF when decoding convolution / mixer Ambisonics to stereo (wet / [member reverb_bus_name]).
 @export var reverb_binaural: bool = true
+## Apply HRTF in the pathing effect (indirect paths around obstacles).
+@export var pathing_binaural: bool = true
+
+@export_storage var _spatial_binaural_config_version: int = 0
 
 @export_subgroup("HRTF", "")
 ## HRTF volume gain (dB) for the embedded default HRTF. With custom SOFA, added to each asset's [member ResonanceSOFAAsset.volume_db] (linear gain product).
@@ -421,8 +429,21 @@ static func _get_audio_frame_size_from_project() -> int:
 	return best
 
 
+func _migrate_spatial_binaural_if_needed() -> void:
+	if _spatial_binaural_config_version >= 2:
+		return
+	if resource_path.is_empty():
+		_spatial_binaural_config_version = 2
+		return
+	direct_binaural = reverb_binaural
+	pathing_binaural = reverb_binaural
+	_spatial_binaural_config_version = 2
+	emit_changed()
+
+
 ## Returns config dictionary for [method ResonanceServer.init_audio_engine] when merged by [method ResonanceRuntime.get_config_dict]. Does not include [member bus] / [member reverb_bus_name]; the runtime node adds [code]context_simd_level[/code] / [code]context_validation[/code] there.
 func get_config() -> Dictionary:
+	_migrate_spatial_binaural_if_needed()
 	var rays := get_effective_realtime_rays(realtime_rays, OS.get_name())
 	var mix_rate := int(AudioServer.get_mix_rate())
 	var rate := sample_rate_override if sample_rate_override > 0 else mix_rate
@@ -456,7 +477,9 @@ func get_config() -> Dictionary:
 		"reflection_type": reflection_type,
 		"hybrid_reverb_transition_time": hybrid_reverb_transition_time,
 		"hybrid_reverb_overlap_percent": hybrid_reverb_overlap_percent,
+		"direct_binaural": direct_binaural,
 		"reverb_binaural": reverb_binaural,
+		"pathing_binaural": pathing_binaural,
 		"use_virtual_surround": use_virtual_surround,
 		"direct_speaker_channels": direct_speaker_channels,
 		"hrtf_volume_db": hrtf_volume_db,

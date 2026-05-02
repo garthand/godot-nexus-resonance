@@ -107,12 +107,6 @@ var _reverb_bus_override: int = -1
 
 ## Bus for reverb output when reverb_bus_override is Custom. Pick from existing buses in Audio Bus Layout.
 @export var reverb_bus_name: StringName = &"ResonanceReverb"
-## Per-source binaural override. Use Global = follow RuntimeConfig.reverb_binaural. Disabled = panning. Enabled = force HRTF.
-@export_enum("Use Global:-1", "Disabled:0", "Enabled:1") var direct_binaural_override: int = -1
-## Blends this node's output between 2D (0) and full 3D spatial audio (1). At 0 the sound is panned as stereo (no HRTF / room simulation on the dry path); at 1 Nexus Resonance drives full spatialization, occlusion, and bus routing like a normal 3D source. Values in between mix the two (useful for UI voices vs world-attached sources).
-@export_range(0.0, 1.0, 0.01) var spatial_blend: float = 1.0
-## Encode point source to Ambisonics before binaural. For Ambisonic mix scenarios. Usually leave disabled.
-@export var use_ambisonics_encode: bool = false
 
 # --- Performance ---
 @export_group("Performance")
@@ -276,10 +270,16 @@ var _reverb_transmission_amount_input: int = 0
 
 # --- Spatialization ---
 @export_group("Spatialization")
-## Apply HRTF to reflections (reverb) for this source. Use Global = follow runtime reverb_binaural.
-@export_enum("Use Global:-1", "Disabled:0", "Enabled:1") var apply_hrtf_to_reflections: int = -1
-## Apply HRTF to pathing for this source. Use Global = follow runtime reverb_binaural. Disabled/Enabled force off or on; disabling saves CPU.
-@export_enum("Use Global:-1", "Disabled:0", "Enabled:1") var apply_hrtf_to_pathing: int = -1
+## Per-source override for [member ResonanceRuntimeConfig.direct_binaural]. Use Global = runtime default; Disabled = panning on dry path; Enabled = force HRTF.
+@export_enum("Use Global:-1", "Disabled:0", "Enabled:1") var direct_binaural_override: int = -1
+## Per-source override for [member ResonanceRuntimeConfig.reverb_binaural] (HRTF on convolution / mixer Ambisonics decode — reflections wet path).
+@export_enum("Use Global:-1", "Disabled:0", "Enabled:1") var reverb_binaural_override: int = -1
+## Per-source override for [member ResonanceRuntimeConfig.pathing_binaural]. Disabled saves CPU when pathing runs but stereo speaker panning is enough.
+@export_enum("Use Global:-1", "Disabled:0", "Enabled:1") var pathing_binaural_override: int = -1
+## Blends this node's output between 2D (0) and full 3D spatial audio (1). At 0 the sound is panned as stereo (no HRTF / room simulation on the dry path); at 1 Nexus Resonance drives full spatialization, occlusion, and bus routing like a normal 3D source. Values in between mix the two (useful for UI voices vs world-attached sources).
+@export_range(0.0, 1.0, 0.01) var spatial_blend: float = 1.0
+## Encode point source to Ambisonics before binaural (HOA path). For mixing into an HOA-style chain. When enabled, [member spatial_blend] crossfades standard [code]iplBinauralEffect[/code] output (same spatialBlend HRIR behavior as when encode is off) with HOA encode+binaural: 0 = binaural only, 1 = HOA only; values in between mix both. Usually leave disabled.
+@export var use_ambisonics_encode: bool = false
 ## HRTF table lookup: nearest (faster) vs bilinear (smoother motion). Use Global = [member ResonanceRuntimeConfig.hrtf_interpolation_bilinear].
 @export_enum("Use Global:-1", "Nearest:0", "Bilinear:1") var hrtf_interpolation_override: int = -1
 var _perspective_correction_override: int = -1
