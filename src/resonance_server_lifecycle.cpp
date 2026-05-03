@@ -213,9 +213,8 @@ void ResonanceServer::_apply_config(Dictionary config) {
     perspective_correction_enabled.store(config_.perspective_correction_enabled, std::memory_order_relaxed);
     perspective_correction_factor.store(config_.perspective_correction_factor, std::memory_order_relaxed);
     dynamic_scene_commit_min_interval_ = config_.dynamic_scene_commit_min_interval;
-    simulation_update_interval = config_.simulation_update_interval;
-    reflections_sim_update_interval = config_.reflections_sim_update_interval;
-    pathing_sim_update_interval = config_.pathing_sim_update_interval;
+    reflections_sim_interval = config_.reflections_sim_interval;
+    pathing_sim_interval = config_.pathing_sim_interval;
     realtime_reflection_max_distance_m = config_.realtime_reflection_max_distance_m;
     reflections_adaptive_budget_us_ = static_cast<uint32_t>(config_.reflections_adaptive_budget_us);
     reflections_adaptive_ray_min_ = config_.reflections_adaptive_ray_min;
@@ -231,7 +230,6 @@ void ResonanceServer::_apply_config(Dictionary config) {
     _adaptive_realtime_num_rays_initialized_ = false;
     direct_sim_interval = config_.direct_sim_interval;
     batch_source_updates = config_.batch_source_updates;
-    simulation_update_time_elapsed = 0.0f;
     reflections_interval_elapsed = 0.0f;
     pathing_interval_elapsed = 0.0f;
     direct_sim_time_elapsed = (direct_sim_interval > 0.0f) ? direct_sim_interval : 0.0f;
@@ -472,47 +470,22 @@ void ResonanceServer::tick(float delta) {
             reflection_sim_heavy_requested.store(true, std::memory_order_release);
     }
 
-    // Heavy cadence: default uses one timer (simulation_update_interval) for both reflections and pathing.
-    // When reflections_sim_update_interval or pathing_sim_update_interval is >= 0, that axis uses its own seconds value; < 0 falls back to simulation_update_interval.
+    // Reflections and pathing use independent min-interval timers (seconds). Adaptive scheduling adds extra delay
+    // to the reflection interval only when reflections_adaptive_budget_us_ > 0.
     const bool need_refl_heavy = _any_source_needs_reflection_sim_assume_locked();
-    const bool split_heavy = (reflections_sim_update_interval >= 0.0f) || (pathing_sim_update_interval >= 0.0f);
     const bool adaptive_refl = (reflections_adaptive_budget_us_ > 0);
-    if (!split_heavy && !adaptive_refl) {
-        simulation_update_time_elapsed += delta;
-        if (simulation_update_time_elapsed >= simulation_update_interval) {
-            simulation_update_time_elapsed = 0.0f;
-            if (need_refl_heavy)
-                reflection_sim_heavy_requested.store(true, std::memory_order_release);
-            if (pathing_enabled)
-                pathing_sim_heavy_requested.store(true, std::memory_order_release);
-        }
-    } else if (!split_heavy && adaptive_refl) {
-        simulation_update_time_elapsed += delta;
-        reflections_interval_elapsed += delta;
-        const float eff_r = simulation_update_interval + reflections_adaptive_extra_interval_;
-        if (simulation_update_time_elapsed >= simulation_update_interval) {
-            simulation_update_time_elapsed = 0.0f;
-            if (pathing_enabled)
-                pathing_sim_heavy_requested.store(true, std::memory_order_release);
-        }
-        if (need_refl_heavy && (eff_r <= 0.0f || reflections_interval_elapsed >= eff_r)) {
-            reflections_interval_elapsed = 0.0f;
-            reflection_sim_heavy_requested.store(true, std::memory_order_release);
-        }
-    } else {
-        const float rdt = (reflections_sim_update_interval < 0.0f) ? simulation_update_interval : reflections_sim_update_interval;
-        const float pdt = (pathing_sim_update_interval < 0.0f) ? simulation_update_interval : pathing_sim_update_interval;
-        const float eff_r = rdt + (adaptive_refl ? reflections_adaptive_extra_interval_ : 0.0f);
-        reflections_interval_elapsed += delta;
-        pathing_interval_elapsed += delta;
-        if (need_refl_heavy && (eff_r <= 0.0f || reflections_interval_elapsed >= eff_r)) {
-            reflections_interval_elapsed = 0.0f;
-            reflection_sim_heavy_requested.store(true, std::memory_order_release);
-        }
-        if (pathing_enabled && (pdt <= 0.0f || pathing_interval_elapsed >= pdt)) {
-            pathing_interval_elapsed = 0.0f;
-            pathing_sim_heavy_requested.store(true, std::memory_order_release);
-        }
+    const float rdt = reflections_sim_interval;
+    const float pdt = pathing_sim_interval;
+    const float eff_r = rdt + (adaptive_refl ? reflections_adaptive_extra_interval_ : 0.0f);
+    reflections_interval_elapsed += delta;
+    pathing_interval_elapsed += delta;
+    if (need_refl_heavy && (eff_r <= 0.0f || reflections_interval_elapsed >= eff_r)) {
+        reflections_interval_elapsed = 0.0f;
+        reflection_sim_heavy_requested.store(true, std::memory_order_release);
+    }
+    if (pathing_enabled && (pdt <= 0.0f || pathing_interval_elapsed >= pdt)) {
+        pathing_interval_elapsed = 0.0f;
+        pathing_sim_heavy_requested.store(true, std::memory_order_release);
     }
 
     if (reflections_adaptive_budget_us_ > 0) {

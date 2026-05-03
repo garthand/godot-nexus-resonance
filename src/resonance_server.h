@@ -527,10 +527,8 @@ class ResonanceServer : public Object {
     std::atomic<uint64_t> instrumentation_main_us_last_dynamic_transform_enqueue_{0};
     std::atomic<uint64_t> instrumentation_dynamic_transform_enqueue_events_{0};
     // Simulation update interval: Direct runs every tick; reflection/pathing heavy ticks use separate cadences when configured.
-    float simulation_update_interval = 0.1f; // Seconds (0.1 = 100ms default); base when sub-intervals are < 0
-    float simulation_update_time_elapsed = 0.0f;
-    float reflections_sim_update_interval = -1.0f; // <0: use simulation_update_interval
-    float pathing_sim_update_interval = -1.0f;
+    float reflections_sim_interval = 0.1f; // Min seconds between iplSimulatorRunReflections scheduling
+    float pathing_sim_interval = 0.1f; // Min seconds between RunPathing scheduling
     float reflections_interval_elapsed = 0.0f;
     float pathing_interval_elapsed = 0.0f;
     float realtime_reflection_max_distance_m = 0.0f;

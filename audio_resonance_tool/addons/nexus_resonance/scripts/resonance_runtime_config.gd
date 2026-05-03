@@ -217,7 +217,7 @@ var _pathing_enabled: bool = false
 var _performance_schedule_selector: int = 0
 var _applying_performance_schedule_preset: bool = false
 
-## Preset for a few key scheduling knobs (simulation intervals, direct cadence).
+## Preset for a few key scheduling knobs ([member reflections_sim_interval], [member pathing_sim_interval], [member direct_sim_interval]).
 ## The selected value is kept until you manually tweak one of those knobs, then it switches back to Custom.
 @export_enum("Custom:0", "Quality:1", "Balanced:2", "Performance:3")
 var apply_performance_schedule_preset: int = 0:
@@ -231,41 +231,46 @@ var apply_performance_schedule_preset: int = 0:
 		_applying_performance_schedule_preset = true
 		match v:
 			1:
-				simulation_update_interval = 0.1
+				reflections_sim_interval = 0.1
+				pathing_sim_interval = 0.1
 				direct_sim_interval = 0.0
 			2:
-				simulation_update_interval = 0.2
+				reflections_sim_interval = 0.2
+				pathing_sim_interval = 0.2
 				direct_sim_interval = 0.03
 			3:
-				simulation_update_interval = 0.3
+				reflections_sim_interval = 0.3
+				pathing_sim_interval = 0.3
 				direct_sim_interval = 0.1
 		_applying_performance_schedule_preset = false
 		notify_property_list_changed()
 
 ## Fraction of CPU cores for Steam Audio simulation threads (0–1). 0.15 ≈ 15% of logical cores; raise for heavier realtime reflections/pathing.
 @export_range(0.0, 1.0, 0.01) var simulation_cpu_cores_percent: float = 0.15
-var _simulation_update_interval: float = 0.1
-## [b]Simulation Update Interval[/b] — Minimum seconds between scheduling reflection-heavy ([code]iplSimulatorRunReflections[/code]) and pathing-heavy ([code]iplSimulatorRunPathing[/code]) work on the worker (Steam Audio Unity: [i]Simulation Update Interval[/i]).
-## [code]0[/code] = heavy passes every worker tick (most CPU). [code]0.1[/code] ≈ 100 ms default. Larger values reduce CPU; reflections/pathing follow may lag slightly.
-## Does not throttle direct/occlusion — see [member direct_sim_interval]. Use [member reflections_sim_update_interval] / [member pathing_sim_update_interval] for per-axis overrides ([code]-1[/code] = use this value).
-@export_range(0.0, 1.0, 0.01) var simulation_update_interval: float:
-	get:
-		return _simulation_update_interval
-	set(v):
-		_simulation_update_interval = v
-		_on_performance_knob_changed()
-## Seconds between reflection-heavy ticks only. [code]-1[/code] = use [member simulation_update_interval]. [code]≥ 0[/code] = minimum seconds between [code]RunReflections[/code] scheduling (lower = higher CPU, faster IR updates).
-@export_range(-1.0, 1.0, 0.01) var reflections_sim_update_interval: float = -1.0
-## Seconds between pathing-heavy ticks only. [code]-1[/code] = use [member simulation_update_interval]. [code]≥ 0[/code] = minimum seconds between [code]RunPathing[/code] scheduling (path validation / alternate paths can make this expensive).
-@export_range(-1.0, 1.0, 0.01) var pathing_sim_update_interval: float = -1.0
 var _direct_sim_interval: float = 0.0
-## [b]Direct Sim Interval[/b] — Minimum seconds between [code]iplSimulatorRunDirect[/code] on worker wakes when reflection/pathing heavy work is not scheduled for that wake (or after heavy work is skipped). Throttles **direct-path occlusion, transmission, air absorption** independently of [member simulation_update_interval].
+## [b]Direct Sim Interval[/b] — Minimum seconds between [code]iplSimulatorRunDirect[/code] on worker wakes when reflection/pathing heavy work is not scheduled for that wake (or after heavy work is skipped). Throttles **direct-path occlusion, transmission, air absorption** independently of [member reflections_sim_interval] / [member pathing_sim_interval].
 ## [code]0[/code] = run direct every eligible worker wake (default). Try [code]0.02[/code]–[code]0.05[/code] to lower CPU; occlusion may update slightly less often.
 @export_range(0.0, 1.0, 0.005) var direct_sim_interval: float:
 	get:
 		return _direct_sim_interval
 	set(v):
 		_direct_sim_interval = v
+		_on_performance_knob_changed()
+var _reflections_sim_interval: float = 0.1
+## [b]Reflections Sim Interval[/b] — Minimum seconds between scheduling reflection-heavy simulation ([code]iplSimulatorRunReflections[/code]). [code]0[/code] = every worker tick (highest CPU). [code]0.1[/code] ≈ 100 ms default. Does not throttle direct occlusion/transmission — see [member direct_sim_interval].
+@export_range(0.0, 1.0, 0.01) var reflections_sim_interval: float:
+	get:
+		return _reflections_sim_interval
+	set(v):
+		_reflections_sim_interval = v
+		_on_performance_knob_changed()
+var _pathing_sim_interval: float = 0.1
+## [b]Pathing Sim Interval[/b] — Minimum seconds between scheduling pathing-heavy simulation ([code]iplSimulatorRunPathing[/code]). Same semantics as [member reflections_sim_interval]; set higher to stagger expensive pathing from reflections.
+@export_range(0.0, 1.0, 0.01) var pathing_sim_interval: float:
+	get:
+		return _pathing_sim_interval
+	set(v):
+		_pathing_sim_interval = v
 		_on_performance_knob_changed()
 ## Maximum simultaneous sources for realtime reflection simulation (Steam Audio [code]maxNumSources[/code]). Higher values use more CPU and memory.
 @export_range(8, 128, 1) var max_simulation_sources: int = 32
@@ -502,9 +507,8 @@ func get_config() -> Dictionary:
 		"max_occlusion_samples": max_occlusion_samples,
 		"max_simulation_sources": max_simulation_sources,
 		"dynamic_scene_commit_min_interval": dynamic_scene_commit_min_interval,
-		"simulation_update_interval": simulation_update_interval,
-		"reflections_sim_update_interval": reflections_sim_update_interval,
-		"pathing_sim_update_interval": pathing_sim_update_interval,
+		"reflections_sim_interval": reflections_sim_interval,
+		"pathing_sim_interval": pathing_sim_interval,
 		"realtime_reflection_max_distance_m": _realtime_reflection_max_distance_m,
 		"reflections_adaptive_budget_us": reflections_adaptive_budget_us,
 		"reflections_adaptive_ray_min": reflections_adaptive_ray_min,

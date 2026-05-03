@@ -120,11 +120,10 @@ struct ResonanceServerConfig {
     /// Scene commit every Nth transform-only geometry notify and every Nth dynamic instanced-mesh transform notify (1 = every time).
     /// Minimum seconds between applying queued dynamic instanced-mesh transforms + scene commit (0 = apply every worker tick that drains the queue). Trade-off: lower CPU vs. stale occlusion for moving objects.
     float dynamic_scene_commit_min_interval = 0.0f;
-    float simulation_update_interval = 0.1f;
-    /// < 0: use [member simulation_update_interval] for reflection-heavy cadence. >= 0: seconds between iplSimulatorRunReflections scheduling.
-    float reflections_sim_update_interval = -1.0f;
-    /// < 0: use [member simulation_update_interval] for pathing-heavy cadence. >= 0: seconds between RunPathing scheduling.
-    float pathing_sim_update_interval = -1.0f;
+    /// Seconds between scheduling reflection-heavy simulation (iplSimulatorRunReflections). Legacy dict keys: reflections_sim_update_interval, simulation_update_interval.
+    float reflections_sim_interval = 0.1f;
+    /// Seconds between scheduling pathing-heavy simulation (iplSimulatorRunPathing). Legacy dict keys: pathing_sim_update_interval, simulation_update_interval.
+    float pathing_sim_interval = 0.1f;
     /// 0 = disabled. >0: realtime reflection simulation inputs omit IPL_SIMULATIONFLAGS_REFLECTIONS when source is farther than this (meters) from listener.
     float realtime_reflection_max_distance_m = 0.0f;
     /// 0 = off. If last RunReflections exceeded this many microseconds, increase reflection cadence spacing (see reflections_adaptive_*).
@@ -160,6 +159,8 @@ struct ResonanceServerConfig {
     static float config_float(const Dictionary& c, const char* key, float def);
     static bool config_bool(const Dictionary& c, const char* key, bool def);
     static void config_sofa_asset(const Dictionary& c, const char* key, Ref<ResonanceSOFAAsset>& out);
+    /// New key first; else legacy *\_sim_update_interval (if >=0); else legacy simulation_update_interval. Clamped 0..1 s.
+    static float resolve_sim_interval_sec(const Dictionary& c, const char* new_key, const char* legacy_sub_key);
 };
 
 } // namespace godot

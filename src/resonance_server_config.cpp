@@ -66,6 +66,31 @@ void ResonanceServerConfig::config_sofa_asset(const Dictionary& c, const char* k
         out.unref();
 }
 
+float ResonanceServerConfig::resolve_sim_interval_sec(const Dictionary& c, const char* new_key, const char* legacy_sub_key) {
+    if (c.has(new_key)) {
+        float v = config_float(c, new_key, 0.1f);
+        if (v < 0.0f)
+            v = 0.0f;
+        if (v > 1.0f)
+            v = 1.0f;
+        return v;
+    }
+    if (c.has(legacy_sub_key)) {
+        float sub = config_float(c, legacy_sub_key, -1.0f);
+        if (sub >= 0.0f) {
+            if (sub > 1.0f)
+                sub = 1.0f;
+            return sub;
+        }
+    }
+    float master = config_float(c, "simulation_update_interval", 0.1f);
+    if (master < 0.0f)
+        master = 0.0f;
+    if (master > 1.0f)
+        master = 1.0f;
+    return master;
+}
+
 // Applies ResonanceServer project/editor configuration from a Godot Dictionary: validates numeric ranges, resolves
 // legacy keys (pathing_validation_ab_mode, use_radeon_rays), and merges bake-time pathing defaults via get_bake_pathing_param
 // when explicit keys are absent. Covers audio threading (sample rate, frame size, ambisonic order), realtime ray budget,
@@ -296,21 +321,8 @@ void ResonanceServerConfig::apply(const Dictionary& config,
         dynamic_scene_commit_min_interval = 0.0f;
     if (dynamic_scene_commit_min_interval > 1.0f)
         dynamic_scene_commit_min_interval = 1.0f;
-    simulation_update_interval = config_float(config, "simulation_update_interval", simulation_update_interval);
-    if (simulation_update_interval < 0.0f)
-        simulation_update_interval = 0.0f;
-    if (simulation_update_interval > 1.0f)
-        simulation_update_interval = 1.0f;
-    reflections_sim_update_interval = config_float(config, "reflections_sim_update_interval", reflections_sim_update_interval);
-    if (reflections_sim_update_interval < -0.5f)
-        reflections_sim_update_interval = -1.0f;
-    if (reflections_sim_update_interval > 1.0f)
-        reflections_sim_update_interval = 1.0f;
-    pathing_sim_update_interval = config_float(config, "pathing_sim_update_interval", pathing_sim_update_interval);
-    if (pathing_sim_update_interval < -0.5f)
-        pathing_sim_update_interval = -1.0f;
-    if (pathing_sim_update_interval > 1.0f)
-        pathing_sim_update_interval = 1.0f;
+    reflections_sim_interval = resolve_sim_interval_sec(config, "reflections_sim_interval", "reflections_sim_update_interval");
+    pathing_sim_interval = resolve_sim_interval_sec(config, "pathing_sim_interval", "pathing_sim_update_interval");
     realtime_reflection_max_distance_m = config_float(config, "realtime_reflection_max_distance_m", realtime_reflection_max_distance_m);
     if (realtime_reflection_max_distance_m < 0.0f)
         realtime_reflection_max_distance_m = 0.0f;

@@ -164,10 +164,10 @@
 			Max surfaces along the transmission path from listener (1–256; Steam Audio [code]numTransmissionRays[/code]). Inspector slider is editable only when [member max_transmission_surfaces_override] is User Defined ([code]1[/code]). Limits depth of stacked surfaces on the path, not lateral blending between materials at an edge.
 		</member>
 		<member name="path_validation_override" type="int" default="-1">
-			Path validation (dynamic occlusion of baked paths). [code]-1[/code] = Use Global ([member ResonanceRuntimeConfig.path_validation_enabled]). [code]0[/code] = Disabled. [code]1[/code] = Enabled. Costs scale with [member ResonanceRuntimeConfig.pathing_num_vis_samples] and ray tracer; tune [member ResonanceRuntimeConfig.simulation_update_interval] and use [method ResonanceServer.get_simulation_worker_timing] for [code]us_run_pathing[/code].
+			Path validation (dynamic occlusion of baked paths). [code]-1[/code] = Use Global ([member ResonanceRuntimeConfig.path_validation_enabled]). [code]0[/code] = Disabled. [code]1[/code] = Enabled. Costs scale with [member ResonanceRuntimeConfig.pathing_num_vis_samples] and ray tracer; tune [member ResonanceRuntimeConfig.pathing_sim_interval] (and [member ResonanceRuntimeConfig.reflections_sim_interval]) and use [method ResonanceServer.get_simulation_worker_timing] for [code]us_run_pathing[/code].
 		</member>
 		<member name="find_alternate_paths_override" type="int" default="-1">
-			Find alternate paths when a baked path is occluded. [code]-1[/code] = Use Global ([member ResonanceRuntimeConfig.find_alternate_paths]). [code]0[/code] = Disabled. [code]1[/code] = Enabled. Only effective when path validation is on for this source. Very CPU-heavy — tune [member ResonanceRuntimeConfig.simulation_update_interval] and [member ResonanceRuntimeConfig.pathing_num_vis_samples] when enabling.
+			Find alternate paths when a baked path is occluded. [code]-1[/code] = Use Global ([member ResonanceRuntimeConfig.find_alternate_paths]). [code]0[/code] = Disabled. [code]1[/code] = Enabled. Only effective when path validation is on for this source. Very CPU-heavy — tune [member ResonanceRuntimeConfig.pathing_sim_interval] and [member ResonanceRuntimeConfig.pathing_num_vis_samples] when enabling.
 		</member>
 		<member name="direct_mix_level" type="float" default="1.0">
 			Volume of the direct sound path (0-10).
