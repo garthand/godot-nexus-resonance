@@ -97,8 +97,7 @@ constexpr float kInstrumentationSilentBlockThreshold = 0.0001f;
 /// ResonancePlayer perspective_correction_factor clamp (matches Property hint)
 constexpr float kPlayerPerspectiveFactorMin = 0.5f;
 constexpr float kPlayerPerspectiveFactorMax = 2.0f;
-/// ResonancePlayer "no reverb params" warning throttle: skip first N misses, then log only after threshold
-constexpr int kPlayerNoReverbWarnSkipInitial = 3;
+/// ResonancePlayer "no reverb params" warning: log at most after this many consecutive misses (then counter resets)
 constexpr int kPlayerNoReverbWarnThreshold = 200;
 /// Ambisonics W-channel normalization (1/sqrt(2))
 constexpr float kAmbisonicWChannelScale = 0.7071067811865475f;

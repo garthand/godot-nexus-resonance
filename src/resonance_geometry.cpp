@@ -163,18 +163,12 @@ void ResonanceGeometry::_exit_tree() {
 }
 
 void ResonanceGeometry::_notification(int p_what) {
-    switch (p_what) {
-    case NOTIFICATION_TRANSFORM_CHANGED:
-        if (dynamic_object && is_inside_tree())
+    if (p_what == NOTIFICATION_TRANSFORM_CHANGED) {
+        if (dynamic_object && is_inside_tree()) {
             _update_dynamic_transform();
-        break;
-    case NOTIFICATION_ENTER_TREE:
-    case NOTIFICATION_PARENTED:
-    case NOTIFICATION_UNPARENTED:
+        }
+    } else if (p_what == NOTIFICATION_ENTER_TREE || p_what == NOTIFICATION_PARENTED || p_what == NOTIFICATION_UNPARENTED) {
         _invalidate_topology_caches();
-        break;
-    default:
-        break;
     }
 }
 

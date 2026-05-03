@@ -264,10 +264,10 @@ void RayTraceDebugContext::trace_reflection_rays_for_viz(const IPLVector3& origi
         IPLVector3 best_normal = {0, 0, 1};
         for (size_t k = 0; k < triangles_.size(); k++) {
             float t;
-            IPLVector3 n;
-            if (ray_triangle_intersect(ray, t_min, t_max, triangles_[k], t, n) && t < best_t) {
+            IPLVector3 hit_normal;
+            if (ray_triangle_intersect(ray, t_min, t_max, triangles_[k], t, hit_normal) && t < best_t) {
                 best_t = t;
-                best_normal = n;
+                best_normal = hit_normal;
             }
         }
 

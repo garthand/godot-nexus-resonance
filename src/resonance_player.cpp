@@ -553,9 +553,8 @@ void ResonanceStreamPlayback::_process_steam_audio_block() {
                 // Only the reflections wet path needs fetch_reverb_params; pathing-only (reflections_mix == 0) misses here are normal.
                 const float refl_mix_gate = resonance::sanitize_audio_float(params_current.reflections_mix_level);
                 if (refl_mix_gate > 0.0f) {
-                    // Throttle: skip first N misses, then log only after threshold (reset to 0 after log)
-                    if (++no_reverb_warn_count <= resonance::kPlayerNoReverbWarnSkipInitial || no_reverb_warn_count == resonance::kPlayerNoReverbWarnThreshold) { /* skip log */
-                    }
+                    // Throttle repeated warnings: count misses; log only after kPlayerNoReverbWarnThreshold (reset after log).
+                    ++no_reverb_warn_count;
                     if (no_reverb_warn_count > resonance::kPlayerNoReverbWarnThreshold) {
                         String player_label = "(unknown)";
                         if (owner_player_) {
@@ -1506,6 +1505,14 @@ NodePath ResonancePlayer::_config_node_path(const char* key) const {
     return NodePath();
 }
 
+// Loads AudioStreamResonancePlayerConfig keys into `config_cache_` for hot playback paths.
+// Handles legacy keys (e.g. distance_attenuation_simulation_enabled → attenuation_mode),
+// tri-state -1/0/1 overrides with older bool fallbacks, sentinel "use global" values resolved via
+// ResonanceServer, and clamps numeric ranges. Sets config_cache_valid_ on success.
+//
+// Sections below follow editor/resource grouping: distances and attenuation; air absorption; spatial
+// blend and ambisonics; path/alternate-path overrides; reflection and pathing mix/EQ; transmission
+// ray cap override; occlusion/transmission toggles and type overrides; HRTF/baked-wet/reverb TX knobs.
 void ResonancePlayer::_refresh_config_cache() {
     if (!player_config.is_valid())
         return;
@@ -2124,7 +2131,6 @@ void ResonancePlayer::_prepare_source_for_simulation(ResonanceServer* srv) {
     _ensure_config_valid();
     config_cache_frame_countdown--;
 
-    const ConfigCache& c = config_cache_;
     _setup_attenuation(srv);
 
     int32_t pathing_batch = -1;
@@ -2164,6 +2170,10 @@ bool ResonancePlayer::_playback_lod_should_apply_playback_params(double delta, b
     return true;
 }
 
+// Pulls occlusion/transmission/directivity plus air absorption from the simulation (with optional manual overrides),
+// applies optional first-order smoothing when playback_coeff_smoothing_time > 0, and merges peek/fetch reverb
+// availability. Builds PlaybackParameters (distance curves, perspective correction, wet gates) and pushes them to
+// the audio worker via _broadcast_update_parameters. opt_debug_out mirrors key scalars for HUD/debug drawers when set.
 void ResonancePlayer::_apply_playback_params_from_simulation(ResonanceServer* srv, ResonanceDebugData* opt_debug_out, double delta_seconds) {
     const ConfigCache& c = config_cache_;
     Viewport* vp = get_viewport();

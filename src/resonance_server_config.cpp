@@ -66,6 +66,13 @@ void ResonanceServerConfig::config_sofa_asset(const Dictionary& c, const char* k
         out.unref();
 }
 
+// Applies ResonanceServer project/editor configuration from a Godot Dictionary: validates numeric ranges, resolves
+// legacy keys (pathing_validation_ab_mode, use_radeon_rays), and merges bake-time pathing defaults via get_bake_pathing_param
+// when explicit keys are absent. Covers audio threading (sample rate, frame size, ambisonic order), realtime ray budget,
+// reflections/hybrid/TAN, transmission and occlusion limits, HRTF/SOFA and speaker routing, pathing visualization,
+// ray tracer/scene backend (Embree/Radeon/custom physics), OpenCL device hints, realtime probes tuning, debug switches,
+// mixer routing, perspective correction, dynamic scene commits, simulation pacing (direct/reflections/pathing intervals),
+// adaptive reflection budgeting, convolution IR cap, and batched source updates.
 void ResonanceServerConfig::apply(const Dictionary& config,
                                   std::function<float(const char*, float)> get_bake_pathing_param) {
     sample_rate = config_int(config, "sample_rate", sample_rate);

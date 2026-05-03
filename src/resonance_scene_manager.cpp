@@ -123,6 +123,10 @@ static void collect_mesh_instances_from_children(Node* from, std::vector<MeshIns
     }
 }
 
+// Walks the scene for non-dynamic ResonanceGeometry nodes and flattens their mesh data (and optional child
+// MeshInstance3D when export_all_children) into Steam-Audio vertex/triangle buffers. Deduplicates ResonanceMaterial
+// into an IPL material table with per-triangle indices when requested. Uses geometry_override when set, else the
+// parent MeshInstance3D mesh; skips invisible branches.
 void ResonanceSceneManager::collect_static_mesh_data(Node* scene_root, std::vector<IPLVector3>& out_vertices,
                                                      std::vector<IPLTriangle>& out_triangles, std::vector<IPLint32>* out_mat_indices,
                                                      std::vector<IPLMaterial>* out_materials) {
