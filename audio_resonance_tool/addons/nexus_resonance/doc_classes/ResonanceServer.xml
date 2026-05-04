@@ -164,5 +164,11 @@
 		<member name="output_reverb" type="bool" setter="set_output_reverb_enabled" getter="is_output_reverb_enabled" default="true">
 			Enable reverb output. For debugging; normally true via config.
 		</member>
+		<member name="reverb_bus_click_guard_enabled" type="bool" setter="set_reverb_bus_click_guard_enabled" getter="is_reverb_bus_click_guard_enabled" default="true">
+			When true, the convolution reverb bus applies a short linear ramp when wet peak collapses in one callback (Godot scheduling edge). Disable for A/B wet-tail tests; see [method get_reverb_bus_instrumentation] key [code]effect_click_guard_triggers[/code].
+		</member>
+		<member name="reverb_bus_wet_ring_underrun_zero_fill" type="bool" setter="set_reverb_bus_wet_ring_underrun_zero_fill" getter="is_reverb_bus_wet_ring_underrun_zero_fill" default="false">
+			When true, split-reverb ring underrun fills missing samples with silence instead of hold x cosine taper (ablation for wet-tail tests).
+		</member>
 	</members>
 </class>

@@ -67,6 +67,8 @@ void ResonanceServer::reset_reverb_bus_instrumentation() {
     reverb_effect_success.store(0, std::memory_order_relaxed);
     reverb_effect_frames_written.store(0, std::memory_order_relaxed);
     reverb_effect_output_peak.store(0.0f, std::memory_order_relaxed);
+    reverb_effect_click_guard_triggers.store(0, std::memory_order_relaxed);
+    reverb_mixer_return_hold_last_count.store(0, std::memory_order_relaxed);
     reverb_mixer_feed_count.store(0, std::memory_order_relaxed);
     reverb_convolution_valid_fetches.store(0, std::memory_order_relaxed);
     reverb_convolution_feed_ir_null.store(0, std::memory_order_relaxed);
@@ -76,6 +78,7 @@ void ResonanceServer::reset_reverb_bus_instrumentation() {
     instrumentation_fetch_lock_ok.store(0, std::memory_order_relaxed);
     instrumentation_fetch_cache_hit.store(0, std::memory_order_relaxed);
     instrumentation_fetch_cache_miss.store(0, std::memory_order_relaxed);
+    instrumentation_fetch_refl_stale_epoch_fallback.store(0, std::memory_order_relaxed);
     instrumentation_fetch_cache_skip.store(0, std::memory_order_relaxed);
     instrumentation_audio_conv_refl_apply_last_us_.store(0, std::memory_order_relaxed);
     instrumentation_audio_conv_reverb_bus_last_us_.store(0, std::memory_order_relaxed);
@@ -237,6 +240,8 @@ Dictionary ResonanceServer::get_reverb_bus_instrumentation() const {
     d["effect_success"] = (int64_t)reverb_effect_success.load(std::memory_order_relaxed);
     d["effect_frames_written"] = (int64_t)reverb_effect_frames_written.load(std::memory_order_relaxed);
     d["effect_output_peak"] = reverb_effect_output_peak.load(std::memory_order_relaxed);
+    d["effect_click_guard_triggers"] = (int64_t)reverb_effect_click_guard_triggers.load(std::memory_order_relaxed);
+    d["mixer_return_hold_last_count"] = (int64_t)reverb_mixer_return_hold_last_count.load(std::memory_order_relaxed);
     d["mixer_feed_count"] = (int64_t)reverb_mixer_feed_count.load(std::memory_order_relaxed);
     d["mixer_exists"] = (reflection_mixer_.load(std::memory_order_acquire) != nullptr);
     d["reflection_type"] = reflection_type;
@@ -248,13 +253,15 @@ Dictionary ResonanceServer::get_reverb_bus_instrumentation() const {
     d["fetch_lock_ok"] = (int64_t)instrumentation_fetch_lock_ok.load(std::memory_order_relaxed);
     d["fetch_cache_hit"] = (int64_t)instrumentation_fetch_cache_hit.load(std::memory_order_relaxed);
     d["fetch_cache_miss"] = (int64_t)instrumentation_fetch_cache_miss.load(std::memory_order_relaxed);
+    d["fetch_refl_stale_epoch_fallback"] = (int64_t)instrumentation_fetch_refl_stale_epoch_fallback.load(std::memory_order_relaxed);
     d["fetch_cache_skip"] = (int64_t)instrumentation_fetch_cache_skip.load(std::memory_order_relaxed);
     return d;
 }
 
 void ResonanceServer::record_convolution_feed(bool ir_non_null, float reverb_gain, float input_rms) {
-    if (!ir_non_null)
+    if (!ir_non_null) {
         reverb_convolution_feed_ir_null.fetch_add(1, std::memory_order_relaxed);
+    }
     float gmin = reverb_convolution_gain_min.load(std::memory_order_relaxed);
     if (reverb_gain < gmin)
         reverb_convolution_gain_min.store(reverb_gain, std::memory_order_relaxed);
@@ -266,10 +273,35 @@ void ResonanceServer::record_convolution_feed(bool ir_non_null, float reverb_gai
         reverb_convolution_input_rms_max.store(input_rms, std::memory_order_relaxed);
 }
 
+void ResonanceServer::record_reverb_effect_click_guard_trigger() {
+    reverb_effect_click_guard_triggers.fetch_add(1, std::memory_order_relaxed);
+}
+
+void ResonanceServer::record_mixer_return_hold_last() {
+    reverb_mixer_return_hold_last_count.fetch_add(1, std::memory_order_relaxed);
+}
+
+void ResonanceServer::set_reverb_bus_click_guard_enabled(bool p_enabled) {
+    reverb_bus_click_guard_enabled_.store(p_enabled, std::memory_order_release);
+}
+
+bool ResonanceServer::is_reverb_bus_click_guard_enabled() const {
+    return reverb_bus_click_guard_enabled_.load(std::memory_order_acquire);
+}
+
+void ResonanceServer::set_reverb_bus_wet_ring_underrun_zero_fill(bool p_enabled) {
+    reverb_bus_wet_ring_underrun_zero_fill_.store(p_enabled, std::memory_order_release);
+}
+
+bool ResonanceServer::is_reverb_bus_wet_ring_underrun_zero_fill() const {
+    return reverb_bus_wet_ring_underrun_zero_fill_.load(std::memory_order_acquire);
+}
+
 void ResonanceServer::update_reverb_effect_instrumentation(bool mixer_null, bool success, int32_t frames_written, float output_peak) {
     reverb_effect_process_calls.fetch_add(1, std::memory_order_relaxed);
-    if (mixer_null)
+    if (mixer_null) {
         reverb_effect_mixer_null.fetch_add(1, std::memory_order_relaxed);
+    }
     if (success) {
         reverb_effect_success.fetch_add(1, std::memory_order_relaxed);
         reverb_effect_frames_written.fetch_add(static_cast<uint64_t>(frames_written), std::memory_order_relaxed);
@@ -399,6 +431,12 @@ void ResonanceServer::_bind_methods() {
 
     ClassDB::bind_method(D_METHOD("set_output_reverb_enabled", "p_enabled"), &ResonanceServer::set_output_reverb_enabled);
     ClassDB::bind_method(D_METHOD("is_output_reverb_enabled"), &ResonanceServer::is_output_reverb_enabled);
+    ClassDB::bind_method(D_METHOD("set_reverb_bus_click_guard_enabled", "p_enabled"), &ResonanceServer::set_reverb_bus_click_guard_enabled);
+    ClassDB::bind_method(D_METHOD("is_reverb_bus_click_guard_enabled"), &ResonanceServer::is_reverb_bus_click_guard_enabled);
+    ClassDB::bind_method(D_METHOD("set_reverb_bus_wet_ring_underrun_zero_fill", "p_enabled"),
+                         &ResonanceServer::set_reverb_bus_wet_ring_underrun_zero_fill);
+    ClassDB::bind_method(D_METHOD("is_reverb_bus_wet_ring_underrun_zero_fill"),
+                         &ResonanceServer::is_reverb_bus_wet_ring_underrun_zero_fill);
 
     ClassDB::bind_method(D_METHOD("set_reverb_influence_radius", "p_radius"), &ResonanceServer::set_reverb_influence_radius);
     ClassDB::bind_method(D_METHOD("get_reverb_influence_radius"), &ResonanceServer::get_reverb_influence_radius);
@@ -435,6 +473,9 @@ void ResonanceServer::_bind_methods() {
     ADD_PROPERTY(PropertyInfo(Variant::BOOL, "debug_pathing"), "set_debug_pathing", "is_debug_pathing_enabled");
     ADD_PROPERTY(PropertyInfo(Variant::BOOL, "output_direct"), "set_output_direct_enabled", "is_output_direct_enabled");
     ADD_PROPERTY(PropertyInfo(Variant::BOOL, "output_reverb"), "set_output_reverb_enabled", "is_output_reverb_enabled");
+    ADD_PROPERTY(PropertyInfo(Variant::BOOL, "reverb_bus_click_guard_enabled"), "set_reverb_bus_click_guard_enabled", "is_reverb_bus_click_guard_enabled");
+    ADD_PROPERTY(PropertyInfo(Variant::BOOL, "reverb_bus_wet_ring_underrun_zero_fill"), "set_reverb_bus_wet_ring_underrun_zero_fill",
+                 "is_reverb_bus_wet_ring_underrun_zero_fill");
     ADD_PROPERTY(PropertyInfo(Variant::FLOAT, "reverb_influence_radius", PROPERTY_HINT_RANGE, "1,50000,1"), "set_reverb_influence_radius", "get_reverb_influence_radius");
     ADD_PROPERTY(PropertyInfo(Variant::FLOAT, "reverb_max_distance", PROPERTY_HINT_RANGE, "0,5000,1"), "set_reverb_max_distance", "get_reverb_max_distance");
     ADD_PROPERTY(PropertyInfo(Variant::FLOAT, "reverb_transmission_amount", PROPERTY_HINT_RANGE, "0,1,0.01"), "set_reverb_transmission_amount", "get_reverb_transmission_amount");

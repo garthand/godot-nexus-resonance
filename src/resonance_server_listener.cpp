@@ -10,11 +10,23 @@
 
 using namespace godot;
 
-IPLCoordinateSpace3 ResonanceServer::get_current_listener_coords() {
-    if (new_listener_written_.exchange(false, std::memory_order_acq_rel)) {
-        listener_coords_[0] = listener_coords_[1];
+// Listener pose for simulation (seqlock), reflection mixer swap/teardown, and auto frame-size reinit from the mix callback.
+
+IPLCoordinateSpace3 ResonanceServer::_read_listener_coords_seqlock() const {
+    for (;;) {
+        const uint32_t s1 = listener_seq_.load(std::memory_order_acquire);
+        if (s1 & 1u)
+            continue;
+        IPLCoordinateSpace3 out = listener_coords_latest_;
+        std::atomic_thread_fence(std::memory_order_acquire);
+        const uint32_t s2 = listener_seq_.load(std::memory_order_acquire);
+        if (s1 == s2)
+            return out;
     }
-    return listener_coords_[0];
+}
+
+IPLCoordinateSpace3 ResonanceServer::get_current_listener_coords() {
+    return _read_listener_coords_seqlock();
 }
 
 IPLReflectionMixer ResonanceServer::get_reflection_mixer_handle() const {
@@ -53,6 +65,7 @@ void ResonanceServer::fill_reflection_mixer_apply_params(IPLReflectionEffectPara
     }
 }
 
+// Map arbitrary mix buffer sizes to the nearest supported IPL frame size (auto frame_size only).
 static int snap_to_supported_frame_size(int value) {
     const int supported[] = {256, resonance::kGodotDefaultFrameSize, 1024, resonance::kMaxAudioFrameSize};
     int best = resonance::kGodotDefaultFrameSize;
@@ -87,8 +100,7 @@ void ResonanceServer::set_listener_valid(bool valid) {
 }
 
 void ResonanceServer::notify_listener_changed() {
-    // API compatibility with Steam Audio. ResonanceRuntime updates listener every frame from camera.
-    // Use when listener is created/swapped and you drive it manually via update_listener.
+    // No-op placeholder; ResonanceRuntime normally calls update_listener each frame. Call update_listener yourself if you drive the listener manually.
 }
 
 void ResonanceServer::notify_listener_changed_to(Node* listener_node) {
@@ -120,8 +132,10 @@ void ResonanceServer::update_listener(Vector3 pos, Vector3 dir, Vector3 up) {
     listener.up = ResonanceUtils::to_ipl_vector3(up_n);
     listener.right = ResonanceUtils::to_ipl_vector3(right_n);
 
-    listener_coords_[1] = listener;
-    new_listener_written_.store(true, std::memory_order_release);
+    // Seqlock: odd = write in progress; readers spin until even and s1==s2.
+    listener_seq_.fetch_add(1, std::memory_order_acq_rel);
+    listener_coords_latest_ = listener;
+    listener_seq_.fetch_add(1, std::memory_order_release);
 
     // FMOD Bridge: keep reverb IPLSource in sync with listener. Use try_update_source so the main thread
     // never blocks on simulation_mutex while the worker holds it during RunReflections/RunPathing.

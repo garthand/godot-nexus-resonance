@@ -1,6 +1,7 @@
 #ifndef RESONANCE_CONSTANTS_H
 #define RESONANCE_CONSTANTS_H
 
+#include <cmath>
 #include <cstddef>
 #include <cstdint>
 
@@ -8,19 +9,36 @@ namespace resonance {
 
 /// Version string (centralized; override via NEXUS_RESONANCE_VERSION when building)
 #ifndef NEXUS_RESONANCE_VERSION
-#define NEXUS_RESONANCE_VERSION "0.9.15"
+#define NEXUS_RESONANCE_VERSION "0.9.16"
 #endif
 constexpr const char* kVersion = NEXUS_RESONANCE_VERSION;
 
-/// Must match Godot default audio frame size for Steam Audio
+/// Godot’s default output buffer size (must match engine / IPL integration)
 constexpr int kGodotDefaultFrameSize = 512;
 /// Max supported frame size (for stack buffers; 2048 = lowest CPU, highest latency)
 constexpr int kMaxAudioFrameSize = 2048;
 
 /// Ring buffer capacity for audio playback (ResonancePlayer, ResonanceAmbisonicPlayer)
 constexpr int kRingBufferCapacity = 8192;
-/// After scene edits or startup, suppress spatialized player output until this many worker
-/// iplSimulatorRunDirect ticks complete (avoids audible unoccluded direct path before sim catches up).
+/// Crossfade width when splicing `mix_audio` ring chunks (reduces chunk seams).
+constexpr int kInputRingChunkCrossfadeSamples = 48;
+/// Cap on underrun tail fade: avoids a long flat DC “hump” when the last sample is held for a full mix frame.
+constexpr int kSyntheticEosOutputFadeMaxSamples = 128;
+/// End-of-stream taper on the last real decoder output (1→0 cosine; clamped to last chunk length).
+constexpr int kEosInputEndTaperMaxSamples = 4800; // ~100ms @ 48k
+/// Host-side fades (ms → samples via `host_fade_samples_from_ms`); scale with sample rate.
+constexpr float kPlaybackHostFadeInMs = 8.7f;   // ~384 samples @ 44.1 kHz
+constexpr float kPlaybackHostFadeOutMs = 17.4f; // ~768 samples @ 44.1 kHz
+/// Optional extra ramps on stop/start (default off—stack with EOS tapers and repeated `play()`).
+constexpr bool kPlaybackHostFadeOutEnabled = false;
+constexpr bool kPlaybackHostFadeInEnabled = false;
+
+inline int host_fade_samples_from_ms(float ms, int sample_rate) {
+    const int sr = (sample_rate > 0) ? sample_rate : 44100;
+    const int n = static_cast<int>(std::llround(static_cast<double>(ms) * 0.001 * static_cast<double>(sr)));
+    return (n < 1) ? 1 : n;
+}
+/// Warm-up: mute spatial output until this many `iplSimulatorRunDirect` ticks (avoids early unoccluded direct).
 constexpr int kSpatialAudioWarmupWorkerPasses = 6;
 
 /// Default reverb/IR duration in seconds (used for irSize = sample_rate * duration)
@@ -29,7 +47,7 @@ constexpr float kDefaultReverbDurationSec = 2.0f;
 /// Baker defaults for probe reflections bake
 constexpr float kBakerSimulatedDuration = 2.0f;
 constexpr float kBakerIrradianceMinDistance = 0.5f;
-constexpr int kBakerNumDiffuseSamples = 32;                    // Steam Audio diffuse propagation samples (low/mid/high bands)
+constexpr int kBakerNumDiffuseSamples = 32;                    // IPL diffuse bands (low/mid/high)
 constexpr float kBakerMinSpacing = 0.1f;                       // Floor for probe spacing in generate_manual_grid
 constexpr float kBakerStaticEndpointSphereRadius = 1.0f;       // IPLSphere.radius when adding probes manually
 constexpr float kBakerStaticEndpointInfluenceFallback = 10.0f; // Fallback when influence_radius <= 0 for static endpoint bake
@@ -46,7 +64,7 @@ constexpr const char* kProjectSettingsProbeDataFormat = "export/probe_data_forma
 constexpr int kBakeDefaultNumRays = 4096;
 constexpr int kBakeDefaultNumBounces = 4;
 constexpr int kBakeDefaultNumThreads = 2;
-/// IPLReflectionsBakeParams::order — Ambisonics order of baked convolution IRs (Steam Audio 1–3 typical).
+/// IPLReflectionsBakeParams::order (HOA order for baked convolution IRs; typically 1–3).
 constexpr int kBakeAmbisonicsOrderMin = 1;
 constexpr int kBakeAmbisonicsOrderMax = 3;
 constexpr int kBakeDefaultAmbisonicsOrder = 1;
@@ -66,7 +84,7 @@ constexpr int kRuntimePathingDefaultNumVisSamples = 4;
 constexpr float kBakePathingDefaultRadius = 0.5f;
 constexpr float kBakePathingDefaultThreshold = 0.1f;
 
-/// Default fraction of CPU cores for Steam Audio simulation threads (ResonanceRuntimeConfig.simulation_cpu_cores_percent).
+/// Default CPU fraction for IPL simulation worker threads (`ResonanceRuntimeConfig.simulation_cpu_cores_percent`).
 constexpr float kDefaultSimulationCpuCoresPercent = 0.15f;
 
 /// IPLSimulationSettings::rayBatchSize for IPL_SCENETYPE_CUSTOM (Godot physics). >1 registers batched trace callbacks.
@@ -86,9 +104,9 @@ inline int clamp_physics_ray_batch_size(int v) {
 constexpr float kSimulatorSharedInputsDuration = 2.0f;
 constexpr float kSimulatorIrradianceMinDistance = 0.1f;
 
-/// Parametric reverb and pathing EQ: number of frequency bands (Steam Audio low/mid/high)
+/// Parametric reverb / pathing EQ band count (low/mid/high).
 constexpr int kReverbBandCount = 3;
-/// Path effect EQ coefficient clamp (prevents extreme gains; Steam Audio uses [0, inf))
+/// Path EQ coefficient clamp (IPL allows [0, ∞)).
 constexpr float kPathEQCoeffMin = 1e-6f;
 constexpr float kPathEQCoeffMax = 1.0f;
 
@@ -105,7 +123,7 @@ constexpr float kAmbisonicWChannelScale = 0.7071067811865475f;
 constexpr float kAmbisonicDecoderOutputScalar = 0.28209479177387814f;
 /// Valid Ambisonic channel counts: 4 (1st order), 9 (2nd), 16 (3rd)
 inline bool is_valid_ambisonic_channel_count(int n) { return n == 4 || n == 9 || n == 16; }
-/// Ambisonic channel count (order+1)^2 for order in 1..3 (Steam Audio HOA)
+/// HOA channel count (order+1)² for order 1..3.
 inline int ambisonic_num_channels_for_order(int order) {
     int o = order;
     if (o < 1)
@@ -135,14 +153,14 @@ constexpr float kBakedEndpointRadius = 10000.0f;
 /// Number of samples in attenuation callback curve (linear/custom modes)
 constexpr int kAttenuationCurveSamples = 64;
 
-/// When [code]get_source_occlusion_data[/code] has no simulation readback, treat as unoccluded (Steam: 1 = line-of-sight).
+/// If `get_source_occlusion_data` has no readback yet, treat as unoccluded (1 = line-of-sight in IPL).
 constexpr float kOcclusionFetchDefaultVisible = 1.0f;
-/// Custom-scene occlusion any-hit: nudge ray start along direction (meters). Matches Steam [code]direct_simulator[/code] [code]kRayOffset[/code] scale.
+/// Custom-scene occlusion: ray start offset along direction (meters), same order as IPL direct_simulator ray epsilon.
 constexpr float kCustomSceneOcclusionRayStartEpsilon = 1e-2f;
 
-/// Steam Audio simulator: max occlusion samples per source (default / config baseline)
+/// IPL sim: default max occlusion samples per source
 constexpr int kMaxOcclusionSamples = 64;
-/// Steam Audio simulator: max concurrent simulated sources (default / config baseline)
+/// IPL sim: default max concurrent sources
 constexpr int kMaxSimulationSources = 32;
 /// Upper clamp for user-configured max occlusion samples (ResonanceRuntimeConfig)
 constexpr int kMaxOcclusionSamplesUserMax = 128;
@@ -152,7 +170,7 @@ constexpr int kMaxSimulationSourcesUserMax = 128;
 constexpr int kMaxProbeBatches = 1024;
 /// API limit: max probes per ResonanceProbeVolume (prevents excessive bake time/memory)
 constexpr int kMaxProbesPerVolume = 65536;
-/// Steam Audio: max transmission rays per source
+/// IPL: max transmission rays per source
 constexpr int kMaxTransmissionRays = 256;
 /// Direct effect transmission type: frequency-independent
 constexpr int kTransmissionFreqIndependent = 0;
@@ -184,7 +202,7 @@ constexpr uint64_t kLateMixThresholdUs = 15000;
 /// Worker ticks to skip iplSimulatorRunPathing after a caught SEH fault (Windows; reduces repeated AV)
 constexpr int kPathingCrashCooldownTicks = 5;
 
-/// Runtime reflection types (ResonanceServer reflection_type, Steam Audio IPL mapping)
+/// `ResonanceServer::reflection_type` ↔ IPL mapping
 constexpr int kReflectionConvolution = 0;
 constexpr int kReflectionParametric = 1;
 constexpr int kReflectionHybrid = 2;

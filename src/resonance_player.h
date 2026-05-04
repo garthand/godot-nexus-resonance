@@ -41,7 +41,7 @@ namespace godot {
 class ResonancePlayer;
 
 struct PlaybackParameters {
-    int32_t source_handle = -1;              // Source handle for Steam Audio
+    int32_t source_handle = -1;              // ResonanceServer simulation source handle
     float occlusion = 1.0f;                  // Steam: 1=line-of-sight, 0=occluded (see direct_simulator / direct_effect)
     float transmission[3] = {1, 1, 1};       // Wall transparency
     float attenuation = 1.0f;                // Distance attenuation factor (direct, reverb, pathing)
@@ -64,7 +64,7 @@ struct PlaybackParameters {
 
     IPLCoordinateSpace3 listener_orientation{};
 
-    // Per-source mix levels (0.0 = mute, 1.0 = full). SteamAudio-style Direct/Reflections/Pathing Mix Level.
+    // Per-path gains (0 = off, 1 = full) — gate simulation bands and wet sends.
     float direct_mix_level = 1.0f;
     float reflections_mix_level = 1.0f;
     float pathing_mix_level = 1.0f;
@@ -83,17 +83,10 @@ struct PlaybackParameters {
     /// Direct effect HRTF interpolation: false = nearest, true = bilinear.
     bool direct_effect_hrtf_bilinear = false;
 
-    /// Extra gain multiplier applied to the reflection-effect input (1.0 = pass-through, 0.0 = muted).
-    /// Encodes wall damping for baked REVERB paths (where the IR assumes source co-located with listener and
-    /// cannot represent source→listener occlusion). Computed on the main thread; audio thread just multiplies.
-    /// Realtime reflections and STATICSOURCE/STATICLISTENER keep this at 1.0 because their IRs already encode
-    /// the actual source-path attenuation.
+    /// Wet-path occlusion damping (main thread); 1.0 for realtime/static bake modes that already encode geometry.
     float wet_occlusion_factor = 1.0f;
 
-    /// Distance attenuation applied to the reflection-effect input (matches the player's 3D distance curve).
-    /// Mirrors Unity's Spatialize pipeline where the AudioSource's 3D curve multiplies the inBuffer before
-    /// iplReflectionEffectApply. Without this factor, baked reverb feeds at constant gain regardless of
-    /// source-listener distance. 1.0 = pass-through (opt-out / Use Global=false).
+    /// Distance curve factor on reflection-effect input (1.0 = off / pass-through; see server apply_distance_curve_to_reflections).
     float refl_distance_attenuation = 1.0f;
 };
 
@@ -105,21 +98,14 @@ class ResonanceStreamPlayback : public AudioStreamPlayback {
     /// AudioStreamPlayer3D volume is not applied by the engine to this GDExtension playback's _mix output; scale explicitly.
     ResonancePlayer* owner_player_ = nullptr;
 
-    static const int kMaxBlocksPerMixCall = 4;           // Cap blocks per _mix to avoid exceeding audio callback budget (Godot frames 1024 + frame_size 512)
-    int frame_size_ = resonance::kGodotDefaultFrameSize; // Steam Audio block size from ResonanceServer (256/512/1024)
+    static const int kMaxBlocksPerMixCall = 4;           // Limit steam-audio blocks per _mix (callback budget)
+    int frame_size_ = resonance::kGodotDefaultFrameSize; // IPL frame size from server (256/512/1024/2048)
     /// Direct spatializer output channels (1/2/4/6/8); Godot _mix is still stereo (fold-down here).
     int direct_out_channels_ = 2;
     Ref<AudioStreamPlayback> base_playback;
 
     std::atomic<bool> params_dirty = false;
-    /// True once update_parameters has been invoked at least once since the last _start().
-    /// Used by _mix to gate audio output: before the main thread has pushed the first spatial
-    /// parameter snapshot (position/occlusion/attenuation), the default PlaybackParameters leave
-    /// the direct effect fully open at listener position, which would momentarily emit every
-    /// ResonancePlayer at full gain until the deferred push from ResonancePlayer::play() runs on
-    /// the next main-thread frame. Phase 4's prewarm closed the lazy-init delay that used to
-    /// mask this window. Matches the Unity Spatialize effect pattern (no output until the host
-    /// supplies the first parameter block).
+    /// Set after the first `update_parameters` each run — _mix stays silent until then to avoid a one-frame full-gain burst.
     std::atomic<bool> params_ever_synced_{false};
     PlaybackParameters params_next;
     PlaybackParameters params_current;
@@ -150,7 +136,7 @@ class ResonanceStreamPlayback : public AudioStreamPlayback {
     RingBuffer<float> output_ring_reverb_l;
     RingBuffer<float> output_ring_reverb_r;
 
-    // Temporary linear buffer to hold exactly one Steam Audio frame (1024) for processing
+    // One IPL frame of stereo samples (`frame_size_`, max `kMaxAudioFrameSize`)
     std::vector<float> temp_process_buffer_l;
     std::vector<float> temp_process_buffer_r;
 
@@ -161,14 +147,38 @@ class ResonanceStreamPlayback : public AudioStreamPlayback {
     float reverb_ring_prev_l_ = 0.0f;
     float reverb_ring_prev_r_ = 0.0f;
     bool reverb_ring_prev_valid_ = false;
+    /// Reverb bus ring underrun (`to_read < frames`): one cosine taper across callbacks — avoids LF swallow + pumping.
+    bool reverb_ring_gap_fade_armed_ = false;
+    int reverb_ring_gap_fade_index_ = 0;
+    int reverb_ring_gap_fade_total_ = 0;
+    /// Last stereo samples written to Godot's `buffer` in `_mix` (post volume). Used when the output ring is empty
+    /// mid-callback (`to_copy == 0` or `valid_copy == 0`) so linear fade starts from the previous tick, not a hard zero.
+    float last_mix_out_l_ = 0.0f;
+    float last_mix_out_r_ = 0.0f;
+    bool last_mix_out_valid_ = false;
+    /// Last decoded samples fed to input rings — blends into the next chunk after partial `mix_audio`.
+    float input_ring_tail_l_ = 0.0f;
+    float input_ring_tail_r_ = 0.0f;
+    bool input_ring_tail_valid_ = false;
+    /// True after a mix where `samples_read < frames` (partial decode + hold pad). Chunk crossfade runs only then.
+    bool prev_mix_had_partial_input_pad_ = false;
+    /// True after a mix that tapered the input-ring pad to silence at EOS (`!is_playing`). Chunk crossfade must not
+    /// blend with `input_ring_tail_*` (last *dry* sample): the ring actually ended near zero — crossfade would step.
+    bool prev_mix_had_eos_tapered_input_pad_ = false;
+    /// Linear fade-in on host buffer samples after `_start` (`kPlaybackHostFadeInMs` → samples at `current_sample_rate`).
+    int playback_host_fade_in_elapsed_ = 0;
+    int playback_host_fade_in_total_samples_ = 1;
+    /// Linear fade-out countdown after `_stop` / soft stop (`kPlaybackHostFadeOutMs` → samples).
+    int playback_host_fade_out_remaining_ = 0;
+    int playback_host_fade_out_total_samples_ = 1;
 
-    // Volume Ramping State
-    float prev_direct_weight = 1.0f;
-    float prev_conv_reflections_mix_level_ = -1.0f; // Convolution mixer: ramp reflections_mix_level only (Unity); -1 = no ramp on first use
-    /// Ramped reflections mix on mono before iplReflectionEffectApply (parametric/hybrid player path).
-    float prev_parametric_reflections_mix_level_ = 1.0f;
-    /// Ramped pathing mix on mono before iplPathEffectApply (matches Steam Audio Unity/FMOD spatialize).
-    float prev_pathing_mix_level_ = 1.0f;
+    void apply_playback_host_fades(AudioFrame* buffer, int32_t frames);
+
+    // Mix ramps: direct weight; reflections (-1 = first block skip ramp on conv path); parametric/path track previous wet scale.
+    float prev_direct_weight = 0.0f;
+    float prev_conv_reflections_mix_level_ = -1.0f;      // -1 = first conv/TAN block uses constant mix (no crossfade from stale state)
+    float prev_parametric_reflections_mix_level_ = 0.0f; // parametric/hybrid wet ramp state
+    float prev_pathing_mix_level_ = 0.0f;
 
     // Throttle "no reverb params" warning: skip first 3, then log only every 200+ misses (reset after log)
     int no_reverb_warn_count = 0;
@@ -184,11 +194,10 @@ class ResonanceStreamPlayback : public AudioStreamPlayback {
     bool reflection_tail_have_params_ = false;
     float reflection_tail_wet_gain_ = 1.0f;
     bool reflection_tail_split_output_ = false;
-    /// Convolution/TAN EOS tail: after dry EOS, keep calling Apply(silence) to advance the effect like Unity's
-    /// spatialize path (which has no explicit GetTail step). Reset in _start.
+    /// Conv/TAN: after dry ends, drive Apply with silence until internal tail drains (shared mixer path).
     bool conv_reverb_eos_silence_apply_done_ = false;
 
-    /// Pathing EOS tail: Unity advances via iplPathEffectApply every tick; cache last params so we can Apply(silence) after EOS.
+    /// Cached path params for EOS tail (Apply silence each tick); SH coeffs copied to `pathing_tail_sh_coeffs_`.
     IPLPathEffectParams pathing_tail_params_{};
     bool pathing_tail_have_params_ = false;
     /// Stable storage for tail SH coeffs (max order 3 => 16 coeffs). Avoids dangling pointers when server swaps caches.
@@ -240,12 +249,18 @@ class ResonanceStreamPlayback : public AudioStreamPlayback {
     std::atomic<float> debug_signal_direct{0.0f};                // Effective direct gain (for Debug Sources display)
     std::atomic<float> debug_signal_reverb{0.0f};                // Effective reverb gain (for Debug Sources display)
     std::atomic<float> debug_signal_pathing{0.0f};               // Path wet stereo RMS after path sim (per block, clamped 0..1 for HUD)
-    std::chrono::steady_clock::time_point last_mix_time_;        // For inter-callback timing (audio thread only)
+    /// Convolution/TAN: `IPLReflectionMixer` was null (cannot feed shared wet bus).
+    std::atomic<uint64_t> instrumentation_conv_mixer_null_blocks{0};
+    /// Convolution/TAN: `process_mix` returned false (wet feed rejected for that Steam block).
+    std::atomic<uint64_t> instrumentation_conv_mix_failed_blocks{0};
+    /// Blocks with a valid sim source where `enable_reverb` in PlaybackParameters was false (reverb send gated off).
+    std::atomic<uint64_t> instrumentation_enable_reverb_false_blocks{0};
+    std::chrono::steady_clock::time_point last_mix_time_; // For inter-callback timing (audio thread only)
 
-    void _lazy_init_steam_audio(int sampling_rate); // Lazy init to avoid overhead if not needed
-    void _cleanup_steam_audio();                    // Cleanup all resources
-    void _process_steam_audio_block();              // Process a single block of audio through Steam Audio
-    void _sync_params();                            // Sync parameters from next to current
+    void _lazy_init_steam_audio(int sampling_rate); // Alloc IPL processors/buffers on first need
+    void _cleanup_steam_audio();
+    void _process_steam_audio_block(); // One `frame_size_` IPL pipeline step
+    void _sync_params();               // Sync parameters from next to current
     void _add_reverb_to_output(IPLAudioBuffer* reverb_buf, float refl_mix, bool split_output,
                                const IPLCoordinateSpace3& listener_coords); // Ambisonic decode must match reverb bus listener
     void _write_output_rings_folded();                                      // sa_final_mix_buffer (N ch) -> stereo rings via temp_process_buffer_*
@@ -269,9 +284,7 @@ class ResonanceStreamPlayback : public AudioStreamPlayback {
     virtual int32_t _mix(AudioFrame* buffer, float rate_scale, int32_t frames) override; // Mixes audio frames into the buffer
     virtual void _start(double from_pos) override;                                       // Starts playback from a specific position
 
-    /// Phase 4: main-thread pre-allocation of Steam Audio processors and audio buffers before the first _mix call.
-    /// Matches the Unity plugin's spatialize_effect::create pattern (processor allocation outside the audio callback).
-    /// Safe to call multiple times (no-op after first success). Returns true on success or if already initialised.
+    /// Alloc IPL effects/buffers before first _mix (avoids audio-thread stall); idempotent. Same as implicit lazy init but earlier.
     bool prewarm_steam_audio();
     /// True if the audio-side initialisation is complete and _mix will skip the lazy path.
     bool is_steam_audio_initialised() const { return is_initialized; }
@@ -287,7 +300,9 @@ class ResonanceStreamPlayback : public AudioStreamPlayback {
                                       int32_t& out_mix_frames_min, int32_t& out_mix_frames_max,
                                       uint64_t& out_silent_blocks, float& out_last_rms,
                                       float& out_pathing_sh_rms, float& out_pathing_sh_energy, float& out_pathing_out_rms,
-                                      int32_t& out_pathing_order) const;
+                                      int32_t& out_pathing_order,
+                                      uint64_t& out_conv_mixer_null_blocks, uint64_t& out_conv_mix_failed_blocks,
+                                      uint64_t& out_enable_reverb_false_blocks) const;
     /// Reset all instrumentation counters. Call from main thread to clear and re-observe.
     void reset_instrumentation();
     /// Split convolution wet ring depth (for ResonanceReverbPlayback after main stream stops).
@@ -380,10 +395,10 @@ class ResonancePlayer : public AudioStreamPlayer3D {
 
   public:
     enum AttenuationMode {
-        ATTENUATION_INVERSE,        // Physics based (1/dist), Steam distance attenuation on
+        ATTENUATION_INVERSE,        // Inverse distance + IPL DIRECT distance attenuation when enabled
         ATTENUATION_LINEAR,         // Linear falloff to 0 at max_dist
         ATTENUATION_CUSTOM_CURVE,   // User defined curve
-        ATTENUATION_INVERSE_NO_SIM, // Inverse-style mix: no Steam distance attenuation (full LOS gain from sim)
+        ATTENUATION_INVERSE_NO_SIM, // Inverse curve without IPL distance attenuation on direct sim
     };
 
   private:
@@ -481,7 +496,7 @@ class ResonancePlayer : public AudioStreamPlayer3D {
 
     void _update_stream_setup();  // Ensures the internal stream is set up correctly
     void _ensure_source_exists(); // Ensures the source handle exists in the ResonanceServer
-    /// Creates Steam source handle when server becomes available (children _ready before parent ResonanceRuntime).
+    /// Lazy-create IPL source when server is ready (ordering: nodes before runtime).
     /// Returns true if a new handle was created. Optionally defers playback param push when already playing.
     bool _try_ensure_source_and_sync(ResonanceServer* srv, bool deferred_playback_push_if_playing);
     void _deferred_try_ensure_source_after_config();
@@ -539,7 +554,7 @@ class ResonancePlayer : public AudioStreamPlayer3D {
     Ref<Curve> _config_curve(const char* key, const Ref<Curve>& default_val) const;
     NodePath _config_node_path(const char* key) const;
     void _refresh_config_cache();
-    /// Steam Audio IPL_DIRECTSIMULATIONFLAGS_DISTANCEATTENUATION + distance model for this source.
+    /// Whether direct sim should use IPL distance attenuation for this attenuation mode.
     static bool _steam_sim_distance_attenuation_enabled(const ConfigCache& c);
 
   protected:
@@ -589,8 +604,7 @@ class ResonancePlayer : public AudioStreamPlayer3D {
     /// Build wireframe line segments for a directivity gizmo as pairs of Vector3 (line list).
     /// [param enabled] master toggle from [code]directivity_enabled[/code]; when false draws a unit sphere + forward arrow.
     /// [param input_mode] [code]0[/code] = Simulation Defined (dipole from weight/power), [code]1[/code] = User Defined (scalar; draws sphere + scaled arrow).
-    /// [param weight] dipole blend (0 = monopole, 1 = dipole) matching Steam Audio [code]IPLDirectivity.dipoleWeight[/code].
-    /// [param power] dipole sharpness matching Steam Audio [code]IPLDirectivity.dipolePower[/code].
+    /// [param weight] / [param power] map to IPL directivity dipole weight / power when simulation-defined.
     /// [param user_value] scalar 0..1 used to scale the forward arrow when [param input_mode] is User Defined.
     /// [param size] world-space radius of the gizmo in meters (typical value: [code]1.0[/code]).
     static PackedVector3Array build_directivity_gizmo_lines(bool enabled, int input_mode, float weight, float power, float user_value, float size);

@@ -14,12 +14,10 @@
 
 using namespace godot;
 
-// Thread-safe counter for fallback probe data path when no path is set
+// Counter for unique `probe_batch_fallback_*` filenames when `probe_data` has no saved path.
 static std::atomic<int> s_fallback_counter{0};
 
-/// Marks probe data out of sync with ResonanceProbeVolume::_get_bake_params_hash() so editor gizmos use gray
-/// (re-bake needed) until a full bake writes a matching hash again. Uses a fixed sentinel (not XOR) so repeated
-/// edits without re-bake cannot accidentally restore a matching hash.
+/// Invalidate `_get_bake_params_hash` match so editor gizmos show "needs bake" (fixed sentinel; avoids XOR false positives).
 static void invalidate_probe_data_bake_params_hash(const Ref<ResonanceProbeData>& probe_data_res) {
     if (probe_data_res.is_null())
         return;
@@ -27,7 +25,7 @@ static void invalidate_probe_data_bake_params_hash(const Ref<ResonanceProbeData>
     probe_data_res->set_bake_params_hash(static_cast<int64_t>(kInvalidBakeParamsStamp));
 }
 
-/// Convolution=0 -> BAKECONVOLUTION only; Parametric=1 -> BAKEPARAMETRIC only; Hybrid=2 or -1 -> both
+/// Maps addon reflection_type to IPL_REFLECTIONSBAKEFLAGS (conv / param / both).
 static IPLReflectionsBakeFlags _bake_flags_from_reflection_type(int reflection_type) {
     if (reflection_type == resonance::kReflectionConvolution)
         return static_cast<IPLReflectionsBakeFlags>(IPL_REFLECTIONSBAKEFLAGS_BAKECONVOLUTION);
@@ -64,7 +62,7 @@ static void _fill_reflections_bake_params(IPLReflectionsBakeParams& out,
     out.irradianceMinDistance = resonance::kBakerIrradianceMinDistance;
 }
 
-/// Load probe batch from ResonanceProbeData. Caller must call iplProbeBatchRelease.
+/// Deserialize `ResonanceProbeData` → `IPLProbeBatch` (caller must `iplProbeBatchRelease`).
 static IPLProbeBatch _load_probe_batch_from_resource(IPLContext context, Ref<ResonanceProbeData> probe_data_res) {
     if (probe_data_res.is_null() || probe_data_res->get_data().is_empty())
         return nullptr;
@@ -127,8 +125,7 @@ static String _build_tres_content(const PackedByteArray& pba, Ref<ResonanceProbe
            "\nstatic_scene_params_hash = " + String::num_int64(ssc) + "\n";
 }
 
-/// Save probe_data to disk. path must be non-empty. Returns true on success.
-/// Skips save when pathing_scheduled; caller saves after pathing bake.
+/// Writes resource to `path` (or `.tres` hand-written fallback). No-op if `pathing_scheduled` (pathing pass saves later).
 static bool _save_probe_data_to_disk(Ref<ResonanceProbeData> probe_data_res, const String& path,
                                      const PackedByteArray& pba, int reflection_type, IPLsize size, bool pathing_scheduled) {
     if (path.is_empty() || pathing_scheduled)
@@ -154,7 +151,7 @@ static bool _save_probe_data_to_disk(Ref<ResonanceProbeData> probe_data_res, con
     return true;
 }
 
-/// Resolves save path from probe_data (UID or direct path). Creates audio_data dir when using fallback.
+/// UID → path; empty → ProjectSettings bake dir + numbered fallback (creates directories).
 static String _resolve_save_path(Ref<ResonanceProbeData> probe_data_res) {
     String path = probe_data_res->get_path();
     if (!path.is_empty() && path.begins_with("uid://")) {
@@ -206,7 +203,7 @@ PackedVector3Array ResonanceBaker::generate_manual_grid(const Transform3D& volum
     Vector3 size = extents * 2.0f;
 
     if (generation_type == GEN_CENTROID) {
-        // Single probe at volume center (Steam Audio IPL_PROBEGENERATIONTYPE_CENTROID)
+        // Centroid: one sample at the volume origin (IPL_PROBEGENERATIONTYPE_CENTROID).
         Vector3 local_center(0, 0, 0);
         Vector3 world_pos = volume_transform.xform(local_center);
         points.push_back(world_pos);
@@ -214,8 +211,7 @@ PackedVector3Array ResonanceBaker::generate_manual_grid(const Transform3D& volum
     }
 
     if (generation_type == GEN_UNIFORM_FLOOR) {
-        // Probes on horizontal plane at bottom of volume + height_above_floor (Steam Audio IPL_PROBEGENERATIONTYPE_UNIFORMFLOOR)
-        // Plane at local y = -extents.y + height_above_floor
+        // Uniform floor: 2D grid on local y = -extents.y + height_above_floor.
         float plane_y = -extents.y + height_above_floor;
         int count_x = static_cast<int>(std::floor(size.x / spacing));
         int count_z = static_cast<int>(std::floor(size.z / spacing));
@@ -236,7 +232,7 @@ PackedVector3Array ResonanceBaker::generate_manual_grid(const Transform3D& volum
         return points;
     }
 
-    // GEN_VOLUME (default): Uniform 3D grid filling the volume
+    // Volume: full 3D grid (GEN_VOLUME).
     int count_x = static_cast<int>(std::floor(size.x / spacing));
     int count_y = static_cast<int>(std::floor(size.y / spacing));
     int count_z = static_cast<int>(std::floor(size.z / spacing));
@@ -310,8 +306,7 @@ bool ResonanceBaker::bake_with_probe_array(IPLContext context, IPLScene scene, I
     int num_probes = iplProbeArrayGetNumProbes(probeArray);
     if (num_probes == 0) {
         iplProbeArrayRelease(&probeArray);
-        // Fallback: Steam Audio scene-aware UNIFORMFLOOR can return 0 (no floor detected).
-        // Use our manual grid placement which places probes on a horizontal plane in the volume.
+        // UNIFORMFLOOR from scene can yield 0 probes; use our manual floor grid in volume space.
         if (generation_type == GEN_UNIFORM_FLOOR) {
             if (eng && eng->is_editor_hint()) {
                 UtilityFunctions::print_rich("[color=cyan]Nexus Resonance:[/color] Steam Audio UniformFloor returned 0 probes (scene may have no detectable floor). Using flat-plane fallback - probes placed on horizontal plane in volume, NOT on ResonanceGeometry floor. Consider GEN_VOLUME for full 3D coverage.");
@@ -409,14 +404,12 @@ bool ResonanceBaker::bake_manual_grid(IPLContext context, IPLScene scene, IPLSce
         return false;
     }
 
-    // 1. Create Batch
     IPLProbeBatch probeBatch = nullptr;
     if (iplProbeBatchCreate(context, &probeBatch) != IPL_STATUS_SUCCESS) {
         ResonanceLog::error("ResonanceBaker: iplProbeBatchCreate failed (bake_manual_grid).");
         return false;
     }
 
-    // 2. Add Probes Manually
     for (int i = 0; i < probe_positions.size(); i++) {
         IPLSphere sphere{};
         sphere.center = ResonanceUtils::to_ipl_vector3(probe_positions[i]);
@@ -429,18 +422,16 @@ bool ResonanceBaker::bake_manual_grid(IPLContext context, IPLScene scene, IPLSce
         UtilityFunctions::print_rich("[color=cyan]Nexus Resonance:[/color] Batch committed with " + String::num((int)probe_positions.size()) + " probes. Calculating Reverb...");
     }
 
-    // 3. Bake Params - always bake both so Convolution, Parametric and Hybrid work at runtime without re-bake
+    // `_fill_reflections_bake_params` sets flags so conv/param/hybrid can run from one bake.
     IPLReflectionsBakeParams bakeParams{};
     _fill_reflections_bake_params(bakeParams, scene, probeBatch, scene_type, opencl_device, radeon_rays_device,
                                   IPL_BAKEDDATAVARIATION_REVERB, num_rays, num_bounces, reflection_type, num_threads, ambisonics_order);
 
-    // 4. Run Bake (with optional progress callback)
     AdapterData adapter = {progress_callback, progress_user_data};
     iplReflectionsBakerBake(context, &bakeParams,
                             (progress_callback && progress_user_data) ? _ipl_progress_adapter : nullptr,
                             (progress_callback && progress_user_data) ? &adapter : nullptr);
 
-    // 5. Save to Memory
     IPLScopedRelease<IPLProbeBatch> probeBatchGuard(probeBatch, iplProbeBatchRelease);
     IPLSerializedObjectSettings serialSettings{};
     IPLSerializedObject serializedObject = nullptr;
@@ -458,7 +449,6 @@ bool ResonanceBaker::bake_manual_grid(IPLContext context, IPLScene scene, IPLSce
         return false;
     }
 
-    // 6. Save to Resource
     PackedByteArray pba;
     pba.resize((int64_t)size);
     memcpy(pba.ptrw(), data, size);
@@ -467,7 +457,6 @@ bool ResonanceBaker::bake_manual_grid(IPLContext context, IPLScene scene, IPLSce
     probe_data_res->set_probe_positions(probe_positions);
     probe_data_res->set_baked_reflection_type(reflection_type);
 
-    // 7. Save to Disk (skip when pathing will run – GDScript saves at end with full pathing_params_hash)
     String path = _resolve_save_path(probe_data_res);
     if (!_save_probe_data_to_disk(probe_data_res, path, pba, reflection_type, size, pathing_scheduled)) {
         return false;
@@ -536,9 +525,7 @@ bool ResonanceBaker::bake_pathing(IPLContext context, IPLScene scene, Ref<Resona
     memcpy(newPba.ptrw(), data, size);
     probe_data_res->set_data(newPba);
 
-    // Set pathing_params_hash in C++ so it persists even when GDScript's thread-based
-    // bake_pathing() return value does not propagate (GDExtension/thread limitation).
-    // Hash must match GDScript _compute_pathing_hash: hash(var_to_str({...}))
+    // Persist hash here (matches GDScript `_compute_pathing_hash`) — thread/async may drop return status.
     {
         Dictionary d;
         d["vis_range"] = vis_range;
@@ -741,7 +728,7 @@ bool ResonanceBaker::probe_data_remove_baked_data_layer(IPLContext context, Ref<
         probe_data_res->set_static_source_params_hash(0);
     if (id.type == IPL_BAKEDDATATYPE_REFLECTIONS && id.variation == IPL_BAKEDDATAVARIATION_STATICLISTENER)
         probe_data_res->set_static_listener_params_hash(0);
-    // Pathing is optional for gameplay; stripping it should not force gray gizmos. Reflections layers do.
+    // Dropping pathing still shows probe layout as valid; only reflection layers invalidate gizmo bake state.
     if (id.type == IPL_BAKEDDATATYPE_REFLECTIONS)
         invalidate_probe_data_bake_params_hash(probe_data_res);
     Engine* eng = Engine::get_singleton();

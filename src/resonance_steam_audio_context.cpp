@@ -33,7 +33,7 @@ void IPLCALL log_callback(IPLLogLevel level, const char* message) {
             UtilityFunctions::print(msg);
     }
 }
-/// Valve Steam Audio (Unity docs): Radeon Rays and TrueAudio Next are supported on 64-bit Windows only.
+/// Valve Steam Audio: Radeon Rays and TrueAudio Next are supported on 64-bit Windows only.
 /// Avoid OpenCL device setup on Linux, macOS, Android, iOS, etc. to match that matrix and reduce driver crash risk.
 /// For `iplOpenCLDeviceCreateFromExisting` / Linux GPU experiments, see wiki ResonanceRuntime-and-RuntimeConfig.md.
 static bool opencl_radeon_tan_supported_host_os() {

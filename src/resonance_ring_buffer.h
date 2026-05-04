@@ -7,10 +7,9 @@
 
 namespace godot {
 
-/// Single-producer single-consumer (SPSC) ring buffer for audio streaming (ResonancePlayer, ResonanceAmbisonicPlayer).
-/// Intended for audio-thread use only; not thread-safe for concurrent access from multiple threads.
-/// When capacity is 0 (e.g. after resize(0)), write/read are no-ops — avoids modulo-by-zero and size_t underflow in chunk math.
-/// T must be trivially copyable (e.g. float): write/read use memcpy.
+/// SPSC FIFO for bridging Godot `mix_audio()` (variable/partial frame counts) to fixed IPL `frameSize` in ResonancePlayer / AmbisonicPlayer.
+/// Use from one producer and one consumer only. Overfull writes truncate silently—watch instrumentation when dry audio drops.
+/// `resize(0)` makes write/read no-ops (safe guard). `T` must be trivially copyable (`memcpy`).
 template <typename T>
 class RingBuffer {
   private:

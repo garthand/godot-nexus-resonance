@@ -193,6 +193,14 @@ class ResonanceServer : public Object {
     std::atomic<uint64_t> reverb_effect_success{0};
     std::atomic<uint64_t> reverb_effect_frames_written{0};
     std::atomic<float> reverb_effect_output_peak{0.0f};
+    /// ResonanceAudioEffect: peak-collapse linear duck triggered (wet-tail debug).
+    std::atomic<uint64_t> reverb_effect_click_guard_triggers{0};
+    /// ResonanceMixerProcessor: hold-last stereo block used (no new mixer feed this bus tick).
+    std::atomic<uint64_t> reverb_mixer_return_hold_last_count{0};
+    /// Ablation / A-B: when false, skip click guard ramp (default true).
+    std::atomic<bool> reverb_bus_click_guard_enabled_{true};
+    /// Ablation: when true, ResonancePlayer split-reverb underrun uses zeros instead of hold x cosine taper.
+    std::atomic<bool> reverb_bus_wet_ring_underrun_zero_fill_{false};
     std::atomic<uint64_t> reverb_mixer_feed_count{0};
     /// Convolution debug: fetch_reverb_params returned true with valid IR (reflection_type==0)
     std::atomic<uint64_t> reverb_convolution_valid_fetches{0};
@@ -202,6 +210,8 @@ class ResonanceServer : public Object {
     std::atomic<uint64_t> instrumentation_fetch_cache_hit{0};
     /// Crackling debug: try_lock missed, cache empty, returned false
     std::atomic<uint64_t> instrumentation_fetch_cache_miss{0};
+    /// Epoch mismatch but entry still held last IR/params (short tones before next worker refresh)
+    std::atomic<uint64_t> instrumentation_fetch_refl_stale_epoch_fallback{0};
     /// Fetch was skipped intentionally (disabled or no data expected yet) — do not count as a miss.
     std::atomic<uint64_t> instrumentation_fetch_cache_skip{0};
     /// Pathing: fetch_pathing_params returned immediately (bad handle, no context, or pathing off)
@@ -278,7 +288,7 @@ class ResonanceServer : public Object {
     std::atomic<uint64_t> instrumentation_audio_mixer_sanitize_stereo_last_us_{0};
     /// Convolution debug: process_mix called for convolution with ir==null (should not happen)
     std::atomic<uint64_t> reverb_convolution_feed_ir_null{0};
-    /// Convolution debug: min mixer-feed gain seen (reflections_mix_level * source linear volume; Unity spatialize parity)
+    /// Convolution debug: min mixer-feed gain seen (reflections_mix_level * source linear volume)
     std::atomic<float> reverb_convolution_gain_min{1.0f};
     /// Convolution debug: max reverb_gain seen when feeding
     std::atomic<float> reverb_convolution_gain_max{0.0f};
@@ -324,9 +334,8 @@ class ResonanceServer : public Object {
     /// common case. Prefer per-source Realtime or the STATICSOURCE bake workflow for accurate
     /// outdoor-to-indoor reflections.
     bool apply_occlusion_to_baked_reflections = false;
-    /// When true (default), baked/realtime reflection input gain is multiplied by the per-source distance
-    /// attenuation factor (Unity parity: 3D curve applied to inBuffer before iplReflectionEffectApply). Per-source
-    /// override on ResonancePlayerConfig beats this global flag.
+    /// When true (default), baked/realtime reflection input gain is multiplied by the per-source distance attenuation factor.
+    /// Per-source override on ResonancePlayerConfig beats this global flag.
     bool apply_distance_curve_to_reflections = true;
 
     // Reflection type: 0 = Convolution, 1 = Parametric, 2 = Hybrid
@@ -468,45 +477,14 @@ class ResonanceServer : public Object {
     std::atomic<int> occlusion_cache_front_{0};
     uint32_t occlusion_cache_epoch_[kCacheSlots] = {1, 1};
 
-    // Threading
-    //
-    // Lock roles (Phase 3 split, matching the Unity Steam Audio plugin model — see references/steam-audio-4.8.1/unity/src/native):
-    //  - [code]scene_graph_mutex_[/code]: external scene-graph mutations. Protects iplSceneCommit / iplSimulatorSetScene /
-    //    iplStaticMeshAdd|Remove / iplInstancedMeshAdd|Remove|UpdateTransform, plus the associated [code]scene_manager_[/code]
-    //    / [code]dynamic_meshes_[/code] / [code]dynamic_instanced_transform_queue_[/code] bookkeeping. Used by the main thread
-    //    and editor/baking; the worker acquires it only during the scene-commit phase of its tick.
-    //  - [code]sources_mutex_[/code]: external source-lifecycle and per-source input mutations. Protects iplSourceAdd|Remove|SetInputs
-    //    and [code]source_manager[/code] / [code]source_outputs_reflections_[/code] / [code]pending_source_*_[/code] queues.
-    //    Used by the main thread (iplSourceAdd is deferred to the worker) and the worker during source-lifecycle drain.
-    //  - [code]simulation_mutex[/code]: Steam Audio simulator run phase. Protects iplSimulatorRunDirect / RunReflections /
-    //    RunPathing and the immediately-following [code]_worker_sync_fetch_caches[/code] that reads iplSourceGetOutputs for the
-    //    double-buffered caches. The worker holds it for the full tick (the original Super-Lock role is retained until the
-    //    scene-/source-commit phases are pulled out in a follow-up pass). External callers that mutate simulator state and need
-    //    to serialize with the run phase can nest [code]simulation_mutex[/code] inside the narrower lock (see order below).
-    //
-    // Lock order (outer -> inner, must be respected to avoid deadlock):
-    //   probe_batch_registry_.mutex_ -> scene_graph_mutex_ -> sources_mutex_ -> simulation_mutex -> pathing_vis_mutex / _pathing_deviation_mutex
-    //
-    // Rationale: scene-graph changes happen before source changes (source updates may reference mesh data); both happen before
-    // the simulator run phase. Nesting in this order lets a caller take exactly as many locks as it needs and does not prevent
-    // the worker (which holds simulation_mutex) from running while scene/source mutations are only holding the narrower outer
-    // locks. Steam Audio's own internal synchronisation handles the committed-state readers/writers; the Unity plugin relies on
-    // the same contract and uses no wrapper mutex around the simulator at all.
-    //
-    // Thread contexts: fetch_reverb_params / fetch_pathing_params / get_source_occlusion_data = Audio-Thread, lock-free
-    // (Phase 2: reads the double-buffered caches directly, never touches simulation_mutex). update_source / ProbeBatch APIs =
-    // Main-Thread. _pathing_vis_callback / distance_attenuation_callback run inside the worker's simulation_mutex context.
-    //
-    // Shutdown / reinit (IPL handle lifetime):
-    // - is_shutting_down_flag: set true in shutdown() and ~ResonanceServer; cleared at start of _init_internal (and again at end of
-    //   success/failure paths) so repeated play sessions in one process recover. reinit uses ipl_teardown_active_ during teardown.
-    // - ipl_teardown_active_: set at start of _shutdown_steam_audio (reinit + shutdown); cleared at start of _init_internal and
-    //   again when init finishes. Audio callbacks use ipl_audio_teardown_active() == is_shutting_down || ipl_teardown_active_.
-    // - _shutdown_steam_audio order: set ipl_teardown_active_; stop worker (join); AudioServer::lock; _drain_ipl_context_clients_assume_audio_locked
-    //   (releases playback/effect IPL users before server destroys IPLSource handles); unlock; acquire locks in documented order
-    //   (scene_graph_mutex_ -> sources_mutex_ -> simulation_mutex) for probe batches, sources, simulator, scene, meshes;
-    //   iplContextRelease. Never hold simulation_mutex while waiting on AudioServer::lock.
-    // - ResonanceAudioEffect / InternalPlayback bail out when ipl_audio_teardown_active().
+    // Threading: scene_graph_mutex_ = scene/mesh commit and related bookkeeping; sources_mutex_ = sources and pending queues;
+    // simulation_mutex = simulator Run* plus _worker_sync_fetch_caches for the double-buffered caches.
+    // Lock order (outer → inner): probe_batch_registry_.mutex_, scene_graph_mutex_, sources_mutex_, simulation_mutex,
+    // then pathing_vis_mutex / _pathing_deviation_mutex when needed.
+    // Audio thread: fetch_reverb_params / fetch_pathing_params / get_source_occlusion_data read only the lock-free caches.
+    // Teardown: ipl_teardown_active_; join worker; AudioServer::lock and drain IPL clients; then scene → sources → sim locks
+    // before tearing down IPL/context; do not block on AudioServer::lock while holding simulation_mutex. Audio callbacks use
+    // ipl_audio_teardown_active() (includes is_shutting_down and ipl_teardown_active_).
     std::mutex scene_graph_mutex_;
     std::mutex sources_mutex_;
     std::mutex simulation_mutex;
@@ -528,7 +506,7 @@ class ResonanceServer : public Object {
     std::atomic<uint64_t> instrumentation_dynamic_transform_enqueue_events_{0};
     // Simulation update interval: Direct runs every tick; reflection/pathing heavy ticks use separate cadences when configured.
     float reflections_sim_interval = 0.1f; // Min seconds between iplSimulatorRunReflections scheduling
-    float pathing_sim_interval = 0.1f; // Min seconds between RunPathing scheduling
+    float pathing_sim_interval = 0.1f;     // Min seconds between RunPathing scheduling
     float reflections_interval_elapsed = 0.0f;
     float pathing_interval_elapsed = 0.0f;
     float realtime_reflection_max_distance_m = 0.0f;
@@ -611,9 +589,11 @@ class ResonanceServer : public Object {
     mutable std::mutex pending_attach_handles_mutex_;
     std::unordered_set<int32_t> pending_attach_handles_;
 
-    // Listener: double-buffer same as mixer (main writes [1], audio/worker read [0])
-    IPLCoordinateSpace3 listener_coords_[2]{};
-    std::atomic<bool> new_listener_written_{false};
+    // Listener: main thread writes `listener_coords_latest_` under a seqlock (odd seq = write in progress).
+    // Audio and simulation read a consistent snapshot — never "consume" so the reverb bus and ResonancePlayer
+    // always see the same basis in a given read (avoids comb filtering / wet cancellation vs dry).
+    IPLCoordinateSpace3 listener_coords_latest_{};
+    std::atomic<uint32_t> listener_seq_{0};
     std::atomic<bool> pending_listener_valid{true};
     /// True when iplSimulatorRunPathing ran this simulation tick (avoids using stale pathing when skipped)
     std::atomic<bool> pathing_ran_this_tick{false};
@@ -679,6 +659,8 @@ class ResonanceServer : public Object {
     /// Caller must hold simulation_mutex. True if any active source has realtime reflections in SetInputs, or map entry missing (conservative).
     bool _any_source_needs_reflection_sim_assume_locked();
     IPLCoordinateSpace3 _snapshot_listener_for_simulation();
+    /// Seqlock read of `listener_coords_latest_` — all callers see a consistent basis without stealing updates.
+    IPLCoordinateSpace3 _read_listener_coords_seqlock() const;
     bool _uses_main_thread_phonon_simulation() const;
     /// IPL scene type for static mesh load / bake temp scenes (never CUSTOM).
     IPLSceneType _tracer_type_for_mesh_operations() const;
@@ -787,8 +769,7 @@ class ResonanceServer : public Object {
     IPLRadeonRaysDevice get_radeon_rays_device_handle() const { return steam_audio_context_ ? steam_audio_context_->get_radeon_rays_device() : nullptr; }
     IPLHRTF get_hrtf_handle() const { return steam_audio_context_ ? steam_audio_context_->get_hrtf() : nullptr; }
     IPLReflectionMixer get_reflection_mixer_handle() const;
-    /// Params for \c iplReflectionMixerApply on the shared mixer — Steam Audio Unity \c mix_return_effect.cpp parity
-    /// (\c reflectionParams.type / \c numChannels / \c tanDevice; convolution \c irSize aligned with mixer create).
+
     void fill_reflection_mixer_apply_params(IPLReflectionEffectParams* out_params) const;
     IPLCoordinateSpace3 get_current_listener_coords();
     /// FMOD Bridge: Handle for reverb source (listener position). -1 if not created.
@@ -881,12 +862,21 @@ class ResonanceServer : public Object {
     void record_pathing_player_fetch_miss();
     /// Called by ResonancePlayer when it feeds the reflection mixer (Convolution only).
     void record_mixer_feed() { reverb_mixer_feed_count.fetch_add(1, std::memory_order_relaxed); }
-    /// Audio-thread safe: monotonic counter of mixer feeds (used to avoid feed/pull ordering drops vs Unity's DSP chain).
+    /// Audio-thread safe: monotonic counter of mixer feeds.
     uint64_t get_mixer_feed_count() const { return reverb_mixer_feed_count.load(std::memory_order_relaxed); }
     /// Call when feeding mixer for convolution; ir_non_null, reverb_gain, input_rms (mono before gain)
     void record_convolution_feed(bool ir_non_null, float reverb_gain, float input_rms);
     /// Called by ResonanceAudioEffectInstance each _process.
     void update_reverb_effect_instrumentation(bool mixer_null, bool success, int32_t frames_written, float output_peak);
+    /// Wet-tail debug: ResonanceAudioEffect silent-threshold duck fired this callback.
+    void record_reverb_effect_click_guard_trigger();
+    /// Wet-tail debug: process_mixer_return repeated last decoded block.
+    void record_mixer_return_hold_last();
+    /// Enable/disable bus click guard (linear block duck on peak collapse). Default true; set false to A/B tail pumping.
+    void set_reverb_bus_click_guard_enabled(bool p_enabled);
+    bool is_reverb_bus_click_guard_enabled() const;
+    void set_reverb_bus_wet_ring_underrun_zero_fill(bool p_enabled);
+    bool is_reverb_bus_wet_ring_underrun_zero_fill() const;
     float get_max_reverb_duration() const { return max_reverb_duration; }
     /// 0 = no cap. When > 0, convolution apply clamps IR length to min(this, effect allocation).
     int get_convolution_ir_max_samples() const { return convolution_ir_max_samples_; }

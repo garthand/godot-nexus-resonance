@@ -6,6 +6,8 @@
 
 namespace godot {
 
+// Per-playback IPL reflection effect: downmix → Apply (mixer or direct HOA buffer), plus tail helpers. Used by ResonancePlayer / bus effect path.
+
 enum class ReflectionInitFlags : int {
     NONE = 0,
     REFLECTIONEFFECT = 1 << 0,
@@ -21,9 +23,8 @@ class ResonanceReflectionProcessor {
     IPLContext context = nullptr;
     IPLReflectionEffect reflection_effect = nullptr;
 
-    // Intermediate Buffer (Mono Input for Convolution)
-    IPLAudioBuffer sa_mono_buffer{};
-    IPLAudioBuffer sa_temp_out_buffer{}; // Required by API even if mixing
+    IPLAudioBuffer sa_mono_buffer{};     // downmixed dry feed for Apply
+    IPLAudioBuffer sa_temp_out_buffer{}; // effect output (Ambisonics or parametric mono); API needs a destination even when feeding a mixer
 
     ReflectionInitFlags init_flags = ReflectionInitFlags::NONE;
     int frame_size = resonance::kGodotDefaultFrameSize;
@@ -45,18 +46,13 @@ class ResonanceReflectionProcessor {
     ResonanceReflectionProcessor(ResonanceReflectionProcessor&&) = delete;
     ResonanceReflectionProcessor& operator=(ResonanceReflectionProcessor&&) = delete;
 
-    /// [param p_max_reverb_duration_sec] clamped to [0.1, 10.0] like server config; must match simulation IR cap.
-    /// [param p_convolution_ir_max_samples] 0 = no cap; otherwise min with allocated IR.
+    /// `p_max_reverb_duration_sec` and optional `p_convolution_ir_max_samples` must stay consistent with ResonanceServer (IR allocation vs. sim).
     void initialize(IPLContext p_context, int p_sample_rate, int p_frame_size, int p_ambisonic_order, int p_reflection_type,
                     float p_max_reverb_duration_sec, int p_convolution_ir_max_samples = 0);
     void cleanup();
 
-    // Mixes into the provided Mixer handle (unused if using direct path).
-    // Unity spatialize_effect: applyVolumeRamp only on reflectionsMixLevel (mono), then source-side scaling separately.
-    // prev_reflections_mix_level: use -1 to skip ramp on first block (constant reflections_mix_level); else per-sample ramp to reflections_mix_level.
-    // wet_extra_gain: applied uniformly after the ramp (no inter-frame ramp on this product — avoids zipper when distance/occlusion move).
-    /// Returns true if \c iplReflectionEffectApply ran (feed reached mixer). Unity passes simulation outputs with IR;
-    /// skip Apply without advancing caller ramp state when IR invalid — avoids zipper/clicks.
+    /// Downmix, ramp `reflections_mix_level` on mono (prev = -1: no ramp on first block), then `wet_extra_gain` (no cross-fade between blocks).
+    /// Returns false if convolution/hybrid IR is null so the caller’s ramp state stays aligned.
     bool process_mix(const IPLAudioBuffer& in_buffer,
                      const IPLReflectionEffectParams& reverb_params,
                      IPLReflectionMixer mixer_handle,
@@ -64,19 +60,15 @@ class ResonanceReflectionProcessor {
                      float reflections_mix_level,
                      float wet_extra_gain);
 
-    /// Bypass mixer: apply convolution with mixer=null, output in internal buffer.
-    /// Returns pointer to sa_temp_out_buffer (ambisonic) for external decode. Valid until next process call.
-    /// Ramps reflections_mix_level on downmixed mono before apply (Unity Steam Audio spatializer parity).
-    /// Unity applies reflections mix on mono before Apply only; caller does not add a second distance/air gain on wet.
-    /// Returns true if \c iplReflectionEffectApply ran.
+    /// Mixer bypass: Apply with `mixer=null`, HOA (or parametric) in `sa_temp_out_buffer` until the next call—caller decodes/routes wet.
     bool process_mix_direct(const IPLAudioBuffer& in_buffer, const IPLReflectionEffectParams& reverb_params,
                             float prev_reflections_mix_level, float reflections_mix_level);
     IPLAudioBuffer* get_direct_output_buffer() { return &sa_temp_out_buffer; }
     bool is_parametric() const { return reflection_type == resonance::kReflectionParametric; }
 
-    /// Steam Audio tail after input ended (parametric/hybrid direct path; use instead of Apply until TAILCOMPLETE).
+    /// Tail decay when dry input stopped (parametric/hybrid direct decode path).
     IPLAudioEffectState tail_apply_direct(IPLReflectionEffectParams* params);
-    /// Convolution/TAN: mix tail into [param mixer] (parity with iplReflectionEffectApply ... mixer). Required for reverb-bus output.
+    /// Tail into the reflection mixer (reverb bus path; same routing idea as Apply with a non-null mixer).
     IPLAudioEffectState tail_apply_to_mixer(IPLReflectionEffectParams* params, IPLReflectionMixer mixer);
     int get_tail_size_samples() const;
     void reset_effect();

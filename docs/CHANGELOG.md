@@ -5,6 +5,17 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),  
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.9.16] - 2026-05-04
+
+### Changed
+
+- **ResonanceRuntimeConfig** - Removed `simulation_update_interval` (master pacing). Replaced `reflections_sim_update_interval` / `pathing_sim_update_interval` with `reflections_sim_interval` and `pathing_sim_interval` (default 0.1 s each, aligned with **Direct Sim Interval** naming). `ResonanceServer::init_audio_engine` / C++ `ResonanceServerConfig::apply` still read legacy keys `simulation_update_interval` and `*_sim_update_interval` for migration.
+- **ResonancePlayerConfig** - Per-source HRTF overrides aligned with `ResonanceRuntimeConfig` naming: `apply_hrtf_to_reflections` → `reverb_binaural_override`, `apply_hrtf_to_pathing` → `pathing_binaural_override`; inspector groups `direct_binaural_override`, `reverb_binaural_override`, `pathing_binaural_override` with `spatial_blend` and `use_ambisonics_encode` under **Spatialization** (bus routing stays under Output). `ResonancePlayer` still reads legacy keys `apply_hrtf_to_reflections` / `apply_hrtf_to_pathing` from older `.tres` until resources are re-saved.
+
+### Fixed
+
+- **ResonancePlayer stream tail (EOS / partial last frame)** - End-of-stream handling no longer stretches a long multi-frame “hold last sample” taper across callbacks (which could flatten the waveform into a DC plateau). Partial-frame EOS uses the same linear ramp as live playback; synthetic output-ring underrun fade is capped; optional short amplitude taper on the last real decoder samples keeps the tail sounding like a decaying wave instead of a slope-to-zero pad.
+
 ## [0.9.15] - 2026-05-01
 
 ### Added
@@ -14,6 +25,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **ResonancePlayerConfig** - Per-source HRTF overrides aligned with `ResonanceRuntimeConfig` naming: `apply_hrtf_to_reflections` → `reverb_binaural_override`, `apply_hrtf_to_pathing` → `pathing_binaural_override`; inspector groups `**direct_binaural_override`**, `**reverb_binaural_override`**, `**pathing_binaural_override**` with `**spatial_blend**` and `**use_ambisonics_encode**` under **Spatialization** (bus routing stays under Output). `ResonancePlayer` still reads legacy keys `apply_hrtf_to_reflections` / `apply_hrtf_to_pathing` from older `.tres` until resources are re-saved.
 - **ResonanceRuntimeConfig** - Removed `simulation_tick_throttle` and `geometry_update_throttle`. They were Nexus-only extras that duplicated Steam Audio's single **Simulation Update Interval** idea (`simulation_update_interval` plus optional `reflections_sim_update_interval`, `pathing_sim_update_interval`, and `dynamic_scene_commit_min_interval`). The worker now wakes every **ResonanceRuntime** tick without frame skipping; moving-acoustic geometry notifies scene commits every transform as before when throttles were set to 1.
 - **Lock-free audio-thread paths** - Reverb / reflection / pathing parameter caches use atomic double-buffer fronts and epochs; mixer snapshot swaps and reflection pending state avoid mutex work on the mix thread; cross-thread coordination relies on the worker + atomic flags where previously maps/sets were walked under lock (see migration from mutex-heavy fetch paths in prior iterations).
 - **Per-source mix gates Steam Audio simulation flags** - `ResonanceServer` receives `direct_mix_level`, `reflections_mix_level`, and `pathing_mix_level` with each source update. Pathing and reflections simulation are skipped when the corresponding mix is ≤ 0; **direct** simulation is omitted only when **all three** mixes are 0 (if reflections or pathing still need the direct path, e.g. wet occlusion, direct stays enabled). Reduces worker load when sources mute a path via mix alone (Inspector toggles unchanged).
@@ -163,7 +175,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **ResonanceRuntimeConfig** - Removed redundant `hrtf_sofa_asset`; use `hrtf_sofa_assets` only (e.g. one element for a single SOFA file).
 - **Pathing wet level** - Aligns with Steam Audio Unity/FMOD spatialize: no extra multiply by `reverb_pathing_attenuation` (distance is already in baked path SH). `pathing_mix_level` ramps the **mono input** before `iplPathEffectApply`, not the stereo output.
 - **Reflections & pathing level** - Mix ramps within each audio block; overall level and fade-in behavior may differ slightly from 0.9.7.
-- **Defaults** - Simulation CPU budget default **15%** (was 5%). Runtime **path validation** defaults **on** and **find alternate paths** **off** on `ResonanceRuntimeConfig`; per-source **Use Global | Disabled | Enabled** via `path_validation_override` / `find_alternate_paths_override` on `ResonancePlayerConfig` (replaces bool player fields and removes `pathing_validation_ab_mode`). `apply_hrtf_to_pathing` defaults to **Use Global**. `max_transmission_surfaces` default **16**. Distance attenuation: "**Disabled" added**.
+- **Defaults** - Simulation CPU budget default **15%** (was 5%). Runtime **path validation** defaults **on** and **find alternate paths** **off** on `ResonanceRuntimeConfig`; per-source **Use Global | Disabled | Enabled** via `path_validation_override` / `find_alternate_paths_override` on `ResonancePlayerConfig` (replaces bool player fields and removes `pathing_validation_ab_mode`). `pathing_binaural_override` defaults to **Use Global** (formerly `apply_hrtf_to_pathing`). `max_transmission_surfaces` default **16**. Distance attenuation: "**Disabled" added**.
 
 ### Fixed
 
@@ -385,7 +397,7 @@ New: "Export Dynamic Objects In All Scenes In Build".
 - **User-defined occlusion** - `occlusion_input` (Simulation / User Defined), `occlusion_value` (0-1). Script-controlled occlusion for custom models.
 - **User-defined transmission** - `transmission_input`, `transmission_low`, `transmission_mid`, `transmission_high` for script-controlled transmission.
 - **User-defined directivity** - `directivity_input`, `directivity_value` (0-1) for script-controlled directivity.
-- **Pro-source HRTF** - `apply_hrtf_to_reflections` and `apply_hrtf_to_pathing` (Use Global / Disabled / Enabled) per source.
+- **Pro-source HRTF** - Reflection and pathing HRTF toggles per source (Use Global / Disabled / Enabled; now `reverb_binaural_override` / `pathing_binaural_override`).
 - **Pro-source reflections/pathing toggles** - `reflections_enabled` and `pathing_enabled_override` to enable/disable reflections or pathing per source.
 
 ### Changed

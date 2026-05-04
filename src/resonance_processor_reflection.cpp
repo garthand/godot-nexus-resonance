@@ -7,9 +7,11 @@
 #include <cmath>
 #include <cstring>
 
+// IPL reflection effect integration for playback (see resonance_processor_reflection.h).
+
 namespace {
 
-/// Downmix post-process: optional gain ramp (prev_gain >= 0) or constant gain, then sanitize in one pass where possible.
+// Mono tap before IPL Apply: linear ramp between prev/current reflections mix, or fixed scale if prev < 0 (first block).
 void preprocess_reflection_mono(float prev_gain, float gain, int frame_size, float* mono) {
     if (!mono || frame_size <= 0)
         return;
@@ -135,12 +137,11 @@ bool ResonanceReflectionProcessor::process_mix(const IPLAudioBuffer& in_buffer,
     IPLReflectionEffectParams params = reverb_params;
     sanitize_reflection_params(&params);
 
-    // Steam Audio validation requires ir non-null for CONVOLUTION/HYBRID. Check before touching mono so caller ramp state stays aligned.
+    // Convolution/hybrid need a valid IR before we ramp mono—otherwise skip Apply and keep caller ramp bookkeeping consistent.
     if ((params.type == IPL_REFLECTIONEFFECTTYPE_CONVOLUTION || params.type == IPL_REFLECTIONEFFECTTYPE_HYBRID) && !params.ir)
         return false;
 
-    // Downmix (IPL API has non-const param; input is read-only)
-    iplAudioBufferDownmix(context, const_cast<IPLAudioBuffer*>(&in_buffer), &sa_mono_buffer);
+    iplAudioBufferDownmix(context, const_cast<IPLAudioBuffer*>(&in_buffer), &sa_mono_buffer); // API takes non-const buffer ptr
 
     const bool first_block = (prev_reflections_mix_level < 0.0f);
     float safe_curr_refl = resonance::sanitize_audio_float(reflections_mix_level);
@@ -159,7 +160,6 @@ bool ResonanceReflectionProcessor::process_mix(const IPLAudioBuffer& in_buffer,
         }
     }
 
-    // Apply (writes to mixer when mixer_handle is non-null, else to sa_temp_out_buffer)
     iplReflectionEffectApply(reflection_effect, &params,
                              &sa_mono_buffer, &sa_temp_out_buffer, mixer_handle);
     return true;
@@ -178,7 +178,6 @@ bool ResonanceReflectionProcessor::process_mix_direct(const IPLAudioBuffer& in_b
     if ((params.type == IPL_REFLECTIONEFFECTTYPE_CONVOLUTION || params.type == IPL_REFLECTIONEFFECTTYPE_HYBRID) && !params.ir)
         return false;
 
-    // IPL API has non-const param; input is read-only
     iplAudioBufferDownmix(context, const_cast<IPLAudioBuffer*>(&in_buffer), &sa_mono_buffer);
 
     if (sa_mono_buffer.data && sa_mono_buffer.data[0]) {
@@ -187,7 +186,6 @@ bool ResonanceReflectionProcessor::process_mix_direct(const IPLAudioBuffer& in_b
         resonance::apply_volume_ramp_and_sanitize(p, c, frame_size, sa_mono_buffer.data[0]);
     }
 
-    // Bypass mixer: output goes directly to sa_temp_out_buffer
     iplReflectionEffectApply(reflection_effect, &params,
                              &sa_mono_buffer, &sa_temp_out_buffer, nullptr);
     return true;

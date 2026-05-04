@@ -21,6 +21,8 @@
 
 using namespace godot;
 
+// Server lifecycle: IPL init/reinit/shutdown, worker vs main-thread simulation, tick scheduling, and phonon run loop.
+
 namespace {
 #if defined(_WIN32) && defined(_MSC_VER)
 // SEH must not run in the same function as C++ objects with destructors (e.g. lock_guard) when using /EHsc.
@@ -141,8 +143,6 @@ void ResonanceServer::shutdown() {
     is_shutting_down_flag.store(true, std::memory_order_release);
     _shutdown_steam_audio();
 }
-
-// --- PUBLIC CONFIG & INIT ---
 
 void ResonanceServer::_apply_config(Dictionary config) {
     config_.apply(config, [this](const char* key, float def) { return _get_bake_pathing_param(key, def); });
@@ -279,16 +279,13 @@ void ResonanceServer::_init_internal() {
     instrumentation_fetch_cache_skip.store(0, std::memory_order_relaxed);
     reset_pathing_instrumentation();
 
-    // shutdown()/reinit leave is_shutting_down_flag true and ipl_teardown_active_ true until a new context
-    // exists; clear before rebuilding so the 2nd/3rd editor play session does not run init with stale teardown.
+    // Fresh init after teardown/reinit: clear shutdown/teardown flags so a new context is usable in-process (e.g. editor play again).
     is_shutting_down_flag.store(false, std::memory_order_release);
     ipl_teardown_active_.store(false, std::memory_order_release);
 
     _init_context_and_devices();
     if (!steam_audio_context_) {
         ipl_teardown_active_.store(false, std::memory_order_release);
-        // shutdown()/~ResonanceServer set is_shutting_down_flag; clear so a later play session in the same
-        // process (editor re-run or scene restart) is not stuck "shutting down" with a fresh init.
         is_shutting_down_flag.store(false, std::memory_order_release);
         return;
     }
@@ -371,12 +368,10 @@ bool ResonanceServer::_init_scene_and_simulator() {
     }
 
     simulation_settings.flags = static_cast<IPLSimulationFlags>(IPL_SIMULATIONFLAGS_DIRECT | IPL_SIMULATIONFLAGS_REFLECTIONS);
-    // Steam Audio: SimulationManager only creates PathSimulator entries per probe batch when this flag is set at
-    // iplSimulatorCreate time. Without it, mPathSimulators stays empty and iplSimulatorRunPathing dereferences null.
+    // Pathing simulators are only allocated when PATHING is set at iplSimulatorCreate.
     if (pathing_enabled)
         simulation_settings.flags = static_cast<IPLSimulationFlags>(simulation_settings.flags | IPL_SIMULATIONFLAGS_PATHING);
-    // scene_type: 0=Phonon default, 1=Embree (CPU), 2=Radeon Rays (GPU). Unity "Scene Type" maps the same idea;
-    // try Embree if default path crashes in pathing validation (integration-dependent).
+    // scene_type: Default / Embree / Radeon Rays / Custom (Godot physics callbacks).
     simulation_settings.sceneType = _scene_type();
     simulation_settings.reflectionType =
         (reflection_type == resonance::kReflectionParametric) ? IPL_REFLECTIONEFFECTTYPE_PARAMETRIC : (reflection_type == resonance::kReflectionHybrid) ? IPL_REFLECTIONEFFECTTYPE_HYBRID
@@ -385,8 +380,7 @@ bool ResonanceServer::_init_scene_and_simulator() {
     simulation_settings.openCLDevice = _opencl();
     simulation_settings.tanDevice = _tan();
     simulation_settings.maxNumOcclusionSamples = max_occlusion_samples;
-    // Same as Parametric: baked-only uses maxNumRays=0. Phonon's ReflectionSimulator supports 0 (no realtime ray work).
-    // Previously Nexus forced at least 1 ray for Convolution/Hybrid/TAN when realtime_rays==0, which inflated RunReflections cost unnecessarily.
+    // maxNumRays==0 is valid (baked-only); no need to force a minimum for convolution-style modes.
     simulation_settings.maxNumRays = max_rays;
     simulation_settings.numDiffuseSamples = realtime_num_diffuse_samples;
     simulation_settings.maxDuration = max_reverb_duration;
@@ -395,7 +389,6 @@ bool ResonanceServer::_init_scene_and_simulator() {
     simulation_settings.maxOrder = ambisonic_order;
     simulation_settings.numThreads = simulation_threads;
     simulation_settings.maxNumSources = max_simulation_sources;
-    // numVisSamples: probe visibility sampling for pathing (Steam Audio simulation doc). Runtime uses pathing_num_vis_samples; bake uses kBakePathingDefaultNumSamples.
     simulation_settings.numVisSamples = pathing_enabled ? pathing_num_vis_samples : 1;
     {
         const int batch = (_scene_type() == IPL_SCENETYPE_CUSTOM) ? resonance::clamp_physics_ray_batch_size(physics_ray_batch_size) : 1;
@@ -409,7 +402,7 @@ bool ResonanceServer::_init_scene_and_simulator() {
         return false;
     }
 
-    // FMOD reverb source: created lazily in ensure_fmod_reverb_source() when the FMOD bridge inits (Godot-only games avoid an extra source + per-listener mutex work).
+    // Lazy FMOD reverb IPLSource: ensure_fmod_reverb_source() when the bridge is used.
 
     if (reflection_type == resonance::kReflectionConvolution || reflection_type == resonance::kReflectionTan) {
         IPLReflectionEffectSettings rs{};
@@ -460,8 +453,6 @@ void ResonanceServer::_start_worker_thread() {
     thread_running = true;
     worker_thread = std::thread(&ResonanceServer::_worker_thread_func, this);
 }
-
-// --- RUNTIME LOOP ---
 
 void ResonanceServer::tick(float delta) {
     if (reflection_force_heavy_next_tick_.exchange(false, std::memory_order_acq_rel)) {
@@ -537,6 +528,7 @@ void ResonanceServer::tick(float delta) {
 }
 
 void ResonanceServer::_worker_thread_func() {
+    // Waits for tick() to set simulation_requested; no thread when Custom scene uses main-thread simulation.
     while (thread_running) {
         std::unique_lock<std::mutex> lock(worker_mutex);
         worker_cv.wait(lock, [this] { return simulation_requested || !thread_running; });
@@ -561,14 +553,10 @@ void ResonanceServer::_worker_thread_func() {
     }
 }
 
-// Steam Audio contract (this function):
-// - iplSimulatorSetSharedInputs + Commit run every call; per-source iplSourceSetInputs (elsewhere) may omit IPL_SIMULATIONFLAGS_REFLECTIONS
-//   for sources that should not participate in realtime reflection work (still receive direct/pathing flags as configured).
-// - iplSimulatorRunReflections is required to refresh realtime / probe-driven reflection outputs; omitting it for several ticks
-//   lets cached reflection/reverb data age. RunPathing is independent; pathing outputs refresh only when RunPathing runs.
+// Single simulation step under simulation_mutex: shared inputs + commit, optional RunDirect/Reflections/Pathing, then cache sync.
+// Per-source flags (elsewhere) can omit reflections for sources that should not drive realtime reflection work.
 void ResonanceServer::_run_phonon_simulation_locked(const IPLCoordinateSpace3& current_listener, bool run_direct, bool run_reflection_sim,
                                                     bool run_pathing_sim) {
-    // Phase 1: apply pending iplSourceAdd / iplSourceRemove queues before anything else touches the simulator.
     _drain_pending_source_lifecycle_assume_locked();
     uint64_t us_dyn_apply = 0;
     bool dynamic_instanced_transforms_applied = false;
@@ -602,9 +590,8 @@ void ResonanceServer::_run_phonon_simulation_locked(const IPLCoordinateSpace3& c
     instrumentation_worker_active_reflection_sources_.store(active_reflection_sources, std::memory_order_relaxed);
     instrumentation_worker_active_realtime_reflection_sources_.store(active_realtime_sources, std::memory_order_relaxed);
 
-    // Dirty gating for reflections: if nothing relevant changed since last RunReflections, skip the heavy work.
-    // This reduces base load and sporadic spikes when the listener is idle (Unity parity: avoid no-op ray tracing).
-    constexpr bool kReflectionsDirtyGatingDisabled = true; // TEMPORARY: set false to re-enable skip_no_change
+    // Optional skip when listener/sources unchanged (disabled while tuning).
+    constexpr bool kReflectionsDirtyGatingDisabled = true; // set false to re-enable skip_no_change
     constexpr float kListenerMoveEps = 0.0025f;            // meters
     constexpr float kSourceMoveEps = 0.0025f;              // meters
     bool reflections_dirty = true;
@@ -702,8 +689,7 @@ void ResonanceServer::_run_phonon_simulation_locked(const IPLCoordinateSpace3& c
         sim_flags = static_cast<IPLSimulationFlags>(sim_flags | IPL_SIMULATIONFLAGS_PATHING);
     iplSimulatorSetSharedInputs(simulator, sim_flags, &inputs);
 
-    // Steam Audio: iplSimulatorCommit is required after SetSharedInputs (and after SetScene) for changes to take effect.
-    // Scene graph commit (when dirty) is timed separately as us_scene_graph_commit; post-SetSharedInputs commit is us_simulator_commit.
+    // Commit after SetSharedInputs; scene_dirty adds iplSceneCommit + SetScene first (timings split for profiling).
     uint64_t us_scene_graph = 0;
     uint64_t us_commit = 0;
     if (scene_dirty.load(std::memory_order_acquire)) {
@@ -857,12 +843,7 @@ bool ResonanceServer::_any_source_needs_realtime_reflections_assume_locked() {
 }
 
 IPLCoordinateSpace3 ResonanceServer::_snapshot_listener_for_simulation() {
-    IPLCoordinateSpace3 current_listener{};
-    if (new_listener_written_.exchange(false, std::memory_order_acq_rel)) {
-        listener_coords_[0] = listener_coords_[1];
-    }
-    current_listener = listener_coords_[0];
-    return current_listener;
+    return _read_listener_coords_seqlock();
 }
 
 bool ResonanceServer::_uses_main_thread_phonon_simulation() const {
@@ -954,8 +935,6 @@ void ResonanceServer::unregister_physics_ray_auto_exclude_rid(RID rid) {
     _rebuild_and_apply_physics_ray_excludes_unlocked();
 }
 
-// --- SHUTDOWN ---
-
 void ResonanceServer::_shutdown_steam_audio() {
     _clear_physics_ray_excludes_state();
     godot_physics_bridge_.clear_world();
@@ -965,7 +944,7 @@ void ResonanceServer::_shutdown_steam_audio() {
     ipl_teardown_active_.store(true, std::memory_order_release);
 
     // Reset atomic flags first to prevent late accesses during/after shutdown
-    new_listener_written_.store(false);
+    listener_seq_.store(0, std::memory_order_release);
     pending_listener_valid.store(false);
     simulation_requested.store(false);
     reflection_sim_heavy_requested.store(false);
@@ -991,8 +970,7 @@ void ResonanceServer::_shutdown_steam_audio() {
         if (worker_thread.joinable())
             worker_thread.join();
     }
-    // Phase 1: drain pending source lifecycle queues. The worker is gone; release any IPLSource retains we
-    // still hold and drop adds that never ran (their source_manager entry will be freed with release_all).
+    // Worker stopped: release queued Remove retains; pending Adds without a worker attach are dropped with later release_all.
     {
         std::vector<PendingSourceAdd> local_adds;
         std::vector<IPLSource> local_removes;

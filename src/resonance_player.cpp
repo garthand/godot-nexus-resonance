@@ -9,6 +9,7 @@
 #include <atomic>
 #include <chrono>
 #include <cmath>
+#include <cstdio>
 #include <cstring>
 #include <fstream>
 #include <godot_cpp/classes/audio_server.hpp>
@@ -33,7 +34,54 @@
 
 using namespace godot;
 
+// ResonancePlayer + ResonanceStreamPlayback: Godot audio I/O, rings, IPL direct/reflection/path pipeline, tails and instrumentation.
+
 namespace {
+/// EOS pad gain: cosine half-window (1→0) vs linear; smoother derivative at the silence handoff (less click/step).
+inline float input_ring_eos_pad_gain(int k, int pad_n, bool eos_pad) {
+    if (!eos_pad || pad_n <= 0) {
+        return 1.0f;
+    }
+    if (pad_n <= 1) {
+        return 0.0f;
+    }
+    const float t = static_cast<float>(k) / static_cast<float>(pad_n - 1);
+    constexpr float k_pi = 3.14159265358979323846f;
+    return 0.5f * (1.0f + std::cos(k_pi * t));
+}
+
+/// Linear fade from full gain at k=0 (continuous with the sample before the padded region) to 0 at k=rem-1.
+/// `1-(k+1)/rem` incorrectly scales the first padded sample by (rem-1)/rem and steps vs the previous callback tail.
+/// Upper bound for synthetic ring-underrun fades; remainder of the mix frame is silence (steep after ~fade_len).
+inline int synthetic_eos_output_fade_length(int rem) {
+    if (rem <= 0) {
+        return 0;
+    }
+    return std::min(rem, resonance::kSyntheticEosOutputFadeMaxSamples);
+}
+
+inline float linear_pad_fade_hold_to_zero(int k, int rem) {
+    if (rem <= 0) {
+        return 0.0f;
+    }
+    if (rem == 1) {
+        return 1.0f;
+    }
+    return static_cast<float>(rem - 1 - k) / static_cast<float>(rem - 1);
+}
+
+/// Cosine AM on the last `taper_len` samples of a real chunk (indices `n_real - taper_len` … `n_real - 1`).
+inline float eos_input_end_am_gain(int sample_index, int n_real, int taper_len) {
+    if (taper_len <= 0 || n_real <= 0)
+        return 1.0f;
+    const int eff = (taper_len < n_real) ? taper_len : n_real;
+    const int start = n_real - eff;
+    if (sample_index < start)
+        return 1.0f;
+    const int k = sample_index - start;
+    return input_ring_eos_pad_gain(k, eff, true);
+}
+
 /// Godot does not apply AudioStreamPlayer3D volume to GDExtension AudioStreamPlayback::_mix buffers; match Volume + max_db here.
 float owner_effective_volume_linear(const ResonancePlayer* owner) {
     if (!owner)
@@ -62,7 +110,7 @@ bool ipl_all_channel_ptrs_ok(const IPLAudioBuffer& b, int nch) {
     return true;
 }
 
-/// Fold one multichannel sample to stereo (Steam Audio layout: quad / 5.1 / 7.1 channel order).
+/// Fold one sample instant to stereo (IPL channel order for quad / 5.1 / 7.1).
 void downmix_multichannel_sample(const float* const* d, int nch, int sample_idx, float& out_l, float& out_r) {
     constexpr float k = 0.70710678f;
     switch (nch) {
@@ -221,10 +269,10 @@ void ResonanceStreamPlayback::_cleanup_steam_audio() {
     output_ring_reverb_l.clear();
     output_ring_reverb_r.clear();
 
-    prev_direct_weight = 1.0f;
+    prev_direct_weight = 0.0f;
     prev_conv_reflections_mix_level_ = -1.0f;
-    prev_parametric_reflections_mix_level_ = 1.0f;
-    prev_pathing_mix_level_ = 1.0f;
+    prev_parametric_reflections_mix_level_ = 0.0f;
+    prev_pathing_mix_level_ = 0.0f;
     input_started = false;
     params_ever_synced_.store(false, std::memory_order_release);
 }
@@ -284,9 +332,7 @@ void ResonanceStreamPlayback::_lazy_init_steam_audio(int ignored_rate) {
 }
 
 bool ResonanceStreamPlayback::prewarm_steam_audio() {
-    // Phase 4: main-thread pre-allocation. _lazy_init_steam_audio is idempotent after the initial is_initialized guard.
-    // Skipping the audio-thread lazy allocation cost removes a multi-millisecond stall on the first _mix block for each
-    // polyphonic voice, which previously caused audible artefacts on play() when the worker was mid-heavy-tick.
+    // Main-thread alloc before first _mix (reduces first-block latency vs lazy init on audio thread).
     if (is_initialized)
         return true;
     _lazy_init_steam_audio(0);
@@ -385,13 +431,13 @@ void ResonanceStreamPlayback::_process_steam_audio_block() {
     input_ring_l.read(temp_process_buffer_l.data(), frame_size_);
     input_ring_r.read(temp_process_buffer_r.data(), frame_size_);
 
-    // 2. Copy to Steam Audio Buffer (CRITICAL POINT)
+    // Pack decoded stereo into IPL interleaved buffers (two channels)
     memcpy(sa_in_buffer.data[0], temp_process_buffer_l.data(), frame_size_ * sizeof(float));
     memcpy(sa_in_buffer.data[1], temp_process_buffer_r.data(), frame_size_ * sizeof(float));
 
     // Input-start detection: delay processing until first non-zero sample to avoid ramp artifacts
     // when Godot sends incorrect params before playback actually starts.
-    // Steam Audio Unity spatialize_effect.cpp: fabsf(in[i]) != 0.0f (per sample, not exact == 0).
+    // Treat any non-zero sample as start-of-audio (fabs, not exact zero — denormals / tiny DC).
     if (!input_started) {
         for (int i = 0; i < frame_size_; i++) {
             if (std::fabs(temp_process_buffer_l[i]) != 0.0f || std::fabs(temp_process_buffer_r[i]) != 0.0f) {
@@ -406,15 +452,12 @@ void ResonanceStreamPlayback::_process_steam_audio_block() {
         }
     }
 
-    if (!srv->is_spatial_audio_output_ready()) {
-        _zero_sa_final_mix();
-        _write_output_rings_folded();
-        return;
-    }
-
-    // Steam pathing/direct/reflection use server-side params by handle; the block body does not read `local_source`.
-    // Gating on `local_source` alone skipped the whole pipeline when `get_source_from_handle` returned null (H12/H13).
+    // Pipeline keys off `current_source_handle` + server caches; not only `local_source` IPL pointer.
     if (current_source_handle >= 0) {
+        // kSpatialAudioWarmupWorkerPasses: suppress *dry* pathing/HRTF output until the worker has run direct sim
+        // enough times (avoids default-listener bursts). Convolution/TAN *feeds the shared reflection mixer* from
+        // sa_in_buffer and must not be skipped — short tones can otherwise finish before warmup ends (no wet on bus).
+        const bool spatial_ready = srv->is_spatial_audio_output_ready();
         float dbg_direct = 0.0f;
         float dbg_reverb = 0.0f;
         float dbg_path = 0.0f;
@@ -428,15 +471,12 @@ void ResonanceStreamPlayback::_process_steam_audio_block() {
         // Additional wet-input occlusion for baked REVERB (see PlaybackParameters::wet_occlusion_factor).
         // 1.0 = no extra damping (default for realtime / STATICSOURCE / STATICLISTENER or when the feature is off).
         const float wet_occ = resonance::sanitize_audio_float(params_current.wet_occlusion_factor);
-        // Unity-parity 3D distance curve on the wet input. 1.0 when opt-out (see PlaybackParameters::refl_distance_attenuation).
+        // Player 3D distance curve on wet (`refl_distance_attenuation`).
         const float refl_dist_att = resonance::sanitize_audio_float(params_current.refl_distance_attenuation);
 
-        // One listener frame for all Phonon spatialization (Steam Audio Unity: single listenermatrix → calcListenerCoordinates).
-        // ResonanceAudioEffect / iplAmbisonicsDecodeEffectApply use get_current_listener_coords(); params_current.listener_orientation
-        // can lag by a sync tick — mismatched HOA rotation vs direct sum causes comb-filtering / crackle at master.
-        const IPLCoordinateSpace3 listener_cs = srv->get_current_listener_coords();
+        const IPLCoordinateSpace3 listener_cs = srv->get_current_listener_coords(); // seqlock snapshot; shared with reverb bus
 
-        // 3. Run Direct Processor (srv already validated by process-entry guards)
+        // Direct path
         int trans_type = params_current.direct_effect_transmission_type;
         bool hrtf_bilinear = params_current.direct_effect_hrtf_bilinear;
         direct_processor.process(
@@ -456,13 +496,19 @@ void ResonanceStreamPlayback::_process_steam_audio_block() {
             params_current.spatial_blend,
             listener_cs,
             ResonanceUtils::to_ipl_vector3(params_current.source_position));
-        // 4. Reflection / reverb (reference: Steam Audio Unity native spatialize_effect.cpp process()).
-        // Raw sa_in_buffer feeds iplReflectionEffectApply / pathing, same as Unity's inBuffer (not directBuffer).
-        // Pre-effect gain on the reflection mixer path: reflections_mix_level * linear source volume; Unity does not
-        // multiply by reverb_pathing_attenuation here. When runtime reverb_max_distance > 0, apply extra wet falloff
-        // (see ResonanceRuntimeConfig.reverb_max_distance).
+        // Mute dry only: keep iplDirectEffect time-stepping so the first audible block after warmup is not a step/click.
+        if (!spatial_ready) {
+            for (int c = 0; c < direct_out_channels_; c++) {
+                if (sa_direct_out_buffer.data[c])
+                    memset(sa_direct_out_buffer.data[c], 0, static_cast<size_t>(frame_size_) * sizeof(float));
+            }
+        }
+        // Reverb: dry `sa_in_buffer` into reflection effect; wet gain = reflections_mix × node volume × distance/occlusion (`wet_rmd`).
         bool reverb_to_player_output = false; // Only for Parametric/Hybrid
         const float refl_wet_output_gain = wet_rmd;
+        if (srv && !params_current.enable_reverb) {
+            instrumentation_enable_reverb_false_blocks.fetch_add(1, std::memory_order_relaxed);
+        }
         if (srv && params_current.enable_reverb) {
             IPLReflectionEffectParams reverb_params{};
             bool has_reverb = srv->fetch_reverb_params(current_source_handle, reverb_params);
@@ -520,7 +566,11 @@ void ResonanceStreamPlayback::_process_steam_audio_block() {
                             reflection_tail_have_params_ = true;
                             reflection_tail_wet_gain_ = resonance::sanitize_audio_float(refl_wet_output_gain);
                             reflection_tail_split_output_ = params_current.reverb_split_output;
+                        } else {
+                            instrumentation_conv_mix_failed_blocks.fetch_add(1, std::memory_order_relaxed);
                         }
+                    } else {
+                        instrumentation_conv_mixer_null_blocks.fetch_add(1, std::memory_order_relaxed);
                     }
                 } else {
                     reverb_to_player_output = true;
@@ -535,9 +585,7 @@ void ResonanceStreamPlayback::_process_steam_audio_block() {
                 }
             } else if (reflection_tail_have_params_ &&
                        (refl_type == resonance::kReflectionParametric || refl_type == resonance::kReflectionHybrid)) {
-                // fetch_reverb_params can fail (simulation lock, pending source, etc.). Skipping Apply for a whole
-                // Steam frame leaves dry advancing but wet frozen — heard as block-rate pumping. Keep advancing the
-                // effect with last-known room params; wet output level matches Unity (no extra distance/air scale).
+                // Stale fetch: keep parametric/hybrid effect stepping with last params to avoid wet “pumping”.
                 IPLReflectionEffectParams rp = reflection_tail_params_;
                 if (refl_type == resonance::kReflectionHybrid && params_current.reflections_delay >= 0)
                     rp.delay = params_current.reflections_delay;
@@ -547,6 +595,50 @@ void ResonanceStreamPlayback::_process_steam_audio_block() {
                     prev_parametric_reflections_mix_level_ = parametric_mix_level_stale;
                     reflection_tail_wet_gain_ = resonance::sanitize_audio_float(wet_rmd);
                     reflection_tail_split_output_ = params_current.reverb_split_output;
+                }
+            } else if (reflection_tail_have_params_ &&
+                       (refl_type == resonance::kReflectionConvolution || refl_type == resonance::kReflectionTan)) {
+                // Conv/TAN: reuse last good params for one block when fetch briefly misses (avoids wet dropout clicks).
+                IPLReflectionEffectParams rp = reflection_tail_params_;
+                auto mixer_guard = srv->scoped_mixer_read();
+                IPLReflectionMixer mixer = mixer_guard.get();
+                if (mixer) {
+                    const float curr_refl_mix = resonance::sanitize_audio_float(params_current.reflections_mix_level);
+                    const float wet_extra = resonance::sanitize_audio_float(node_vol * refl_dist_att * wet_rmd * wet_occ);
+                    const float conv_reverb_gain = curr_refl_mix * wet_extra;
+                    dbg_reverb = conv_reverb_gain;
+                    float input_rms = 0.0f;
+#ifdef DEBUG_ENABLED
+                    float sum_sq = 0.0f;
+                    int nch = sa_in_buffer.numChannels;
+                    if (nch > 0 && sa_in_buffer.data) {
+                        for (int i = 0; i < frame_size_; i++) {
+                            float mono = 0.0f;
+                            for (int c = 0; c < nch && sa_in_buffer.data[c]; c++)
+                                mono += sa_in_buffer.data[c][i];
+                            mono /= static_cast<float>(nch);
+                            sum_sq += mono * mono;
+                        }
+                    }
+                    input_rms = (frame_size_ > 0) ? std::sqrt(sum_sq / static_cast<float>(frame_size_)) : 0.0f;
+#endif
+                    const auto conv_apply_t0 = std::chrono::steady_clock::now();
+                    const bool reflection_applied =
+                        reflection_processor.process_mix(sa_in_buffer, rp, mixer, prev_conv_reflections_mix_level_, curr_refl_mix, wet_extra);
+                    const auto conv_apply_t1 = std::chrono::steady_clock::now();
+                    if (reflection_applied) {
+                        srv->record_convolution_reflection_apply_usec(static_cast<uint64_t>(
+                            std::chrono::duration_cast<std::chrono::microseconds>(conv_apply_t1 - conv_apply_t0).count()));
+                        srv->record_convolution_feed(rp.ir != nullptr, conv_reverb_gain, input_rms);
+                        prev_conv_reflections_mix_level_ = curr_refl_mix;
+                        srv->record_mixer_feed();
+                        reflection_tail_wet_gain_ = resonance::sanitize_audio_float(refl_wet_output_gain);
+                        reflection_tail_split_output_ = params_current.reverb_split_output;
+                    } else {
+                        instrumentation_conv_mix_failed_blocks.fetch_add(1, std::memory_order_relaxed);
+                    }
+                } else {
+                    instrumentation_conv_mixer_null_blocks.fetch_add(1, std::memory_order_relaxed);
                 }
             } else {
                 instrumentation_reverb_miss_blocks.fetch_add(1, std::memory_order_relaxed);
@@ -583,6 +675,8 @@ void ResonanceStreamPlayback::_process_steam_audio_block() {
 
         // Apply Volume Ramping (Direct Only). Use mix level: enable_direct * direct_mix_level
         float target_direct = (params_current.enable_direct ? 1.0f : 0.0f) * params_current.direct_mix_level;
+        if (!spatial_ready)
+            target_direct = 0.0f;
 
         // Effective direct gain (matches iplDirectEffectApply physics) for debug display
         float eff_gain = params_current.attenuation;
@@ -613,10 +707,10 @@ void ResonanceStreamPlayback::_process_steam_audio_block() {
 
         // Add Reverb to player output (Parametric/Hybrid only; Convolution feeds mixer, no fallback)
         // When reverb_split_output: write to reverb ring for separate bus; else mix into final.
-        if (reverb_to_player_output) {
+        if (reverb_to_player_output && spatial_ready) {
             IPLAudioBuffer* reverb_buf = reflection_processor.get_direct_output_buffer();
             if (reverb_buf && reverb_buf->data) {
-                // reflections_mix_level was ramped on mono before iplReflectionEffectApply (Unity spatialize path).
+                // Wet already scaled in reflection processor from ramped reflections_mix.
                 float refl_mix = resonance::sanitize_audio_float(refl_wet_output_gain);
                 dbg_reverb = resonance::sanitize_audio_float(params_current.reflections_mix_level * node_vol * refl_dist_att * wet_rmd * wet_occ);
                 _add_reverb_to_output(reverb_buf, refl_mix, params_current.reverb_split_output, listener_cs);
@@ -625,9 +719,8 @@ void ResonanceStreamPlayback::_process_steam_audio_block() {
 
         // Add Pathing (multi-path sound propagation around obstacles).
         // Pathing only when enable_reverb is true – pathing is indirect sound (reflections); requires reverb to be active.
-        // Mix level: ramp on mono input before iplPathEffectApply (Steam Audio Unity/FMOD). Do not multiply wet by
-        // reverb_pathing_attenuation — path SH already include per-path distance attenuation in the simulation.
-        if (srv && srv->is_pathing_enabled() && params_current.enable_reverb && params_current.pathing_mix_level > 0.0f) {
+        // Pathing wet is ramped on mono before Apply; sim SH already include distance — do not multiply by `reverb_pathing_attenuation` again.
+        if (spatial_ready && srv && srv->is_pathing_enabled() && params_current.enable_reverb && params_current.pathing_mix_level > 0.0f) {
             srv->record_pathing_player_gate_enter();
             IPLPathEffectParams path_params{};
             bool use_pathing = srv->fetch_pathing_params(current_source_handle, path_params);
@@ -701,7 +794,7 @@ void ResonanceStreamPlayback::_process_steam_audio_block() {
         debug_signal_reverb.store(dbg_reverb, std::memory_order_relaxed);
         debug_signal_pathing.store(dbg_path, std::memory_order_relaxed);
     } else {
-        // Passthrough: no active Steam source handle for this playback
+        // Passthrough: no server source handle (decode-only path)
         debug_signal_direct.store(1.0f, std::memory_order_relaxed);
         debug_signal_reverb.store(0.0f, std::memory_order_relaxed);
         debug_signal_pathing.store(0.0f, std::memory_order_relaxed);
@@ -719,12 +812,11 @@ void ResonanceStreamPlayback::_process_steam_audio_block() {
                 memset(sa_final_mix_buffer.data[c], 0, frame_size_ * sizeof(float));
         }
 
-        // Reset Ramps if we lost source, so next time it fades in cleanly
-        prev_direct_weight = 1.0f;
-        prev_parametric_reflections_mix_level_ = 1.0f;
-        prev_pathing_mix_level_ = 1.0f;
-        // Convolution/TAN mixer feed uses separate prev; re-arm "first block" when source reattaches
-        // (Unity rebinds simulation source; we must not carry a stale reflections-mix ramp across null handle).
+        // Reset mix ramps for passthrough / reattach.
+        prev_direct_weight = 0.0f;
+        prev_parametric_reflections_mix_level_ = 0.0f;
+        prev_pathing_mix_level_ = 0.0f;
+        // Conv path: `prev_conv_reflections_mix_level_ = -1` re-arms first-block behavior when handle returns.
         prev_conv_reflections_mix_level_ = -1.0f;
     }
 
@@ -766,7 +858,9 @@ void ResonanceStreamPlayback::get_instrumentation_snapshot(uint64_t& out_input_d
                                                            int32_t& out_mix_frames_min, int32_t& out_mix_frames_max,
                                                            uint64_t& out_silent_blocks, float& out_last_rms,
                                                            float& out_pathing_sh_rms, float& out_pathing_sh_energy, float& out_pathing_out_rms,
-                                                           int32_t& out_pathing_order) const {
+                                                           int32_t& out_pathing_order,
+                                                           uint64_t& out_conv_mixer_null_blocks, uint64_t& out_conv_mix_failed_blocks,
+                                                           uint64_t& out_enable_reverb_false_blocks) const {
     out_input_dropped = instrumentation_input_dropped.load(std::memory_order_relaxed);
     out_output_underrun = instrumentation_output_underrun.load(std::memory_order_relaxed);
     out_output_blocked = instrumentation_output_blocked.load(std::memory_order_relaxed);
@@ -789,6 +883,9 @@ void ResonanceStreamPlayback::get_instrumentation_snapshot(uint64_t& out_input_d
     out_pathing_sh_energy = instrumentation_last_pathing_sh_energy.load(std::memory_order_relaxed);
     out_pathing_out_rms = instrumentation_last_pathing_out_rms.load(std::memory_order_relaxed);
     out_pathing_order = instrumentation_last_pathing_order.load(std::memory_order_relaxed);
+    out_conv_mixer_null_blocks = instrumentation_conv_mixer_null_blocks.load(std::memory_order_relaxed);
+    out_conv_mix_failed_blocks = instrumentation_conv_mix_failed_blocks.load(std::memory_order_relaxed);
+    out_enable_reverb_false_blocks = instrumentation_enable_reverb_false_blocks.load(std::memory_order_relaxed);
 }
 
 // out_pathing: path wet stereo RMS after simulation, clamped to [0,1] (not pathing_mix_level).
@@ -805,13 +902,18 @@ int32_t ResonanceStreamPlayback::read_reverb_frames(AudioFrame* buffer, int32_t 
     int32_t to_read = (int32_t)std::min((size_t)frames, avail);
     to_read = std::min(to_read, (int32_t)resonance::kMaxAudioFrameSize);
     if (to_read <= 0) {
+        reverb_ring_gap_fade_armed_ = false;
+        reverb_ring_gap_fade_index_ = 0;
+        reverb_ring_gap_fade_total_ = 0;
         // Ring ran dry: if last callback ended non-zero, fade to zero to avoid a click.
         if (reverb_ring_prev_valid_ && (std::abs(reverb_ring_prev_l_) > 1.0e-6f || std::abs(reverb_ring_prev_r_) > 1.0e-6f)) {
             const float v_rev = owner_effective_volume_linear(owner_player_);
             const float start_l = reverb_ring_prev_l_ * v_rev;
             const float start_r = reverb_ring_prev_r_ * v_rev;
+            // pad_n<=1 makes input_ring_eos_pad_gain return 0 — use at least 2 so a single-frame callback fades correctly.
+            const int32_t n = std::max(2, static_cast<int32_t>(frames));
             for (int32_t i = 0; i < frames; i++) {
-                const float fade = 1.0f - (float(i + 1) / float(frames));
+                const float fade = input_ring_eos_pad_gain(static_cast<int>(i), n, true);
                 buffer[i].left = start_l * fade;
                 buffer[i].right = start_r * fade;
             }
@@ -833,25 +935,73 @@ int32_t ResonanceStreamPlayback::read_reverb_frames(AudioFrame* buffer, int32_t 
         buffer[i].left = temp_reverb_buffer_l[i] * v_rev;
         buffer[i].right = temp_reverb_buffer_r[i] * v_rev;
     }
-    // If caller asked for more than available, fade the remainder to 0 instead of hard zero-pad.
+    // If caller asked for more than available, taper the remainder (cosine; single envelope across repeated underruns).
     if (to_read < frames) {
-        const float start_l = buffer[to_read - 1].left;
-        const float start_r = buffer[to_read - 1].right;
         const int32_t rem = frames - to_read;
-        for (int32_t k = 0; k < rem; k++) {
-            const float fade = 1.0f - (float(k + 1) / float(rem));
-            buffer[to_read + k].left = start_l * fade;
-            buffer[to_read + k].right = start_r * fade;
+        ResonanceServer* srv_wr = ResonanceServer::get_singleton();
+        const bool zero_fill_underrun = srv_wr && srv_wr->is_reverb_bus_wet_ring_underrun_zero_fill();
+        if (zero_fill_underrun) {
+            reverb_ring_gap_fade_armed_ = false;
+            reverb_ring_gap_fade_index_ = 0;
+            reverb_ring_gap_fade_total_ = 0;
+            for (int32_t k = 0; k < rem; k++) {
+                buffer[to_read + k].left = 0.0f;
+                buffer[to_read + k].right = 0.0f;
+            }
+        } else {
+            const int sr_gap = current_sample_rate > 0 ? current_sample_rate : 48000;
+            if (!reverb_ring_gap_fade_armed_) {
+                reverb_ring_gap_fade_armed_ = true;
+                reverb_ring_gap_fade_index_ = 0;
+                reverb_ring_gap_fade_total_ = std::max(rem * 3, sr_gap / 40);
+                reverb_ring_gap_fade_total_ = std::max(reverb_ring_gap_fade_total_, 2);
+            }
+            const float boundary_l = buffer[to_read - 1].left;
+            const float boundary_r = buffer[to_read - 1].right;
+            for (int32_t k = 0; k < rem; k++) {
+                const int gi = reverb_ring_gap_fade_index_ + k;
+                float g = 0.0f;
+                if (reverb_ring_gap_fade_total_ > 1 && gi < reverb_ring_gap_fade_total_ - 1)
+                    g = input_ring_eos_pad_gain(gi, reverb_ring_gap_fade_total_, true);
+                buffer[to_read + k].left = boundary_l * g;
+                buffer[to_read + k].right = boundary_r * g;
+            }
+            reverb_ring_gap_fade_index_ += rem;
         }
-        reverb_ring_prev_l_ = 0.0f;
-        reverb_ring_prev_r_ = 0.0f;
+        reverb_ring_prev_l_ = temp_reverb_buffer_l[to_read - 1];
+        reverb_ring_prev_r_ = temp_reverb_buffer_r[to_read - 1];
         reverb_ring_prev_valid_ = true;
     } else {
+        reverb_ring_gap_fade_armed_ = false;
+        reverb_ring_gap_fade_index_ = 0;
+        reverb_ring_gap_fade_total_ = 0;
         reverb_ring_prev_l_ = temp_reverb_buffer_l[to_read - 1];
         reverb_ring_prev_r_ = temp_reverb_buffer_r[to_read - 1];
         reverb_ring_prev_valid_ = true;
     }
     return frames;
+}
+
+void ResonanceStreamPlayback::apply_playback_host_fades(AudioFrame* buffer, int32_t frames) {
+    if (!buffer || frames <= 0) {
+        return;
+    }
+    const int fi_total = std::max(1, playback_host_fade_in_total_samples_);
+    const int fo_total = std::max(1, playback_host_fade_out_total_samples_);
+    for (int i = 0; i < frames; i++) {
+        float g = 1.0f;
+        if (resonance::kPlaybackHostFadeInEnabled && playback_host_fade_in_elapsed_ < fi_total) {
+            const int denom = std::max(1, fi_total - 1);
+            g *= static_cast<float>(playback_host_fade_in_elapsed_) / static_cast<float>(denom);
+            playback_host_fade_in_elapsed_++;
+        }
+        if (resonance::kPlaybackHostFadeOutEnabled && playback_host_fade_out_remaining_ > 0) {
+            g *= static_cast<float>(playback_host_fade_out_remaining_) / static_cast<float>(fo_total);
+            playback_host_fade_out_remaining_--;
+        }
+        buffer[i].left *= g;
+        buffer[i].right *= g;
+    }
 }
 
 void ResonanceStreamPlayback::reset_instrumentation() {
@@ -876,6 +1026,9 @@ void ResonanceStreamPlayback::reset_instrumentation() {
     instrumentation_last_pathing_sh_energy.store(0.0f, std::memory_order_relaxed);
     instrumentation_last_pathing_out_rms.store(0.0f, std::memory_order_relaxed);
     instrumentation_last_pathing_order.store(-1, std::memory_order_relaxed);
+    instrumentation_conv_mixer_null_blocks.store(0, std::memory_order_relaxed);
+    instrumentation_conv_mix_failed_blocks.store(0, std::memory_order_relaxed);
+    instrumentation_enable_reverb_false_blocks.store(0, std::memory_order_relaxed);
 }
 
 int32_t ResonanceStreamPlayback::_mix(AudioFrame* buffer, float rate_scale, int32_t frames) {
@@ -884,6 +1037,9 @@ int32_t ResonanceStreamPlayback::_mix(AudioFrame* buffer, float rate_scale, int3
             buffer[i].left = 0.0f;
             buffer[i].right = 0.0f;
         }
+        last_mix_out_l_ = 0.0f;
+        last_mix_out_r_ = 0.0f;
+        last_mix_out_valid_ = true;
         return frames;
     }
     if (base_playback.is_null())
@@ -892,21 +1048,22 @@ int32_t ResonanceStreamPlayback::_mix(AudioFrame* buffer, float rate_scale, int3
     // params_current still holds defaults (listener-position, full gain), which would cause
     // an audible full-volume burst for one block. Silence output until parameters arrive.
     //
-    // IMPORTANT: Still advance the base playback while gated; otherwise the stream never
-    // reaches EOS and Godot never emits `finished`.
+    // Do **not** call `base_playback->mix_audio()` while gated. Historically we advanced the
+    // decoder and discarded samples to avoid a stuck `finished` signal; that discards the
+    // start of the stream and adds a constant delay vs. native `AudioStreamPlayer(3D)` in
+    // A/B recordings. `update_parameters` runs on the same frame as `play()` in normal
+    // scenes; the first `mix_audio` after the gate opens then reads from sample 0, matching
+    // the native player timeline. Natural EOS is reached after params sync and normal mixing.
     if (!params_ever_synced_.load(std::memory_order_acquire)) {
-        // Advance/discard one block from the base playback.
-        const Ref<AudioStreamPlayback> base_gate_guard = base_playback;
-        if (base_gate_guard.is_valid()) {
-            (void)base_gate_guard->mix_audio(rate_scale, frames);
-        }
         for (int32_t i = 0; i < frames; i++) {
             buffer[i].left = 0.0f;
             buffer[i].right = 0.0f;
         }
+        last_mix_out_l_ = 0.0f;
+        last_mix_out_r_ = 0.0f;
+        last_mix_out_valid_ = true;
         return frames;
     }
-    // (debug logging removed)
     auto now = std::chrono::steady_clock::now();
     instrumentation_mix_call_count.fetch_add(1, std::memory_order_relaxed);
     if (instrumentation_mix_call_count.load(std::memory_order_relaxed) > 1) {
@@ -928,6 +1085,18 @@ int32_t ResonanceStreamPlayback::_mix(AudioFrame* buffer, float rate_scale, int3
     _sync_params();
 
     ResonanceServer* srv_guard = ResonanceServer::get_singleton();
+    // If Steam's DSP `frame_size` is larger than Godot's per-callback `frames` (e.g. server 1024 vs mix 512),
+    // the input ring must fill an extra block before the first `_process_steam_audio_block` — a constant
+    // ~one-buffer delay vs native `AudioStreamPlayer3D`. The reverb bus effect already calls
+    // `request_reinit_with_frame_size` when sizes diverge; the player path must do the same so dry output
+    // and capture A/B stay aligned. Reinit is async (main thread); after it lands, ipl clients re-init with
+    // the snapped size from the observed `frames` value.
+    if (srv_guard && srv_guard->is_initialized() && frames > 0 && srv_guard->get_audio_frame_size_was_auto()) {
+        const int srv_fs = srv_guard->get_audio_frame_size();
+        if (srv_fs > 0 && frames != srv_fs) {
+            srv_guard->request_reinit_with_frame_size(frames);
+        }
+    }
     if (is_initialized && srv_guard && srv_guard->is_initialized() && context != srv_guard->get_context_handle())
         _cleanup_steam_audio();
 
@@ -937,11 +1106,24 @@ int32_t ResonanceStreamPlayback::_mix(AudioFrame* buffer, float rate_scale, int3
         return 0;
     PackedVector2Array mixed_frames = base_guard->mix_audio(rate_scale, frames);
     int32_t samples_read = static_cast<int32_t>(mixed_frames.size());
-    // Some stream backends can report "not playing" (EOS) but still return a full silent block.
-    // Our tail-drain logic hinges on samples_read == 0, so normalize this case to EOS to avoid
-    // a playback that never transitions into the tail branch (and thus never reaches finished()).
+    // Some stream backends report `is_playing()==false` on EOS but still return one more **full**
+    // buffer — sometimes all zeros (harmless "phantom" mix). Old code set `samples_read = 0` for
+    // every full buffer when `!is_playing()`, which **discarded the last real samples** and caused
+    // a hard jump to silence vs native `AudioStreamPlayer` (audible click / vertical waveform cut).
+    // Only collapse to zero-input when that full buffer is actually silent.
     if (samples_read == frames && !base_guard->is_playing()) {
-        samples_read = 0;
+        constexpr float k_eos_silent_eps = 1.0e-8f;
+        const Vector2* p = mixed_frames.ptr();
+        bool all_silent = true;
+        for (int32_t i = 0; i < samples_read; i++) {
+            if (std::fabs(p[i].x) > k_eos_silent_eps || std::fabs(p[i].y) > k_eos_silent_eps) {
+                all_silent = false;
+                break;
+            }
+        }
+        if (all_silent) {
+            samples_read = 0;
+        }
     }
     // Godot normally returns exactly `frames` samples. If a backend returns more, writing past
     // `buffer` would corrupt memory (defensive guard).
@@ -954,7 +1136,6 @@ int32_t ResonanceStreamPlayback::_mix(AudioFrame* buffer, float rate_scale, int3
         }
         samples_read = frames;
     }
-    // (debug logging removed)
     if (samples_read == 0)
         instrumentation_zero_input_count.fetch_add(1, std::memory_order_relaxed);
     else {
@@ -968,6 +1149,8 @@ int32_t ResonanceStreamPlayback::_mix(AudioFrame* buffer, float rate_scale, int3
 
     // When no input: drain direct effect tail and any remaining output for clean fade-out
     if (samples_read == 0) {
+        prev_mix_had_partial_input_pad_ = false;
+        prev_mix_had_eos_tapered_input_pad_ = false;
         if (!is_initialized)
             return 0;
         if (!srv_guard || !srv_guard->is_initialized() || context != srv_guard->get_context_handle()) {
@@ -1012,7 +1195,7 @@ int32_t ResonanceStreamPlayback::_mix(AudioFrame* buffer, float rate_scale, int3
                     // constant into the convolution tail of the same frame as real audio, which can
                     // sound stepped/choppy; tapering to zero smooths the streaming→tail handoff.
                     for (size_t k = 0; k < pad_count; k++) {
-                        const float fade = 1.0f - float(k + 1) / float(pad_count);
+                        const float fade = linear_pad_fade_hold_to_zero(static_cast<int>(k), static_cast<int>(pad_count));
                         temp_process_buffer_l[rem + k] = hold_l * fade;
                         temp_process_buffer_r[rem + k] = hold_r * fade;
                     }
@@ -1026,7 +1209,7 @@ int32_t ResonanceStreamPlayback::_mix(AudioFrame* buffer, float rate_scale, int3
                         for (size_t k = 0; k < pad_count; k++) {
                             if (input_ring_l.get_available_write() == 0 || input_ring_r.get_available_write() == 0)
                                 break;
-                            const float fade = 1.0f - float(k + 1) / float(pad_count);
+                            const float fade = linear_pad_fade_hold_to_zero(static_cast<int>(k), static_cast<int>(pad_count));
                             float pl = hold_l * fade;
                             float pr = hold_r * fade;
                             input_ring_l.write(&pl, 1);
@@ -1067,10 +1250,7 @@ int32_t ResonanceStreamPlayback::_mix(AudioFrame* buffer, float rate_scale, int3
                     IPLReflectionMixer eos_mixer = eos_mixer_guard.get();
                     if (eos_mixer) {
                         IPLReflectionEffectParams rp = reflection_tail_params_;
-                        // Unity reverb: the spatialize effect continues to call iplReflectionEffectApply each DSP tick
-                        // (with silent input once the source ends). There is no explicit GetTail path in Unity's mixer
-                        // integration. To match that behavior and avoid EOS clicks from a Tail->Mixer step, keep the
-                        // effect advancing via Apply(silence) until its internal tail is exhausted (bounded by grace).
+                        // Conv/TAN EOS: feed Apply with silence so the shared mixer advances (no separate GetTail on this path).
                         if (!conv_reverb_eos_silence_apply_done_)
                             conv_reverb_eos_silence_apply_done_ = true;
                         if (sa_in_buffer.data[0])
@@ -1092,7 +1272,11 @@ int32_t ResonanceStreamPlayback::_mix(AudioFrame* buffer, float rate_scale, int3
                             prev_conv_reflections_mix_level_ = curr_refl_mix_eos;
                             srv_guard->record_mixer_feed();
                             produced = true;
+                        } else {
+                            instrumentation_conv_mix_failed_blocks.fetch_add(1, std::memory_order_relaxed);
                         }
+                    } else {
+                        instrumentation_conv_mixer_null_blocks.fetch_add(1, std::memory_order_relaxed);
                     }
                 } else if (eos_refl_type == resonance::kReflectionParametric || eos_refl_type == resonance::kReflectionHybrid) {
                     IPLReflectionEffectParams rp = reflection_tail_params_;
@@ -1110,8 +1294,7 @@ int32_t ResonanceStreamPlayback::_mix(AudioFrame* buffer, float rate_scale, int3
 
             if (current_source_handle >= 0 && srv_guard && srv_guard->is_pathing_enabled() && path_processor.get_tail_size_samples() > 0 &&
                 sa_path_out_buffer.data && sa_path_out_buffer.data[0] && sa_path_out_buffer.data[1]) {
-                // Unity pathing: continues calling iplPathEffectApply every DSP tick (silent input after EOS).
-                // Avoid GetTail() step differences by advancing the effect via Apply(silence) with cached params.
+                // Pathing EOS: Apply(silence) with cached params each tick until tail ends.
                 if (pathing_tail_have_params_ && pathing_tail_params_.shCoeffs) {
                     if (sa_in_buffer.data[0])
                         memset(sa_in_buffer.data[0], 0, static_cast<size_t>(frame_size_) * sizeof(float));
@@ -1162,22 +1345,52 @@ int32_t ResonanceStreamPlayback::_mix(AudioFrame* buffer, float rate_scale, int3
             buffer[i].left = l * v_tail;
             buffer[i].right = r * v_tail;
         }
-        for (int i = to_copy; i < frames; i++) {
-            buffer[i].left = 0.0f;
-            buffer[i].right = 0.0f;
+        if (to_copy < frames) {
+            const float tail_l = (to_copy > 0) ? buffer[to_copy - 1].left
+                                               : (last_mix_out_valid_ ? last_mix_out_l_ : 0.0f);
+            const float tail_r = (to_copy > 0) ? buffer[to_copy - 1].right
+                                               : (last_mix_out_valid_ ? last_mix_out_r_ : 0.0f);
+            const int rem = frames - to_copy;
+            const int fade_len = synthetic_eos_output_fade_length(rem);
+            const int pad_n = std::max(2, fade_len);
+            for (int i = to_copy; i < frames; i++) {
+                const int idx = i - to_copy;
+                const float g = (idx < fade_len) ? input_ring_eos_pad_gain(idx, pad_n, true) : 0.0f;
+                buffer[i].left = tail_l * g;
+                buffer[i].right = tail_r * g;
+            }
+        }
+        // Log pattern: dozens of tail callbacks in <500ms with `to_copy==0`, `produced_any==0`, grace counting
+        // down — each outputs a full 512-sample buffer. After one synthetic fade, `last_mix_out_*` is ~0 but
+        // we kept burning ~195 grace blocks on near-silence (sounds flat/pumpy vs a clean EOS).
+        if (to_copy == 0 && !produced_any && last_mix_out_valid_ &&
+            std::abs(last_mix_out_l_) < 1.0e-5f && std::abs(last_mix_out_r_) < 1.0e-5f &&
+            !has_active_tail_residue()) {
+            tail_grace_blocks_remaining_.store(0, std::memory_order_release);
         }
         // When fully drained, return 0 to signal EOS to AudioServer. Some Godot builds/backends
         // do not reliably poll _is_playing() for custom playbacks, so "always return frames"
         // can prevent `finished` from ever emitting.
         //
-        // IMPORTANT: Steam Audio effects can report a non-zero tail size even when we can no
-        // longer advance/produce tail audio (e.g. missing mixer/handles). In that case we must
-        // still terminate, otherwise playback gets stuck forever with silent output and no
-        // `finished`.
-        const bool drained = (to_copy == 0) &&
-                             (!produced_any ||
-                              (!has_active_tail_residue() &&
-                               (tail_grace_blocks_remaining_.load(std::memory_order_acquire) <= 0)));
+        // IPL tail size can be non-zero while we cannot advance wet — still finish so `finished` fires.
+        // Do not OR in `!produced_any` alone: when the output ring is empty the tail loop often produces
+        // nothing (`produced_any` false) while we still must deliver the synthetic fade from `last_mix_out_*`
+        // in the `to_copy < frames` branch below. The old `!produced_any` forced `drained` true, `return 0`,
+        // and Godot discarded a full buffer — audible step vs the previous steam callback.
+        if (!produced_any && to_copy == 0) {
+            int64_t g = tail_grace_blocks_remaining_.load(std::memory_order_acquire);
+            if (g > 0) {
+                tail_grace_blocks_remaining_.store(g - 1, std::memory_order_release);
+            }
+        }
+        const bool drained = (to_copy == 0) && !has_active_tail_residue() &&
+                             (tail_grace_blocks_remaining_.load(std::memory_order_acquire) <= 0);
+        if (frames > 0) {
+            apply_playback_host_fades(buffer, frames);
+            last_mix_out_l_ = buffer[frames - 1].left;
+            last_mix_out_r_ = buffer[frames - 1].right;
+            last_mix_out_valid_ = true;
+        }
         return drained ? 0 : frames;
     }
 
@@ -1186,23 +1399,91 @@ int32_t ResonanceStreamPlayback::_mix(AudioFrame* buffer, float rate_scale, int3
         // If init failed (e.g. out of memory or no context), fallback to passthrough
         if (!is_initialized) {
             const float v = owner_effective_volume_linear(owner_player_);
+            const bool eos_pt = samples_read > 0 && !base_guard->is_playing();
+            const int eos_tw =
+                eos_pt ? std::min(samples_read, resonance::kEosInputEndTaperMaxSamples) : 0;
             for (int i = 0; i < samples_read; i++) {
-                buffer[i].left = mixed_frames[i].x * v;
-                buffer[i].right = mixed_frames[i].y * v;
+                const float g_am = eos_input_end_am_gain(i, samples_read, eos_tw);
+                buffer[i].left = mixed_frames[i].x * v * g_am;
+                buffer[i].right = mixed_frames[i].y * v * g_am;
             }
-            for (int i = samples_read; i < frames; i++) {
-                buffer[i].left = 0.0f;
-                buffer[i].right = 0.0f;
+            if (samples_read < frames) {
+                const int pad_n = frames - samples_read;
+                if (eos_pt) {
+                    for (int i = samples_read; i < frames; i++) {
+                        buffer[i].left = 0.0f;
+                        buffer[i].right = 0.0f;
+                    }
+                } else {
+                    const float raw_last_l = (samples_read > 0) ? mixed_frames[samples_read - 1].x : 0.0f;
+                    const float raw_last_r = (samples_read > 0) ? mixed_frames[samples_read - 1].y : 0.0f;
+                    const float last_l = raw_last_l * v;
+                    const float last_r = raw_last_r * v;
+                    for (int i = samples_read; i < frames; i++) {
+                        const int k = i - samples_read;
+                        const float fade = linear_pad_fade_hold_to_zero(k, pad_n);
+                        buffer[i].left = last_l * fade;
+                        buffer[i].right = last_r * fade;
+                    }
+                }
+            }
+            if (frames > 0) {
+                apply_playback_host_fades(buffer, frames);
+                last_mix_out_l_ = buffer[frames - 1].left;
+                last_mix_out_r_ = buffer[frames - 1].right;
+                last_mix_out_valid_ = true;
             }
             return frames;
         }
     }
 
-    const Vector2* src_ptr = mixed_frames.ptr();
-    for (int i = 0; i < samples_read; i++) {
-        float l = src_ptr[i].x;
-        float r = src_ptr[i].y;
+    // Host fade-out is armed by `_stop` / `request_soft_stop`. It must only run while we are actually draining
+    // a stop tail (`stop_requested_` and no live decoder). Rapid play/stop can leave `stop_requested_` true across
+    // one `_mix` before `_start` on the next clip, so the countdown must clear when we are clearly not in that tail.
+    //
+    // EOS partial: `is_playing()==false` while `samples_read>0` is normal (short one-shots, last decode chunk).
+    // Clear stale fade-out when we have decoder samples but the stream already reports finished — not the
+    // samples_read==0 silence-only tail path where the fade-out is intended. Trade-off: the last partial block
+    // after an explicit soft stop is no longer host-ducked; tail/reverb still drain as before.
+    if (playback_host_fade_out_remaining_ > 0) {
+        const bool sr = stop_requested_.load(std::memory_order_acquire);
+        const bool live = base_guard->is_playing() && samples_read > 0;
+        const bool fade_in_active = resonance::kPlaybackHostFadeInEnabled &&
+                                    playback_host_fade_in_total_samples_ > 0 &&
+                                    playback_host_fade_in_elapsed_ < playback_host_fade_in_total_samples_;
+        const bool eos_partial_dry = samples_read > 0 && !base_guard->is_playing();
+        if (!sr || live || (fade_in_active && samples_read > 0) || (sr && eos_partial_dry)) {
+            playback_host_fade_out_remaining_ = 0;
+        }
+    }
 
+    const Vector2* src_ptr = mixed_frames.ptr();
+    int dec_i = 0;
+    const bool eos_input_tail = samples_read > 0 && !base_guard->is_playing();
+    const int eos_taper_w =
+        eos_input_tail ? std::min(samples_read, resonance::kEosInputEndTaperMaxSamples) : 0;
+    // Only crossfade after a partial `mix_audio` chunk — otherwise every full buffer warps a continuous sine.
+    const bool do_input_chunk_crossfade = input_ring_tail_valid_ && samples_read > 0 &&
+                                          prev_mix_had_partial_input_pad_ && !prev_mix_had_eos_tapered_input_pad_;
+    if (do_input_chunk_crossfade) {
+        const int K = std::min(samples_read, resonance::kInputRingChunkCrossfadeSamples);
+        for (; dec_i < K; dec_i++) {
+            const float g = static_cast<float>(dec_i + 1) / static_cast<float>(K);
+            const float g_am = eos_input_end_am_gain(dec_i, samples_read, eos_taper_w);
+            const float l = (src_ptr[dec_i].x * g + input_ring_tail_l_ * (1.0f - g)) * g_am;
+            const float r = (src_ptr[dec_i].y * g + input_ring_tail_r_ * (1.0f - g)) * g_am;
+            if (input_ring_l.get_available_write() > 0) {
+                input_ring_l.write(&l, 1);
+                input_ring_r.write(&r, 1);
+            } else {
+                instrumentation_input_dropped.fetch_add(1, std::memory_order_relaxed);
+            }
+        }
+    }
+    for (; dec_i < samples_read; dec_i++) {
+        const float g_am = eos_input_end_am_gain(dec_i, samples_read, eos_taper_w);
+        float l = src_ptr[dec_i].x * g_am;
+        float r = src_ptr[dec_i].y * g_am;
         if (input_ring_l.get_available_write() > 0) {
             input_ring_l.write(&l, 1);
             input_ring_r.write(&r, 1);
@@ -1211,18 +1492,48 @@ int32_t ResonanceStreamPlayback::_mix(AudioFrame* buffer, float rate_scale, int3
         }
     }
     // If the decoder produced fewer samples than requested (common for some stream backends and for
-    // one-shots near start/stop), treat the remainder as silence so we can still process one full
-    // Steam Audio block per callback (Unity parity: DSP always runs at fixed buffer size).
-    for (int i = samples_read; i < frames; i++) {
-        float l = 0.0f;
-        float r = 0.0f;
-        if (input_ring_l.get_available_write() > 0) {
-            input_ring_l.write(&l, 1);
-            input_ring_r.write(&r, 1);
+    // one-shots near start/stop), pad this callback to a full Godot frame. We must still fill one full
+    // Pad short decode callbacks so downstream always consumes full `frame_size_` from rings per block.
+    // Live: linear hold-last pad. EOS: zeros — dry tail is tapered via `eos_input_end_am_gain` on real samples
+    // so the waveform keeps oscillating instead of a single ramp/hill.
+    if (samples_read < frames) {
+        const int pad_n = frames - samples_read;
+        if (eos_input_tail) {
+            for (int i = samples_read; i < frames; i++) {
+                float z = 0.0f;
+                if (input_ring_l.get_available_write() > 0) {
+                    input_ring_l.write(&z, 1);
+                    input_ring_r.write(&z, 1);
+                } else {
+                    instrumentation_input_dropped.fetch_add(1, std::memory_order_relaxed);
+                }
+            }
         } else {
-            instrumentation_input_dropped.fetch_add(1, std::memory_order_relaxed);
+            const float last_l = src_ptr[samples_read - 1].x;
+            const float last_r = src_ptr[samples_read - 1].y;
+            for (int i = samples_read; i < frames; i++) {
+                const int k = i - samples_read;
+                const float fade = linear_pad_fade_hold_to_zero(k, pad_n);
+                float l = last_l * fade;
+                float r = last_r * fade;
+                if (input_ring_l.get_available_write() > 0) {
+                    input_ring_l.write(&l, 1);
+                    input_ring_r.write(&r, 1);
+                } else {
+                    instrumentation_input_dropped.fetch_add(1, std::memory_order_relaxed);
+                }
+            }
         }
     }
+
+    if (samples_read > 0) {
+        input_ring_tail_l_ = src_ptr[samples_read - 1].x;
+        input_ring_tail_r_ = src_ptr[samples_read - 1].y;
+        input_ring_tail_valid_ = true;
+    }
+    prev_mix_had_partial_input_pad_ = (samples_read < frames);
+    prev_mix_had_eos_tapered_input_pad_ =
+        (samples_read < frames) && !base_guard->is_playing();
 
     int blocks_processed_this_call = 0;
     while (blocks_processed_this_call < kMaxBlocksPerMixCall && input_ring_l.get_available_read() >= frame_size_) {
@@ -1258,11 +1569,28 @@ int32_t ResonanceStreamPlayback::_mix(AudioFrame* buffer, float rate_scale, int3
         buffer[i].right = r * v_out;
     }
 
-    for (int i = valid_copy; i < samples_to_output; i++) {
-        buffer[i].left = 0.0f;
-        buffer[i].right = 0.0f;
+    if (valid_copy < samples_to_output) {
+        const float tail_l = (valid_copy > 0) ? buffer[valid_copy - 1].left
+                                              : (last_mix_out_valid_ ? last_mix_out_l_ : 0.0f);
+        const float tail_r = (valid_copy > 0) ? buffer[valid_copy - 1].right
+                                              : (last_mix_out_valid_ ? last_mix_out_r_ : 0.0f);
+        const int rem = samples_to_output - valid_copy;
+        const int fade_len = synthetic_eos_output_fade_length(rem);
+        const int pad_n = std::max(2, fade_len);
+        for (int i = valid_copy; i < samples_to_output; i++) {
+            const int idx = i - valid_copy;
+            const float g = (idx < fade_len) ? input_ring_eos_pad_gain(idx, pad_n, true) : 0.0f;
+            buffer[i].left = tail_l * g;
+            buffer[i].right = tail_r * g;
+        }
     }
 
+    if (frames > 0) {
+        apply_playback_host_fades(buffer, frames);
+        last_mix_out_l_ = buffer[frames - 1].left;
+        last_mix_out_r_ = buffer[frames - 1].right;
+        last_mix_out_valid_ = true;
+    }
     return samples_to_output;
 }
 
@@ -1274,9 +1602,11 @@ void ResonanceStreamPlayback::_start(double from_pos) {
     // Cancel any in-flight tail-drain from a previous run so the fresh playback starts cleanly.
     stop_requested_.store(false, std::memory_order_release);
     tail_grace_blocks_remaining_.store(-1, std::memory_order_release);
+    // Zero prev mix weights so ramps rebuild from silence on the next blocks.
+    prev_direct_weight = 0.0f;
     prev_conv_reflections_mix_level_ = -1.0f;
-    prev_parametric_reflections_mix_level_ = 1.0f;
-    prev_pathing_mix_level_ = 1.0f;
+    prev_parametric_reflections_mix_level_ = 0.0f;
+    prev_pathing_mix_level_ = 0.0f;
     reflection_processor.reset_effect();
     path_processor.reset_effect();
     reflection_tail_have_params_ = false;
@@ -1287,6 +1617,23 @@ void ResonanceStreamPlayback::_start(double from_pos) {
     reverb_ring_prev_l_ = 0.0f;
     reverb_ring_prev_r_ = 0.0f;
     reverb_ring_prev_valid_ = false;
+    reverb_ring_gap_fade_armed_ = false;
+    reverb_ring_gap_fade_index_ = 0;
+    reverb_ring_gap_fade_total_ = 0;
+    last_mix_out_l_ = 0.0f;
+    last_mix_out_r_ = 0.0f;
+    last_mix_out_valid_ = false;
+    input_ring_tail_l_ = 0.0f;
+    input_ring_tail_r_ = 0.0f;
+    input_ring_tail_valid_ = false;
+    prev_mix_had_partial_input_pad_ = false;
+    prev_mix_had_eos_tapered_input_pad_ = false;
+    playback_host_fade_in_total_samples_ =
+        resonance::host_fade_samples_from_ms(resonance::kPlaybackHostFadeInMs, current_sample_rate);
+    playback_host_fade_out_total_samples_ =
+        resonance::host_fade_samples_from_ms(resonance::kPlaybackHostFadeOutMs, current_sample_rate);
+    playback_host_fade_in_elapsed_ = 0;
+    playback_host_fade_out_remaining_ = 0;
     direct_processor.reset_for_new_playback();
     input_ring_l.clear();
     input_ring_r.clear();
@@ -1296,10 +1643,19 @@ void ResonanceStreamPlayback::_start(double from_pos) {
     output_ring_reverb_r.clear();
     if (base_playback.is_valid()) {
         base_playback->start(from_pos);
-        // (debug logging removed)
     }
     if (owner_player_)
         owner_player_->internal_register_playback(this);
+    // Belt-and-suspenders: base `start` must not leave a prior host fade-out countdown for the first `_mix`.
+    playback_host_fade_out_remaining_ = 0;
+    // Ordering: `ResonancePlayer::play()` often runs `_push_playback_parameters_from_simulation` on the main
+    // thread before this audio-thread `_start` runs. `_start` clears `params_ever_synced_` (burst guard),
+    // which would otherwise leave the first-params gate closed until the next `_process` — extra silence
+    // vs native `AudioStreamPlayer3D`, worse when `_mix` does not call `mix_audio` while gated. Reschedule
+    // the same deferred push used in `play()` so the gate opens on the next main-thread flush without
+    // discarding decoder samples at the gate.
+    if (owner_player_)
+        owner_player_->call_deferred("_deferred_push_playback_parameters");
 }
 void ResonanceStreamPlayback::_stop() {
     // Soft stop: halt the dry input so mix_audio() returns 0 from now on, but keep the
@@ -1311,12 +1667,22 @@ void ResonanceStreamPlayback::_stop() {
     if (base_playback.is_valid())
         base_playback->stop();
     stop_requested_.store(true, std::memory_order_release);
+    if (resonance::kPlaybackHostFadeOutEnabled && playback_host_fade_out_remaining_ <= 0) {
+        playback_host_fade_out_total_samples_ =
+            resonance::host_fade_samples_from_ms(resonance::kPlaybackHostFadeOutMs, current_sample_rate);
+        playback_host_fade_out_remaining_ = playback_host_fade_out_total_samples_;
+    }
 }
 
 void ResonanceStreamPlayback::request_soft_stop() {
     if (base_playback.is_valid())
         base_playback->stop();
     stop_requested_.store(true, std::memory_order_release);
+    if (resonance::kPlaybackHostFadeOutEnabled && playback_host_fade_out_remaining_ <= 0) {
+        playback_host_fade_out_total_samples_ =
+            resonance::host_fade_samples_from_ms(resonance::kPlaybackHostFadeOutMs, current_sample_rate);
+        playback_host_fade_out_remaining_ = playback_host_fade_out_total_samples_;
+    }
 }
 
 bool ResonanceStreamPlayback::has_active_tail_residue() const {
@@ -1349,8 +1715,10 @@ bool ResonanceStreamPlayback::_is_playing() const {
     // so the tail branch executes once.
     if (grace < 0)
         return true;
-    // grace > 0 but no measurable residue: original behaviour — stop rather than spin idle.
-    return false;
+    // grace > 0: tail-grace budget from the first `samples_read==0` mix (EOS/stop tail). We must keep
+    // reporting playing until grace reaches 0 inside `_mix`; otherwise Godot omits further mix callbacks,
+    // grace never decrements, and synthetic EOS fades / final ring drains never run — audible hard cut.
+    return true;
 }
 int ResonanceStreamPlayback::_get_loop_count() const {
     return base_playback.is_valid() ? base_playback->get_loop_count() : 0;
@@ -1374,9 +1742,7 @@ Ref<AudioStreamPlayback> ResonanceStream::_instantiate_playback() const {
     if (base_stream.is_valid()) {
         playback->set_base_playback(base_stream->instantiate_playback());
     }
-    // Phase 4: pre-allocate Steam Audio effects and buffers here on the calling thread (typically main during play()).
-    // Each polyphonic voice instantiates a new playback, so this covers all max_polyphony voices. _mix will skip the
-    // lazy path and no longer allocates IPL buffers on the audio thread.
+    // Prewarm each voice on instantiate so polyphony does not hit lazy IPL alloc on the audio thread.
     playback->prewarm_steam_audio();
     return playback;
 }
@@ -2074,13 +2440,7 @@ PlaybackParameters ResonancePlayer::_build_playback_params(const Vector3& listen
         eff_hrtf_bi = true;
     new_params.direct_effect_hrtf_bilinear = eff_hrtf_bi;
 
-    // Baked REVERB has no notion of source position (IR assumes source co-located with listener at each probe,
-    // see Steam Audio SDK phonon.h around IPLBakedDataVariation). Damp the wet input by the same occlusion/
-    // transmission factor that attenuates the direct path so walls also damp the reverb feed.
-    // Realtime reflections and STATICSOURCE/STATICLISTENER already encode source→listener geometry in the IR
-    // and keep factor 1.0 to avoid double-attenuation.
-    // Per-player overrides beat the global runtime toggles so outdoor sources can opt in while indoor sources
-    // keep plausible around-the-corner reverb.
+    // Optional extra wet damping for baked REVERB (IR has no source direction); realtime/static bakes use factor 1.
     bool apply_occ_wet = false;
     if (srv) {
         switch (c.apply_occlusion_to_baked_reflections_override) {
@@ -2106,9 +2466,7 @@ PlaybackParameters ResonancePlayer::_build_playback_params(const Vector3& listen
             occ_val, tx_low, tx_mid, tx_high, trans_amount);
     }
 
-    // Unity parity: multiply the reflection-effect input by the player's 3D distance curve so the baked/realtime
-    // wet path actually fades with distance. Steam Audio Unity's Spatialize pipeline bakes this into the inBuffer
-    // (via AudioSource::rolloff); Nexus feeds the raw AudioStream ring, so we apply the curve explicitly here.
+    // Apply player distance rolloff to wet when enabled (dry decode ring is not pre-attenuated).
     bool apply_dist_wet = true;
     if (srv) {
         switch (c.apply_distance_curve_to_reflections_override) {
@@ -2883,6 +3241,7 @@ Dictionary ResonancePlayer::get_audio_instrumentation() {
     float max_path_sh_rms = 0.0f, max_path_sh_energy = 0.0f, max_path_out_rms = 0.0f;
     int32_t max_path_order = -1;
     uint64_t sum_reverb_ring_samples = 0; // Test hook: split-reverb tail residue across all voices.
+    uint64_t sum_conv_mixer_null = 0, sum_conv_mix_failed = 0, sum_enable_reverb_false = 0;
 
     for (ResonanceStreamPlayback* res_pb : copy) {
         if (!res_pb)
@@ -2896,11 +3255,13 @@ Dictionary ResonancePlayer::get_audio_instrumentation() {
         float last_rms = 0.0f;
         float path_sh_rms = 0.0f, path_sh_energy = 0.0f, path_out_rms = 0.0f;
         int32_t path_order = -1;
+        uint64_t conv_mixer_null = 0, conv_mix_failed = 0, enable_reverb_false = 0;
         res_pb->get_instrumentation_snapshot(input_dropped, output_underrun, output_blocked, mix_calls, blocks,
                                              passthrough, reverb_miss, block_us, late_mix, last_mix_gap_us, max_mix_gap_us_local,
                                              expected_mix_gap_us, param_syncs, zero_input,
                                              mix_frames_min, mix_frames_max, silent_blocks, last_rms,
-                                             path_sh_rms, path_sh_energy, path_out_rms, path_order);
+                                             path_sh_rms, path_sh_energy, path_out_rms, path_order,
+                                             conv_mixer_null, conv_mix_failed, enable_reverb_false);
         sum_input_dropped += input_dropped;
         sum_output_underrun += output_underrun;
         sum_output_blocked += output_blocked;
@@ -2932,6 +3293,9 @@ Dictionary ResonancePlayer::get_audio_instrumentation() {
         max_path_out_rms = std::max(max_path_out_rms, path_out_rms);
         max_path_order = std::max(max_path_order, path_order);
         sum_reverb_ring_samples += (uint64_t)res_pb->get_reverb_ring_available_read();
+        sum_conv_mixer_null += conv_mixer_null;
+        sum_conv_mix_failed += conv_mix_failed;
+        sum_enable_reverb_false += enable_reverb_false;
     }
 
     if (agg_mix_frames_min == std::numeric_limits<int32_t>::max())
@@ -2961,6 +3325,9 @@ Dictionary ResonancePlayer::get_audio_instrumentation() {
     d["pathing_sh_order"] = (int)max_path_order;
     d["polyphony_voice_count"] = (int)copy.size();
     d["reverb_ring_samples"] = (int64_t)sum_reverb_ring_samples;
+    d["conv_mixer_null_blocks"] = (int64_t)sum_conv_mixer_null;
+    d["conv_mix_failed_blocks"] = (int64_t)sum_conv_mix_failed;
+    d["enable_reverb_false_blocks"] = (int64_t)sum_enable_reverb_false;
     return d;
 }
 

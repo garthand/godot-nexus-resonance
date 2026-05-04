@@ -1,4 +1,5 @@
 #include "resonance_audio_effect.h"
+#include "resonance_constants.h"
 #include "resonance_log.h"
 #include "resonance_math.h"
 #include "resonance_server.h"
@@ -9,11 +10,10 @@
 
 using namespace godot;
 
-// Warn once per process when frame_count != server frame_size to avoid log spam.
+// One warning if Godot’s `frame_count` != server `audio_frame_size` (avoids log spam).
 static bool s_frame_size_mismatch_warned = false;
 
-// Steam Audio Unity mix_return_effect.cpp: decoded wet is mixed with bus input via iplAudioBufferMix.
-// Godot passes prior-chain audio as AudioFrame array (same layout as dst_buffer); buffers may alias.
+// Copy prior bus chain into `dst` (IPL mix_return: dry/chain first, then add wet). `src` may alias `dst` or be null (silence).
 static void copy_bus_input_to_dst(const void* src_buffer, AudioFrame* dst_buffer, int32_t frame_count) {
     if (!dst_buffer || frame_count <= 0)
         return;
@@ -33,8 +33,7 @@ static void copy_bus_input_to_dst(const void* src_buffer, AudioFrame* dst_buffer
     }
 }
 
-// --- INSTANCE ---
-// Reinit/shutdown: ResonanceServer drains registered clients under AudioServer::lock before iplContextRelease.
+// Reinit: server unregisters this client under `AudioServer` lock before `iplContextRelease`.
 
 void ResonanceAudioEffectInstance::ipl_context_reinit_cleanup(void* userdata) {
     if (!userdata)
@@ -56,7 +55,7 @@ ResonanceAudioEffectInstance::~ResonanceAudioEffectInstance() {
 void ResonanceAudioEffectInstance::_process(const void* src_buffer, AudioFrame* dst_buffer, int32_t frame_count) {
     ResonanceServer* srv = ResonanceServer::get_singleton();
 
-    // Bail during exit or Steam Audio reinit/teardown (TOCTOU guard below before process_mixer_return).
+    // Exit, teardown, or pre-mixer state: output silence (recheck before heavy work).
     if (!srv || !srv->is_initialized() || ResonanceServer::ipl_audio_teardown_active()) {
         for (int i = 0; i < frame_count; i++) {
             dst_buffer[i].left = 0.0f;
@@ -65,15 +64,24 @@ void ResonanceAudioEffectInstance::_process(const void* src_buffer, AudioFrame* 
         return;
     }
 
+    // Context exists before reflection mixer is created — passthrough chain only (not an error path).
+    {
+        const int rt_init = srv->get_reflection_type();
+        if ((rt_init == resonance::kReflectionConvolution || rt_init == resonance::kReflectionTan) &&
+            srv->get_reflection_mixer_handle() == nullptr) {
+            copy_bus_input_to_dst(src_buffer, dst_buffer, frame_count);
+            return;
+        }
+    }
+
     int server_frame_size = srv->get_audio_frame_size();
 
-    // --- INITIALIZATION ---
     if (!initialized_processor) {
         ResonanceLog::info("AudioEffect: Initializing MixerProcessor with frame size: " + String::num(server_frame_size));
         processor.initialize(
             srv->get_context_handle(),
             srv->get_sample_rate(),
-            server_frame_size, // Must match ReflectionMixer / Steam Audio block size
+            server_frame_size, // Same block size as `IPLReflectionMixer` / server config
             srv->get_ambisonic_order());
         if (!processor.is_ready()) {
             ResonanceLog::error("ResonanceAudioEffect: MixerProcessor initialization failed. Reverb will be silent until init succeeds.");
@@ -88,7 +96,7 @@ void ResonanceAudioEffectInstance::_process(const void* src_buffer, AudioFrame* 
         initialized_processor = true;
     }
 
-    // Validate frame_count matches server (mismatch causes crackling / buffer overrun)
+    // Mismatch → possible crackle/overrun; Auto frame size can request reinit.
     if (frame_count != server_frame_size) {
         if (srv->get_audio_frame_size_was_auto()) {
             srv->request_reinit_with_frame_size(frame_count);
@@ -108,17 +116,15 @@ void ResonanceAudioEffectInstance::_process(const void* src_buffer, AudioFrame* 
         }
         return;
     }
-    // No mixer for Parametric (1) or Hybrid (2) - convolution wet is produced per-source; pass bus audio through.
+    // Parametric/Hybrid: no shared mixer (wet per source). Null mixer here: rare ordering/teardown — passthrough only.
     if (!mixer) {
         copy_bus_input_to_dst(src_buffer, dst_buffer, frame_count);
-        srv->update_reverb_effect_instrumentation(true, false, 0, 0.0f);
+        srv->update_reverb_effect_instrumentation(false, true, frame_count, 0.0f);
         return;
     }
 
-    // Bus dry / prior effects (Unity mix_return: iplAudioBufferMix with decoded wet), then add convolution wet via +=.
     copy_bus_input_to_dst(src_buffer, dst_buffer, frame_count);
 
-    // --- PROCESSING ---
     if (ResonanceServer::ipl_audio_teardown_active()) {
         for (int i = 0; i < frame_count; i++) {
             dst_buffer[i].left = 0.0f;
@@ -129,9 +135,7 @@ void ResonanceAudioEffectInstance::_process(const void* src_buffer, AudioFrame* 
 
     IPLCoordinateSpace3 listener_coords = srv->get_current_listener_coords();
 
-    // Steam Audio Unity: sources feed iplReflectionEffectApply into the shared mixer; Mix Return calls
-    // iplReflectionMixerApply then iplAmbisonicsDecodeEffectApply in one callback. Hold-last (mixer_processor)
-    // covers Godot callback ordering when no feed occurred since the last bus tick.
+    // One pull: `iplReflectionMixerApply` + decode; hold-last in `MixerProcessor` if no source fed this tick.
     const auto bus_t0 = std::chrono::steady_clock::now();
     bool success = processor.process_mixer_return(mixer, listener_coords, dst_buffer, frame_count);
     const auto bus_t1 = std::chrono::steady_clock::now();
@@ -141,10 +145,7 @@ void ResonanceAudioEffectInstance::_process(const void* src_buffer, AudioFrame* 
     float peak = 0.0f;
     int32_t frames_written = 0;
     if (success) {
-        // Do not call iplReflectionMixerReset here. Steam Audio Unity mix_return_effect.cpp only uses
-        // iplReflectionMixerApply to pull accumulated mixer audio; Reset would clear internal mixer
-        // state between Apply (sources) and Apply (bus), causing choppy / gated wet output when feed
-        // and pull run on different scheduling phases.
+        // Never `iplReflectionMixerReset` here — would clear state between source Apply and bus Apply (choppy wet).
         frames_written = frame_count;
 
         float gain = 1.0f;
@@ -152,7 +153,7 @@ void ResonanceAudioEffectInstance::_process(const void* src_buffer, AudioFrame* 
             gain = static_cast<float>(UtilityFunctions::db_to_linear(effect_ref->get_gain_db()));
         }
 
-        // --- SAFETY: Apply gain, then output limiter to prevent ear damage from overflow/NaN
+        // Gain + sanitize + hard clip to [-1, 1].
         for (int i = 0; i < frame_count; i++) {
             const float left = resonance::sanitize_audio_float(dst_buffer[i].left * gain);
             const float right = resonance::sanitize_audio_float(dst_buffer[i].right * gain);
@@ -164,22 +165,23 @@ void ResonanceAudioEffectInstance::_process(const void* src_buffer, AudioFrame* 
         }
     }
 
-    // Click guard (Godot scheduling edge case): if the wet bus transitions from an audible block to near-silence
-    // in one callback, fade the current block to 0 so the next all-zero block doesn't click.
-    // Unity's DSP chain avoids this by deterministic per-tick feed/pull; in Godot the last fed block can be cut
-    // by callback ordering or voice lifetime edges.
-    const float silent_thr = 1.0e-4f;
-    if (frames_written > 0 && prev_peak_ >= silent_thr && peak < silent_thr) {
-        for (int i = 0; i < frame_count; i++) {
-            const float fade = 1.0f - (float(i + 1) / float(frame_count));
-            dst_buffer[i].left *= fade;
-            dst_buffer[i].right *= fade;
-        }
-        peak = 0.0f;
-        for (int i = 0; i < frame_count; i++) {
-            const float v = std::max(std::abs(dst_buffer[i].left), std::abs(dst_buffer[i].right));
-            if (v > peak)
-                peak = v;
+    // Loud → ~silent in one block: linear fade out (Godot can drop the last fed block vs. IPL timing). Ignore slow decay (threshold gap).
+    const float prev_loud_thr = 1.0e-2f;
+    const float now_silent_thr = 1.0e-7f;
+    if (frames_written > 0 && prev_peak_ >= prev_loud_thr && peak < now_silent_thr) {
+        srv->record_reverb_effect_click_guard_trigger();
+        if (srv->is_reverb_bus_click_guard_enabled()) {
+            for (int i = 0; i < frame_count; i++) {
+                const float fade = 1.0f - (float(i + 1) / float(frame_count));
+                dst_buffer[i].left *= fade;
+                dst_buffer[i].right *= fade;
+            }
+            peak = 0.0f;
+            for (int i = 0; i < frame_count; i++) {
+                const float v = std::max(std::abs(dst_buffer[i].left), std::abs(dst_buffer[i].right));
+                if (v > peak)
+                    peak = v;
+            }
         }
     }
     prev_peak_ = peak;
@@ -187,9 +189,7 @@ void ResonanceAudioEffectInstance::_process(const void* src_buffer, AudioFrame* 
     srv->update_reverb_effect_instrumentation(false, success, frames_written, peak);
 }
 
-// --- EFFECT RESOURCE ---
-
-ResonanceAudioEffect::ResonanceAudioEffect() { set_name("Resonance Reverb"); } // for Godot Audio Bus editor
+ResonanceAudioEffect::ResonanceAudioEffect() { set_name("Resonance Reverb"); } // Audio bus strip label
 
 Ref<AudioEffectInstance> ResonanceAudioEffect::_instantiate() {
     Ref<ResonanceAudioEffectInstance> ins;

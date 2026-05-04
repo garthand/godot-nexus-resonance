@@ -10,8 +10,7 @@
 
 namespace godot {
 
-/// Bundles all ResonanceServer configuration values and parsing from Dictionary.
-/// Used by ResonanceServer as single source of truth for runtime config.
+/// Runtime config loaded from ProjectSettings / `init_audio_engine`: defaults, clamps, and Dictionary parsing (`apply`).
 struct ResonanceServerConfig {
     // Audio
     int sample_rate = 48000;
@@ -27,18 +26,9 @@ struct ResonanceServerConfig {
     float reverb_influence_radius = 10000.0f;
     float reverb_max_distance = 0.0f;
     float reverb_transmission_amount = 1.0f;
-    /// When true, baked reflections (IPL_BAKEDDATAVARIATION_REVERB) scale the wet input gain by the same
-    /// occlusion/transmission factor used on the direct path. Defaults to false: direct-line occlusion cannot
-    /// distinguish "source around a corner in the same open room" (listener room still excited via openings,
-    /// realtime convolution stays loud) from "source truly sealed away" (listener room quiet). Enabling the
-    /// flag dampens both cases uniformly, which makes baked REVERB sound less plausible than realtime for the
-    /// common "around the corner" case. Prefer per-source Realtime or the STATICSOURCE bake workflow for
-    /// accurate outdoor-to-indoor reflections. Only consulted in baked-REVERB mode.
+    /// If true, damp baked REVERB wet by direct-path occlusion×transmission (opt-in; default off—often dulls plausible corner leakage).
     bool apply_occlusion_to_baked_reflections = false;
-    /// When true (default), the reflection-effect input gain is multiplied by the per-source distance attenuation
-    /// curve so baked/realtime reverb fades with distance. Matches Steam Audio Unity's Spatialize pipeline where
-    /// the AudioSource rolloff is applied to the inBuffer before iplReflectionEffectApply. Set to false only for
-    /// 2D ambience beds where wet gain must stay constant regardless of distance.
+    /// If true (default), reflection-effect input scales with per-source distance attenuation; turn off for constant-gain 2D beds.
     bool apply_distance_curve_to_reflections = true;
 
     // Reflection
@@ -96,7 +86,7 @@ struct ResonanceServerConfig {
     int opencl_device_index = 0;
 
     // Context
-    /// IPL validation layer: when true, Steam Audio validates API params (can warn on reverbTimes=0, eqCoeffs>1).
+    /// Enable IPL context validation (stricter API checks; useful when debugging bad sim inputs).
     bool context_validation = false;
     int context_simd_level = -1;
 
@@ -116,13 +106,12 @@ struct ResonanceServerConfig {
     bool perspective_correction_enabled = false;
     float perspective_correction_factor = 1.0f;
 
-    // Throttling
-    /// Scene commit every Nth transform-only geometry notify and every Nth dynamic instanced-mesh transform notify (1 = every time).
-    /// Minimum seconds between applying queued dynamic instanced-mesh transforms + scene commit (0 = apply every worker tick that drains the queue). Trade-off: lower CPU vs. stale occlusion for moving objects.
+    // Pacing / coalescing
+    /// Min wall time between applying queued dynamic instanced transforms + scene commit (0 = every drain).
     float dynamic_scene_commit_min_interval = 0.0f;
-    /// Seconds between scheduling reflection-heavy simulation (iplSimulatorRunReflections). Legacy dict keys: reflections_sim_update_interval, simulation_update_interval.
+    /// Min seconds between reflection-heavy sim ticks (`resolve_sim_interval_sec` reads legacy keys too).
     float reflections_sim_interval = 0.1f;
-    /// Seconds between scheduling pathing-heavy simulation (iplSimulatorRunPathing). Legacy dict keys: pathing_sim_update_interval, simulation_update_interval.
+    /// Min seconds between pathing-heavy sim ticks.
     float pathing_sim_interval = 0.1f;
     /// 0 = disabled. >0: realtime reflection simulation inputs omit IPL_SIMULATIONFLAGS_REFLECTIONS when source is farther than this (meters) from listener.
     float realtime_reflection_max_distance_m = 0.0f;
@@ -149,8 +138,7 @@ struct ResonanceServerConfig {
     /// When true, ResonanceRuntime flushes pending source updates once per frame; players enqueue instead of try_update_source.
     bool batch_source_updates = true;
 
-    /// Apply config from Dictionary. Optional get_bake_pathing_param used for pathing_vis_* fallback when keys missing.
-    /// config_int truncates FLOAT to int; use integer values from GDScript/JSON for exact results.
+    /// Reads ProjectSettings-style keys, clamps ranges, migrates legacy names. `get_bake_pathing_param` fills pathing_vis_* if omitted.
     void apply(const Dictionary& config,
                std::function<float(const char*, float)> get_bake_pathing_param = nullptr);
 
@@ -159,7 +147,7 @@ struct ResonanceServerConfig {
     static float config_float(const Dictionary& c, const char* key, float def);
     static bool config_bool(const Dictionary& c, const char* key, bool def);
     static void config_sofa_asset(const Dictionary& c, const char* key, Ref<ResonanceSOFAAsset>& out);
-    /// New key first; else legacy *\_sim_update_interval (if >=0); else legacy simulation_update_interval. Clamped 0..1 s.
+    /// Prefers new_key, then legacy per-band interval, then simulation_update_interval; clamped to [0, 1] s.
     static float resolve_sim_interval_sec(const Dictionary& c, const char* new_key, const char* legacy_sub_key);
 };
 

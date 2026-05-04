@@ -3,6 +3,7 @@
 #include "resonance_server.h"
 #include "resonance_utils.h"
 #include <array>
+#include <atomic>
 #include <chrono>
 #include <cstring>
 #include <godot_cpp/classes/engine.hpp>
@@ -13,9 +14,27 @@
 
 using namespace godot;
 
+// Audio-thread fetch of occlusion / reverb / pathing caches (lock-free double buffers) plus worker-side publish (_worker_sync_fetch_caches).
+
 namespace {
 
 constexpr int kMaxPathingShCoeffs = 16; // order 3 max: (3+1)^2
+
+// During epoch rollover the visible slot can lag; if IR/param content is still valid, keep mixing instead of going dry.
+static bool reflection_params_still_usable_for_mix(int reflection_type, const IPLReflectionEffectParams& p) {
+    switch (reflection_type) {
+    case resonance::kReflectionConvolution:
+        return p.ir != nullptr;
+    case resonance::kReflectionTan:
+        return p.ir != nullptr;
+    case resonance::kReflectionHybrid:
+        if (p.ir != nullptr)
+            return true;
+        return (p.reverbTimes[0] > 0.0f || p.reverbTimes[1] > 0.0f || p.reverbTimes[2] > 0.0f);
+    default:
+        return false;
+    }
+}
 
 bool pathing_copy_sh_coeffs(std::array<float, kMaxPathingShCoeffs>& dst, const float* src, int sh_count) {
     if (sh_count <= 0 || !src || sh_count > kMaxPathingShCoeffs)
@@ -31,7 +50,7 @@ bool pathing_copy_sh_coeffs(std::array<float, kMaxPathingShCoeffs>& dst, const f
 
 OcclusionData ResonanceServer::get_source_occlusion_data(int32_t handle) {
     OcclusionData result;
-    // Default "no data": treat as unoccluded. Steam uses 1 = LOS, 0 = blocked.
+    // Default when cache miss: unoccluded (full LOS / unity attenuation–style neutrals).
     result.occlusion = resonance::kOcclusionFetchDefaultVisible;
     result.transmission[0] = 1.0f;
     result.transmission[1] = 1.0f;
@@ -73,13 +92,10 @@ bool ResonanceServer::peek_reverb_params_likely_available(int32_t handle) const 
 bool ResonanceServer::fetch_reverb_params(int32_t handle, IPLReflectionEffectParams& out_params) {
     if (handle < 0 || !_ctx() || handle >= kMaxCacheHandles)
         return false;
-    // Phase 1: skip until worker has run iplSourceAdd for this handle.
     if (_is_source_attach_pending(handle))
         return false;
 
-    // Steam Audio can return non-zero reverb times even with no probes and numRays=0 (e.g. scene-based
-    // estimate or internal default). For reliable output: only treat as valid when we have a real
-    // data source (probe batches for baked, or realtime rays).
+    // Require real data sources for parametric/TAN when rays==0: probes for baked, else deny ambiguous defaults.
     if (_uses_parametric_or_hybrid() || reflection_type == resonance::kReflectionTan) {
         if (max_rays == 0) {
             if (!probe_batch_registry_.has_any_batches())
@@ -87,14 +103,12 @@ bool ResonanceServer::fetch_reverb_params(int32_t handle, IPLReflectionEffectPar
         }
     }
 
-    // For Parametric/Hybrid: only report valid after RunReflections ran at least once.
     if (_uses_parametric_or_hybrid() && !reflections_have_run_once_.load(std::memory_order_acquire))
         return false;
-    // Per-source: only after this source has been through at least one RunReflections.
     if (_uses_parametric_or_hybrid() && reflections_pending_[static_cast<size_t>(handle)].load(std::memory_order_acquire))
         return false;
 
-    // Phase 2: lock-free read from the worker-populated double-buffered cache. No simulation_mutex.
+    // Lock-free read from worker-filled cache slots (no simulation_mutex).
     bool result = false;
     if (reflection_type == resonance::kReflectionParametric) {
         const int front = reverb_param_cache_front_.load(std::memory_order_acquire);
@@ -118,16 +132,38 @@ bool ResonanceServer::fetch_reverb_params(int32_t handle, IPLReflectionEffectPar
         }
     } else if (_uses_convolution_or_hybrid_or_tan()) {
         const int front = reflection_param_cache_front_.load(std::memory_order_acquire);
-        const uint32_t epoch = reflection_param_cache_epoch_[front];
-        const CachedReflectionParams& e = reflection_param_cache_[static_cast<size_t>(front)][static_cast<size_t>(handle)];
-        if (e.epoch == epoch) {
+        const uint32_t epoch_front = reflection_param_cache_epoch_[front];
+        const CachedReflectionParams& e_front = reflection_param_cache_[static_cast<size_t>(front)][static_cast<size_t>(handle)];
+
+        auto copy_conv_entry = [&](const CachedReflectionParams& e) {
             out_params = e.params;
             if (reflection_type == resonance::kReflectionTan)
                 out_params.tanDevice = _tan();
+        };
+
+        if (e_front.epoch == epoch_front) {
+            copy_conv_entry(e_front);
             result = true;
             instrumentation_fetch_cache_hit.fetch_add(1, std::memory_order_relaxed);
+        } else if (reflection_params_still_usable_for_mix(reflection_type, e_front.params)) {
+            copy_conv_entry(e_front);
+            result = true;
+            instrumentation_fetch_refl_stale_epoch_fallback.fetch_add(1, std::memory_order_relaxed);
+            instrumentation_fetch_cache_hit.fetch_add(1, std::memory_order_relaxed);
         } else {
-            if (source_outputs_reflections_[static_cast<size_t>(handle)].load(std::memory_order_relaxed) == 0) {
+            const int back = 1 - front;
+            const uint32_t epoch_back = reflection_param_cache_epoch_[back];
+            const CachedReflectionParams& e_back = reflection_param_cache_[static_cast<size_t>(back)][static_cast<size_t>(handle)];
+            if (e_back.epoch == epoch_back) {
+                copy_conv_entry(e_back);
+                result = true;
+                instrumentation_fetch_cache_hit.fetch_add(1, std::memory_order_relaxed);
+            } else if (reflection_params_still_usable_for_mix(reflection_type, e_back.params)) {
+                copy_conv_entry(e_back);
+                result = true;
+                instrumentation_fetch_refl_stale_epoch_fallback.fetch_add(1, std::memory_order_relaxed);
+                instrumentation_fetch_cache_hit.fetch_add(1, std::memory_order_relaxed);
+            } else if (source_outputs_reflections_[static_cast<size_t>(handle)].load(std::memory_order_relaxed) == 0) {
                 instrumentation_fetch_cache_skip.fetch_add(1, std::memory_order_relaxed);
             } else {
                 instrumentation_fetch_cache_miss.fetch_add(1, std::memory_order_relaxed);
@@ -147,13 +183,12 @@ bool ResonanceServer::fetch_pathing_params(int32_t handle, IPLPathEffectParams& 
         instrumentation_pathing_fetch_early_exit.fetch_add(1, std::memory_order_relaxed);
         return false;
     }
-    // Phase 1: skip until worker has run iplSourceAdd for this handle.
     if (_is_source_attach_pending(handle)) {
         instrumentation_pathing_fetch_early_exit.fetch_add(1, std::memory_order_relaxed);
         return false;
     }
 
-    // Phase 2: lock-free read from the worker-populated double-buffered cache. No simulation_mutex.
+    // Lock-free pathing cache read.
     bool result = false;
     const int front = pathing_param_cache_front_.load(std::memory_order_acquire);
     const uint32_t epoch = pathing_param_cache_epoch_[front];
@@ -175,6 +210,7 @@ bool ResonanceServer::fetch_pathing_params(int32_t handle, IPLPathEffectParams& 
     return result;
 }
 
+// Worker-only (simulation_mutex): pull iplSourceGetOutputs into back buffers, flip cache fronts, refresh reverb hints.
 void ResonanceServer::_worker_sync_fetch_caches(bool refresh_direct_outputs, bool refresh_reflection_outputs) {
     if (!_ctx() || !simulator)
         return;
@@ -224,8 +260,6 @@ void ResonanceServer::_worker_sync_fetch_caches(bool refresh_direct_outputs, boo
     for (int32_t handle : handles) {
         if (handle < 0 || handle >= kMaxCacheHandles)
             continue;
-        // Phase 1: new sources whose iplSourceAdd has not run yet (shouldn't happen here since the worker
-        // drains pending adds at the start of the tick, but defensive against races with destroy + re-create).
         if (_is_source_attach_pending(handle))
             continue;
         IPLSource src = source_manager.get_source(handle);
@@ -344,8 +378,15 @@ void ResonanceServer::_worker_sync_fetch_caches(bool refresh_direct_outputs, boo
                         pm.order = order;
                         pm.epoch = pathing_param_cache_epoch_[path_back];
                         pathing_param_cache_[static_cast<size_t>(path_back)][static_cast<size_t>(handle)] = std::move(pm);
+                        instrumentation_pathing_fetch_sh_ok.fetch_add(1, std::memory_order_relaxed);
+                    } else {
+                        instrumentation_pathing_fetch_sh_bad_order.fetch_add(1, std::memory_order_relaxed);
                     }
+                } else {
+                    instrumentation_pathing_fetch_sh_bad_order.fetch_add(1, std::memory_order_relaxed);
                 }
+            } else {
+                // shCoeffs null is often normal (no contribution); do not inflate fetch_sh_null counters per tick.
             }
             const auto t1 = std::chrono::steady_clock::now();
             us_path += static_cast<uint64_t>(std::chrono::duration_cast<std::chrono::microseconds>(t1 - t0).count());

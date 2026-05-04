@@ -7,6 +7,8 @@
 
 namespace godot {
 
+// Dictionary helpers: tolerant Variant typing (int/float/bool), SOFA ref extraction, sim-interval migration chain.
+
 int ResonanceServerConfig::config_int(const Dictionary& c, const char* key, int def) {
     if (!c.has(key))
         return def;
@@ -66,6 +68,7 @@ void ResonanceServerConfig::config_sofa_asset(const Dictionary& c, const char* k
         out.unref();
 }
 
+// new_key → legacy_sub_key → master simulation_update_interval; values clamped to [0, 1] seconds.
 float ResonanceServerConfig::resolve_sim_interval_sec(const Dictionary& c, const char* new_key, const char* legacy_sub_key) {
     if (c.has(new_key)) {
         float v = config_float(c, new_key, 0.1f);
@@ -91,13 +94,7 @@ float ResonanceServerConfig::resolve_sim_interval_sec(const Dictionary& c, const
     return master;
 }
 
-// Applies ResonanceServer project/editor configuration from a Godot Dictionary: validates numeric ranges, resolves
-// legacy keys (pathing_validation_ab_mode, use_radeon_rays), and merges bake-time pathing defaults via get_bake_pathing_param
-// when explicit keys are absent. Covers audio threading (sample rate, frame size, ambisonic order), realtime ray budget,
-// reflections/hybrid/TAN, transmission and occlusion limits, HRTF/SOFA and speaker routing, pathing visualization,
-// ray tracer/scene backend (Embree/Radeon/custom physics), OpenCL device hints, realtime probes tuning, debug switches,
-// mixer routing, perspective correction, dynamic scene commits, simulation pacing (direct/reflections/pathing intervals),
-// adaptive reflection budgeting, convolution IR cap, and batched source updates.
+// Loads and clamps all fields; handles legacy enums (pathing_validation_ab_mode, use_radeon_rays) and bake fallbacks for pathing_vis_*.
 void ResonanceServerConfig::apply(const Dictionary& config,
                                   std::function<float(const char*, float)> get_bake_pathing_param) {
     sample_rate = config_int(config, "sample_rate", sample_rate);
@@ -146,7 +143,6 @@ void ResonanceServerConfig::apply(const Dictionary& config,
     if (max_bounces > 64)
         max_bounces = 64;
     reverb_influence_radius = config_float(config, "reverb_influence_radius", reverb_influence_radius);
-    // Match ResonanceServer property setter / Steam Audio expectations (min 1 m).
     if (reverb_influence_radius < 1.0f)
         reverb_influence_radius = 1.0f;
     reverb_max_distance = config_float(config, "reverb_max_distance", reverb_max_distance);

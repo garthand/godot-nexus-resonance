@@ -3,9 +3,13 @@
 #include "resonance_server.h"
 #include <godot_cpp/variant/string.hpp>
 #include <godot_cpp/variant/utility_functions.hpp>
+#include <limits>
 #include <utility>
 
 namespace godot {
+
+// IPL reflection mixer → HOA decode → Godot stereo. If `frame_count` ≠ `frame_size`, samples carry across callbacks;
+// if the mixer is not fed this tick, optionally replay last decoded stereo once (see server mixer_feed_count).
 
 // Warn once per process for frame-size mismatches.
 static bool s_frame_count_small_warned = false;
@@ -44,7 +48,7 @@ void ResonanceMixerProcessor::initialize(IPLContext p_context, int p_sample_rate
     bool use_vs = srv && srv->use_virtual_surround_output();
     IPLHRTF hrtf_handle = srv ? srv->get_hrtf_handle() : nullptr;
 
-    // 1. Create Decoder Effect (stereo for standard path)
+    // Standard path: HOA → stereo (HRTF here only if reverb binaural is on; not used when Virtual Surround is active).
     IPLAmbisonicsDecodeEffectSettings decSettings{};
     decSettings.speakerLayout.type = IPL_SPEAKERLAYOUTTYPE_STEREO;
     decSettings.speakerLayout.numSpeakers = 2;
@@ -58,7 +62,7 @@ void ResonanceMixerProcessor::initialize(IPLContext p_context, int p_sample_rate
     }
     init_flags = init_flags | MixerInitFlags::DECODEEFFECT;
 
-    // 2. Virtual Surround path: decode to 7.1, then VirtualSurround -> stereo
+    // Virtual Surround: HOA → 7.1 (decode without HRTF), then IPL VirtualSurround + HRTF → stereo.
     if (use_vs && hrtf_handle) {
         IPLAmbisonicsDecodeEffectSettings dec7Settings{};
         dec7Settings.speakerLayout.type = IPL_SPEAKERLAYOUTTYPE_SURROUND_7_1;
@@ -127,8 +131,10 @@ void ResonanceMixerProcessor::cleanup() {
     last_stereo_right.clear();
     last_stereo_valid = false;
     have_seen_mixer_feed_count_ = false;
+    hold_last_suppression_feed_ = std::numeric_limits<uint64_t>::max();
 }
 
+// Snapshot last decoded stereo block so we can reuse it when iplReflectionMixerApply is skipped this quantum.
 void ResonanceMixerProcessor::_cache_last_stereo_block() {
     if (!sa_stereo_buffer.data || !sa_stereo_buffer.data[0] || !sa_stereo_buffer.data[1])
         return;
@@ -155,12 +161,12 @@ bool ResonanceMixerProcessor::_restore_last_stereo_block() {
     return true;
 }
 
+// Adds decoded stereo into out_frames. If frame_count != frame_size, buffers whole decode blocks in pending_* and
+// drains them sequentially so partial Godot buffers still get correct samples without dropping a tail.
 void ResonanceMixerProcessor::_write_stereo_to_audio_frames_with_carry(AudioFrame* out_frames, int frame_count) {
     if (!out_frames || frame_count <= 0 || !sa_stereo_buffer.data || !sa_stereo_buffer.data[0] || !sa_stereo_buffer.data[1])
         return;
 
-    // Unity mix_return: one Steam block in per DSP tick when buffer sizes match — no cross-callback carry.
-    // Godot can pass frame_count != frame_size (mismatch / reinit); use the vector path only then.
     if (pending_stereo_left.empty() && pending_read_index == 0 && frame_count == frame_size) {
         for (int i = 0; i < frame_count; i++) {
             out_frames[i].left += sa_stereo_buffer.data[0][i];
@@ -235,37 +241,36 @@ bool ResonanceMixerProcessor::process_mixer_return(IPLReflectionMixer mixer_hand
     if (!_can_decode() || !mixer_handle)
         return false;
 
-    // Unity has a deterministic DSP chain (sources feed, then mixer return pulls). In Godot, the reverb bus callback can
-    // run before per-source callbacks in the same audio quantum. If we pull (and clear) the mixer before any source has
-    // fed it, we output a near-silent block -> audible "drop/pop". Use the server's feed counter to avoid pulling when
-    // nothing has been fed since the last bus callback; instead repeat the last wet block (hold-last) for one tick.
+    // mixer_feed_count bumps whenever any source actually feeds the reflection mixer this tick. If it is unchanged
+    // across consecutive calls, the engine may not have invoked Apply — replay last stereo once per plateau to
+    // avoid silence, then force a real Apply on the next identical count (suppression prevents repeating forever).
     ResonanceServer* srv_count = ResonanceServer::get_singleton();
     const uint64_t feed_count_now = srv_count ? srv_count->get_mixer_feed_count() : 0;
-    if (have_seen_mixer_feed_count_ && feed_count_now == last_seen_mixer_feed_count_) {
-        if (_restore_last_stereo_block()) {
-            _write_stereo_to_audio_frames_with_carry(out_frames, frame_count);
-            return true;
-        }
-        // If we can't restore (first tick), fall through to a normal pull.
+    if (feed_count_now != last_seen_mixer_feed_count_) {
+        hold_last_suppression_feed_ = std::numeric_limits<uint64_t>::max();
     }
 
-    // 1. Apply Mixer: pull accumulated ambisonic wet from the shared reflection mixer.
-    // Unity mix_return_effect.cpp: reflectionParams.type = simulation reflectionType, numChannels, tanDevice
-    // (not PARAMETRIC dummy — mixer was created for convolution/TAN to match per-source effects).
+    const bool can_hold_last = have_seen_mixer_feed_count_ &&
+                               feed_count_now == last_seen_mixer_feed_count_ &&
+                               feed_count_now != hold_last_suppression_feed_;
+    if (can_hold_last && _restore_last_stereo_block()) {
+        hold_last_suppression_feed_ = feed_count_now;
+        if (ResonanceServer* srv_h = ResonanceServer::get_singleton())
+            srv_h->record_mixer_return_hold_last();
+        _write_stereo_to_audio_frames_with_carry(out_frames, frame_count);
+        return true;
+    }
+
     IPLReflectionEffectParams params{};
     if (ResonanceServer* srv = ResonanceServer::get_singleton())
         srv->fill_reflection_mixer_apply_params(&params);
     else
         params.numChannels = sa_ambisonic_buffer.numChannels;
 
-    // No extra buffer sanitize here: Unity mix_return goes straight from Apply to ambisonic decode. Non-finite
-    // values are still caught at ResonanceAudioEffect output (sanitize + clamp after gain).
     iplReflectionMixerApply(mixer_handle, &params, &sa_ambisonic_buffer);
-
-    // Steam Audio Unity mix_return_effect.cpp: iplAmbisonicsDecodeEffectApply immediately after
-    // iplReflectionMixerApply on the same buffer — same DSP tick, no extra wet latency vs dry at master.
     _decode_ambisonic_to_stereo_buffer(&sa_ambisonic_buffer, listener_coords);
 
+    // Sub-sized callbacks: carry queues the remainder for the next mix() until a full block is consumed.
     if (frame_count < frame_size && !s_frame_count_small_warned) {
         s_frame_count_small_warned = true;
         UtilityFunctions::push_warning(
@@ -280,6 +285,7 @@ bool ResonanceMixerProcessor::process_mixer_return(IPLReflectionMixer mixer_hand
     return true;
 }
 
+// Same decode path as process_mixer_return but input is already-filled HOA (e.g. convolution tap), no mixer pull.
 bool ResonanceMixerProcessor::decode_ambisonic_to_stereo(IPLAudioBuffer* ambi_buf,
                                                          const IPLCoordinateSpace3& listener_coords, AudioFrame* out_frames, int frame_count) {
     if (!_can_decode() || !ambi_buf || !ambi_buf->data)

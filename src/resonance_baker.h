@@ -13,6 +13,8 @@
 
 namespace godot {
 
+/// Probe placement grids and IPL bakes (reflection IRs, pathing, static endpoint variations) into `ResonanceProbeData`.
+/// Optional `progress_callback` args are invoked synchronously on the calling thread (blocking bake).
 class ResonanceBaker {
   public:
     ResonanceBaker() = default;
@@ -35,10 +37,8 @@ class ResonanceBaker {
         int generation_type,
         float height_above_floor);
 
-    /// Bake using Steam Audio iplProbeArrayGenerateProbes + iplProbeBatchAddProbeArray (scene-aware placement).
-    /// Only for GEN_CENTROID (0) and GEN_UNIFORM_FLOOR (1). Use bake_manual_grid for GEN_VOLUME (2).
-    /// @param progress_callback When non-null, invoked synchronously on the calling thread during bake (bake blocks until done).
-    /// @param pathing_scheduled If true, disk save is skipped; GDScript saves afterward with full pathing_params_hash.
+    /// Scene-aware probe placement (`iplProbeArrayGenerateProbes`); only GEN_CENTROID / GEN_UNIFORM_FLOOR — use `bake_manual_grid` for GEN_VOLUME.
+    /// `progress_callback`: optional synchronous progress; `pathing_scheduled`: defer disk save until pathing bake finishes.
     bool bake_with_probe_array(
         IPLContext context,
         IPLScene scene,
@@ -60,11 +60,7 @@ class ResonanceBaker {
         int num_threads = 2,
         int ambisonics_order = resonance::kBakeDefaultAmbisonicsOrder);
 
-    // Internal method to create grid points in local space, then transform to world space.
-    // reflection_type: 0 = Convolution (BAKECONVOLUTION), 1 = Parametric (BAKEPARAMETRIC)
-    // progress_callback: when non-null, invoked synchronously on calling thread during bake (bake blocks until done)
-    // pathing_scheduled: if true, disk save skipped; GDScript saves afterward with full pathing_params_hash
-    // opencl_device, radeon_rays_device: optional; required when scene_type is IPL_SCENETYPE_RADEONRAYS
+    // Fixed probe positions → bake IRs. reflection_type selects convolution/parametric/hybrid bake flags; GPU devices needed for Radeon scene type.
     bool bake_manual_grid(
         IPLContext context,
         IPLScene scene,
@@ -82,7 +78,6 @@ class ResonanceBaker {
         int num_threads = 2,
         int ambisonics_order = resonance::kBakeDefaultAmbisonicsOrder);
 
-    /// @param progress_callback When non-null, invoked synchronously on the calling thread (bake blocks until done).
     bool bake_pathing(
         IPLContext context,
         IPLScene scene,
@@ -96,9 +91,7 @@ class ResonanceBaker {
         void* progress_user_data = nullptr,
         int num_threads = 2);
 
-    /// Bake reflections with STATICSOURCE variation. Requires probe_data with existing probes (from Bake Probes).
-    /// endpoint_position: world position of the static source. influence_radius: probes within this distance get data.
-    /// @param progress_callback When non-null, invoked synchronously on the calling thread (bake blocks until done).
+    /// Baked IRs for `IPL_BAKEDDATAVARIATION_STATICSOURCE` (probes must exist). `influence_radius` limits which probes get data.
     bool bake_static_source(
         IPLContext context,
         IPLScene scene,
@@ -115,9 +108,7 @@ class ResonanceBaker {
         int num_threads = 2,
         int ambisonics_order = resonance::kBakeDefaultAmbisonicsOrder);
 
-    /// Bake reflections with STATICLISTENER variation. Requires probe_data with existing probes.
-    /// endpoint_position: world position of the static listener. influence_radius: probes within this distance get data.
-    /// @param progress_callback When non-null, invoked synchronously on the calling thread (bake blocks until done).
+    /// Same for `IPL_BAKEDDATAVARIATION_STATICLISTENER` (static listener endpoint).
     bool bake_static_listener(
         IPLContext context,
         IPLScene scene,
@@ -137,14 +128,11 @@ class ResonanceBaker {
     /// Probe count in serialized probe data, or -1 if load fails.
     int32_t probe_data_get_num_probes(IPLContext context, Ref<ResonanceProbeData> probe_data_res) const;
 
-    /// Removes one probe by index (Steam Audio iplProbeBatchRemoveProbe). Updates [param probe_data_res] bytes;
-    /// if [code]probe_positions[/code] length matched probe count, the same index is removed. Clears pathing hash.
-    /// Call [method ResonanceProbeVolume.reload_probe_batch] if this resource is loaded in the simulator.
+    /// `iplProbeBatchRemoveProbe` + reserialize; drop matching `probe_positions` entry; clears pathing hash — reload batch in runtime if live.
     bool probe_data_remove_probe_at_index(IPLContext context, Ref<ResonanceProbeData> probe_data_res, int32_t index) const;
 
-    /// Removes a baked data layer (iplProbeBatchRemoveData). [param baked_data_type]: 0 = reflections, 1 = pathing.
-    /// [param variation]: 0 = reverb, 1 = static source, 2 = static listener, 3 = dynamic (pathing).
-    /// For static source/listener, [param endpoint] and [param influence_radius] must match the bake sphere.
+    /// `iplProbeBatchRemoveData`: type 0 = reflections, 1 = pathing; variation 0–3 = reverb / static source / static listener / dynamic.
+    /// Endpoint sphere must match the original bake for static variations.
     bool probe_data_remove_baked_data_layer(IPLContext context, Ref<ResonanceProbeData> probe_data_res, int baked_data_type,
                                             int variation, Vector3 endpoint, float influence_radius) const;
 

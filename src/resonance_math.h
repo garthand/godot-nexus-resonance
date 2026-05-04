@@ -6,12 +6,14 @@
 
 namespace resonance {
 
-/// Replace NaN/Inf with 0 to prevent Steam Audio "invalid IPLfloat32" warnings.
+// Small audio-safe helpers: sanitize floats, IR sizing, wet factors, linear ramps (no Godot/phonon includes).
+
+/// Replace NaN/Inf with 0 for IPL float parameters.
 inline float sanitize_audio_float(float v) {
     return std::isfinite(v) ? v : 0.0f;
 }
 
-/// Sanitize Steam Audio delay (IPLint32): finite float round-trip, NaN/Inf -> 0 samples.
+/// Sanitize delay in samples (IPL int field; NaN/Inf → 0).
 inline int32_t sanitize_delay_samples(int32_t v) {
     float f = static_cast<float>(v);
     f = sanitize_audio_float(f);
@@ -24,23 +26,14 @@ inline int32_t reverb_ir_size_samples(int sample_rate, float duration_sec) {
     return static_cast<int32_t>(std::lroundf(static_cast<float>(sample_rate) * d));
 }
 
-/// Clamp reverb time to valid range for Steam Audio (PARAMETRIC/HYBRID require > 0).
+/// Minimum band reverb time used by parametric/hybrid paths (IPL expects > 0).
 inline float clamp_reverb_time(float v) {
     float s = sanitize_audio_float(v);
     return (s > 0.1f) ? s : 0.1f;
 }
 
-/// Wet-path occlusion damping factor for baked REVERB reflections. Mirrors the direct-path occlusion+transmission
-/// factor used by iplDirectEffectApply so that walls damp the reflection-effect input (baked REVERB IRs assume
-/// source co-located with listener and cannot encode source→listener walls).
-///
-/// - occlusion: 1 = line-of-sight, 0 = fully occluded
-/// - transmission_[low|mid|high]: 1 = fully transmissive (no damping), 0 = blocked
-/// - reverb_transmission_amount: 0 = no wet damping (returns 1.0), 1 = full wet damping by direct-path factor
-///
-/// Returns 1.0 when there is no damping (no walls in the path) and 0.0 when the source is fully blocked with
-/// reverb_transmission_amount = 1. Realtime reflections and STATICSOURCE/STATICLISTENER paths should pass
-/// reverb_transmission_amount = 0 (or skip this helper) because their IRs already encode the actual geometry.
+/// Extra wet attenuation for baked REVERB (IR has no directional occlusion): blend toward `1 - direct_path_factor`
+/// using `reverb_transmission_amount`. Use 0 amount / skip for realtime or static-source bakes where IR encodes geometry.
 inline float baked_reverb_wet_occlusion_factor(float occlusion, float transmission_low, float transmission_mid, float transmission_high,
                                                float reverb_transmission_amount) {
     const float occ = std::fmin(std::fmax(sanitize_audio_float(occlusion), 0.0f), 1.0f);
@@ -74,13 +67,12 @@ inline float reverb_wet_falloff_max_distance(float dist_m, float max_dist_m) {
     return sanitize_audio_float(x);
 }
 
-/// Pure C++ volume ramping (no Godot/Phonon dependency).
-/// Smoothly interpolates volume to prevent clicks/pops when parameters change.
+/// Linear gain ramp across `num_samples` (parameter moves without zipper noise).
 inline void apply_volume_ramp(float start_vol, float end_vol, int num_samples, float* buffer) {
     if (num_samples == 0 || !buffer)
         return;
 
-    // Optimization: Constant volume
+    // Fast path: uniform gain
     if (std::abs(start_vol - end_vol) < 1e-5f) {
         if (std::abs(start_vol - 1.0f) > 1e-5f) {
             for (int i = 0; i < num_samples; ++i)

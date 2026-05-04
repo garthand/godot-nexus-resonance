@@ -10,6 +10,9 @@
 
 using namespace godot;
 
+// IPL source handles: main-thread create/destroy queue real Add/Remove/Commit on the worker. Updates batch here and flush
+// from ResonanceRuntime; try_update_source can bypass the queue when simulation_mutex is available.
+
 int32_t ResonanceServer::create_source_handle(Vector3 pos, float radius) {
     if (!_ctx() || !simulator)
         return -1;
@@ -22,8 +25,7 @@ int32_t ResonanceServer::create_source_handle(Vector3 pos, float radius) {
         ResonanceLog::error("ResonanceServer: iplSourceCreate failed (create_source_handle).");
         return -1;
     }
-    // Phase 1: no blocking simulation_mutex on main thread. SourceManager retains src; after this
-    // block we own one retain to be released once iplSourceAdd has actually run on the worker.
+    // Main thread: register the IPLSource in SourceManager; iplSourceAdd runs later on the worker (see pending adds).
     const int32_t handle = source_manager.add_source(src);
     if (handle < 0) {
         iplSourceRelease(&src);
@@ -78,8 +80,8 @@ int32_t ResonanceServer::create_source_handle(Vector3 pos, float radius) {
         std::lock_guard<std::mutex> lock(pending_source_lifecycle_mutex_);
         pending_source_adds_.push_back(pa);
     }
-    iplSourceRelease(&src);
-    // Kick the worker so the attach happens on the very next tick rather than the next simulation window.
+    iplSourceRelease(&src); // balance create retain; SourceManager still holds the source until destroy
+    // Wake worker so pending SourceAdd is processed without waiting for the next sim interval.
     {
         std::lock_guard<std::mutex> lock(worker_mutex);
         simulation_requested = true;
@@ -106,8 +108,7 @@ void ResonanceServer::_destroy_source_handle_under_simulation_lock(int32_t handl
     if (src) {
         if (simulator) {
             iplSourceRemove(src, simulator);
-            // Required by Steam Audio API: staging list updates apply only after commit (same as iplSourceAdd).
-            iplSimulatorCommit(simulator);
+            iplSimulatorCommit(simulator); // apply staging (same as after Add)
         }
         iplSourceRelease(&src);
     }
@@ -128,8 +129,7 @@ void ResonanceServer::_destroy_source_handle_under_simulation_lock(int32_t handl
 void ResonanceServer::destroy_source_handle(int32_t handle) {
     if (handle < 0 || is_shutting_down_flag.load(std::memory_order_acquire) || !_ctx())
         return;
-    // Phase 1: do not block on simulation_mutex. Remove from source_manager immediately so the audio thread
-    // stops seeing the handle; hand the retained IPLSource to the worker for iplSourceRemove + commit + release.
+    // Invalidate handle on this thread immediately; worker finishes Remove + Commit + final Release.
     IPLSource src = source_manager.get_source(handle); // retains
     source_manager.remove_source(handle);              // releases the map retain
     {
@@ -157,7 +157,6 @@ void ResonanceServer::destroy_source_handle(int32_t handle) {
         std::lock_guard<std::mutex> h_lock(reverb_params_likely_available_mutex_);
         reverb_params_likely_available_.erase(handle);
     }
-    // Cache invalidation now handled by the lock-free cache arrays above.
     {
         std::lock_guard<std::mutex> b(source_update_batch_mutex_);
         source_update_batch_.erase(handle);
@@ -185,9 +184,7 @@ void ResonanceServer::update_source(int32_t handle, Vector3 pos, float radius,
                                     float direct_mix_level,
                                     float reflections_mix_level,
                                     float pathing_mix_level) {
-    // Phase 1: no blocking simulation_mutex on main thread. Forwards to enqueue_source_update; the
-    // pending batch is drained by [method flush_pending_source_updates] (called by ResonanceRuntime
-    // once per frame) and by the worker's lifecycle drain when ticks fire.
+    // Default path: coalesce into source_update_batch_; ResonanceRuntime calls flush_pending_source_updates each frame.
     enqueue_source_update(handle, pos, radius, source_forward, source_up,
                           directivity_weight, directivity_power, air_absorption_enabled,
                           use_sim_distance_attenuation, min_distance,
@@ -217,6 +214,7 @@ bool ResonanceServer::try_update_source(int32_t handle, Vector3 pos, float radiu
                                         float pathing_mix_level) {
     if (handle < 0)
         return false;
+    // Immediate apply when simulation_mutex is uncontended (avoids batch latency; used from tools/editor paths).
     std::unique_lock<std::mutex> lock(simulation_mutex, std::defer_lock);
     if (!lock.try_lock())
         return false;
@@ -285,6 +283,7 @@ void ResonanceServer::enqueue_source_update(int32_t handle, Vector3 pos, float r
 }
 
 void ResonanceServer::flush_pending_source_updates() {
+    // If the worker holds simulation_mutex, put the batch back (merge) and retry next frame—never block the main thread.
     std::vector<std::pair<int32_t, PendingSourceUpdate>> batch;
     {
         std::lock_guard<std::mutex> lock(source_update_batch_mutex_);
@@ -372,6 +371,7 @@ void ResonanceServer::clear_source_attenuation_callback_data(int32_t handle) {
     iplSourceRelease(&src);
 }
 
+// IPL callback: mode 1 = linear 1→0, mode 2 = interpolate user curve samples between min/max distance.
 static float IPLCALL distance_attenuation_callback(IPLfloat32 distance, void* userData) {
     const ResonanceServer::AttenuationCallbackContext* ctx = static_cast<const ResonanceServer::AttenuationCallbackContext*>(userData);
     if (!ctx || !ctx->mutex || !ctx->data)
@@ -449,11 +449,12 @@ void ResonanceServer::_update_source_internal(IPLSource src, int32_t handle, Vec
     const float dm = resonance::sanitize_audio_float(direct_mix_level);
     const float rm = resonance::sanitize_audio_float(reflections_mix_level);
     const float pm = resonance::sanitize_audio_float(pathing_mix_level);
+    // Per-path mix zeros disable that band for both simulation and audio-thread fetch skip logic.
     const bool any_mix = (dm > 0.0f) || (rm > 0.0f) || (pm > 0.0f);
     bool enable_reflections = (reflections_enabled_override == -1) ? true : (reflections_enabled_override != 0);
     enable_reflections = enable_reflections && (rm > 0.0f);
     if (enable_reflections && baked_data_variation == -1 && realtime_reflection_max_distance_m > 0.0f) {
-        Vector3 lip = ResonanceUtils::to_godot_vector3(listener_coords_[0].origin);
+        Vector3 lip = ResonanceUtils::to_godot_vector3(get_current_listener_coords().origin);
         if (pos.distance_to(lip) > static_cast<real_t>(realtime_reflection_max_distance_m))
             enable_reflections = false;
     }
@@ -567,9 +568,7 @@ void ResonanceServer::_update_source_internal(IPLSource src, int32_t handle, Vec
     inputs.hybridReverbTransitionTime = hybrid_reverb_transition_time;
     inputs.hybridReverbOverlapPercent = hybrid_reverb_overlap_percent;
 
-    // get_pathing_batch_for_source Retains the batch. Steam Audio keeps using pathingProbes until
-    // iplSimulatorRunPathing completes; releasing immediately after SetInputs can AV inside RunPathing.
-    // Queue releases; worker drains after RunPathing (simulation_mutex covers both sides).
+    // Pathing batch must outlive SetInputs until RunPathing finishes; queue release for the worker after the sim tick.
     IPLProbeBatch pathing_batch_retained = nullptr;
     if (enable_pathing && pathing_enabled) {
         IPLProbeBatch path_batch = _get_pathing_batch_for_source(pathing_probe_batch_handle);
@@ -612,6 +611,7 @@ void ResonanceServer::_update_source_internal(IPLSource src, int32_t handle, Vec
 void ResonanceServer::_drain_pending_source_lifecycle_assume_locked() {
     if (!_ctx() || !simulator)
         return;
+    // Worker holds simulation_mutex: batch Add/Remove, single Commit, release removed retains, then SetInputs for new sources.
 
     std::vector<PendingSourceAdd> local_adds;
     std::vector<IPLSource> local_removes;
@@ -697,7 +697,7 @@ IPLSource ResonanceServer::get_source_from_handle(int32_t handle) {
     return source_manager.get_source(handle);
 }
 
-// --- CALCULATIONS ---
+// Thin IPL helpers for editor/UI distance/air/directivity preview (not used on the audio thread hot path).
 
 float ResonanceServer::calculate_distance_attenuation(Vector3 source_pos, Vector3 listener_pos, float min_dist, float max_dist) {
     if (!_ctx())

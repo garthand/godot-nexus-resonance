@@ -17,9 +17,9 @@
 
 using namespace godot;
 
-// scene_dirty: set on notify_geometry_changed_assume_locked (triangle edits always; transform-only every kGeometryTransformCoalesceInterval),
-// after dynamic instanced-mesh transforms are applied in the worker, or explicitly via mark_scene_commit_pending_assume_locked.
-// The worker runs iplSceneCommit only when scene_dirty is true.
+// Scene graph I/O: triangle/transform notifications, OBJ/serialized loads, dynamic instanced mesh queues, static-scene export hashes.
+
+// scene_dirty gates iplSceneCommit on the worker (set by geometry edits, coalesced transforms, or explicit mark_scene_commit_pending).
 
 namespace {
 
@@ -94,7 +94,7 @@ void ResonanceServer::save_scene_obj(String file_base_name) {
         if (ps)
             abs_path = ps->globalize_path(file_base_name);
     }
-    // Steam Audio dumpObj writes the OBJ file to the given path as-is (no .obj appended).
+    // Phonon OBJ export uses the path verbatim (append .obj if missing).
     if (!abs_path.ends_with(".obj")) {
         abs_path = abs_path + ".obj";
     }
@@ -191,6 +191,7 @@ void ResonanceServer::cancel_pending_dynamic_instanced_mesh_transform(IPLInstanc
     dynamic_instanced_transform_queue_.erase(mesh);
 }
 
+// Applies queued instanced-mesh transforms; may defer under dynamic_scene_commit_min_interval_ (re-queue transforms if not due).
 bool ResonanceServer::_apply_queued_dynamic_instanced_mesh_transforms_assume_locked() {
     if (!_ctx() || !scene)
         return false;
