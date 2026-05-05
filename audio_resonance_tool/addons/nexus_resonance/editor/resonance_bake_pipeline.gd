@@ -28,11 +28,23 @@ func shutdown() -> void:
 
 
 func run_bake_pipeline_main_thread(volumes: Array[Node]) -> void:
-	var progress_ui = _runner._progress_ui
-	progress_ui.clear_details()
-	progress_ui.set_bake_status(tr(UIStrings.PROGRESS_PREPARING))
-	progress_ui.set_stage(0, volumes.size())
-	if not await _wait_before_bake():
+	var progress_ui = _runner.get("_progress_ui") if _runner else null
+
+	if progress_ui:
+		progress_ui.clear_details()
+		progress_ui.set_stage(0, volumes.size())
+
+	_update_status(tr(UIStrings.PROGRESS_PREPARING))
+
+	var root: Node = null
+	if _runner and _runner.has_method("_get_edited_scene_root"):
+		root = _runner._get_edited_scene_root(volumes)
+	elif _runner and "target_root" in _runner:
+		root = _runner.target_root
+
+	var tree = _get_active_tree(volumes, root)
+
+	if not await _wait_before_bake(tree):
 		return
 	if not ResonanceServerAccess.has_server():
 		_runner._log_and_show_error(
@@ -44,39 +56,35 @@ func run_bake_pipeline_main_thread(volumes: Array[Node]) -> void:
 	if not srv:
 		_runner._finish_pipeline(false, null, volumes)
 		return
-	var root: Node = _runner._get_edited_scene_root(volumes)
+
 	if not root:
-		_runner._log_and_show_error("No scene open", "Open a scene before baking.")
+		_runner._log_and_show_error("No scene root", "Open a scene or assign a target_root before baking.")
 		_runner._finish_pipeline(false, null, volumes)
 		return
 	var static_scene_node = _BakeDiscovery.find_resonance_static_scene_for_bake(volumes, root)
 	var static_asset = static_scene_node.get("static_scene_asset") if static_scene_node else null
 	var baked_probe_datas: Array = []
-	var tree = (
-		_runner.editor_interface.get_base_control().get_tree() if _runner.editor_interface else null
-	)
+
 	var vol_index := 0
 	for vol in volumes:
-		if progress_ui.cancel_requested:
+		if _is_canceled():
 			_runner.call_deferred("_on_bake_pipeline_finished", false, null, volumes)
 			return
 		vol_index += 1
 		var ctx = _VolumeCtx.build(
-			vol,
-			root,
-			vol_index,
-			volumes.size(),
-			static_asset,
-			Callable(_runner, "_get_bake_config_for_volume"),
-			DEFAULT_BAKE_INFLUENCE_RADIUS
+			vol, root, vol_index, volumes.size(), static_asset,
+			Callable(_runner, "_get_bake_config_for_volume"), DEFAULT_BAKE_INFLUENCE_RADIUS
 		)
 		var bc = _runner._get_bake_config_for_volume(vol)
-		progress_ui.set_stage(
-			vol_index,
-			volumes.size(),
-			_BakeEstimates.estimate_bake_time(vol, bc) if vol_index == 1 else ""
-		)
-		progress_ui.set_bake_status(tr(UIStrings.PROGRESS_PROCESSING) + ctx.vol_info)
+		if progress_ui:
+			progress_ui.set_stage(
+				vol_index,
+				volumes.size(),
+				_BakeEstimates.estimate_bake_time(vol, bc) if vol_index == 1 else ""
+			)
+
+		_update_status(tr(UIStrings.PROGRESS_PROCESSING) + ctx.vol_info)
+
 		if tree:
 			await tree.process_frame
 			await tree.create_timer(BAKE_VOLUME_DELAY_SEC).timeout
@@ -92,35 +100,37 @@ func run_bake_pipeline_main_thread(volumes: Array[Node]) -> void:
 			)
 			_runner._finish_pipeline(false, null, volumes)
 			return
-		if progress_ui.cancel_requested:
+
+		if _is_canceled():
 			_runner._finish_pipeline(false, null, volumes)
 			return
 		baked_probe_datas.append(vol.get_probe_data())
 	_runner._finish_pipeline(true, baked_probe_datas, volumes)
 
 
-func _wait_before_bake() -> bool:
-	var tree = (
-		_runner.editor_interface.get_base_control().get_tree() if _runner.editor_interface else null
-	)
+func _wait_before_bake(tree: SceneTree) -> bool:
 	if tree:
 		await tree.process_frame
 		await tree.create_timer(BAKE_INITIAL_DELAY_SEC).timeout
-	return not _runner._progress_ui.cancel_requested
+	return not _is_canceled()
 
 
 func _run_in_thread_with_cancel_poll(bake_callable: Callable) -> Variant:
 	var result: Variant = null
 	var thread = Thread.new()
 	thread.start(func() -> void: result = bake_callable.call())
-	var tree = (
-		_runner.editor_interface.get_base_control().get_tree() if _runner.editor_interface else null
-	)
+
+	var tree = _get_active_tree()
 	var srv = ResonanceServerAccess.get_server()
 	while thread.is_alive():
 		if tree:
 			await tree.process_frame
-		if _runner._progress_ui.cancel_requested and srv:
+		else:
+			# If the tree is somehow completely missing, force a delay
+			# so the CPU doesn't get trapped in an infinite lockup
+			OS.delay_msec(10)
+
+		if _is_canceled() and srv:
 			srv.cancel_reflections_bake()
 			srv.cancel_pathing_bake()
 	thread.wait_to_finish()
@@ -181,8 +191,7 @@ func _skip_if_up_to_date(ctx: Variant) -> bool:
 
 func _bake_reflections(ctx: Variant) -> bool:
 	var srv = ResonanceServerAccess.get_server()
-	var progress_ui = _runner._progress_ui
-	progress_ui.set_bake_status(tr(UIStrings.PROGRESS_BAKING_REVERB) + ctx.vol_info)
+	_update_status(tr(UIStrings.PROGRESS_BAKING_REVERB) + ctx.vol_info)
 	_prepare_probe_data_for_bake(ctx.vol, ctx.probe_data, ctx.root)
 	var volume_transform = ctx.vol.global_transform
 	var extents = ctx.vol.get("region_size") * 0.5
@@ -194,7 +203,8 @@ func _bake_reflections(ctx: Variant) -> bool:
 			volume_transform, extents, spacing, gen_type, height, ctx.probe_data
 		)
 	await _run_in_thread_with_cancel_poll(do_bake)
-	if progress_ui.cancel_requested:
+
+	if _is_canceled():
 		return false
 	ctx.probe_data = ctx.vol.get_probe_data()
 	if not ctx.probe_data or ctx.probe_data.get_data().is_empty():
@@ -223,8 +233,7 @@ func _bake_reflections(ctx: Variant) -> bool:
 func _run_bake_step(
 	ctx: Variant, status_key: String, bake_callable: Callable, hash_setter: String, hash_value: int
 ) -> void:
-	var progress_ui = _runner._progress_ui
-	progress_ui.set_bake_status(status_key + ctx.vol_info)
+	_update_status(status_key + ctx.vol_info)
 	var ok = await _run_in_thread_with_cancel_poll(bake_callable)
 	if ok and ctx.probe_data.has_method(hash_setter):
 		ctx.probe_data.call(hash_setter, hash_value)
@@ -254,19 +263,17 @@ func _bake_static_source(ctx: Variant) -> void:
 	if entries.is_empty():
 		# Legacy single-source fallback when no bake_sources were resolved but the flag is on.
 		entries = [{"pos": ctx.player_pos, "radius": ctx.player_radius}]
-	var progress_ui = _runner._progress_ui
+
 	var total: int = entries.size()
 	var all_ok: bool = true
 	for i in total:
 		var e = entries[i]
 		var pos: Vector3 = e.pos
 		var radius: float = e.radius
-		progress_ui.set_bake_status(
-			(
-				tr(UIStrings.PROGRESS_BAKING_STATIC_SOURCE)
-				+ ctx.vol_info
-				+ (" [%d/%d]" % [i + 1, total] if total > 1 else "")
-			)
+
+		_update_status(
+			(tr(UIStrings.PROGRESS_BAKING_STATIC_SOURCE) + ctx.vol_info +
+			(" [%d/%d]" % [i + 1, total] if total > 1 else ""))
 		)
 		var do_static_source = func() -> bool:
 			return srv.bake_static_source(ctx.probe_data, pos, radius)
@@ -274,7 +281,7 @@ func _bake_static_source(ctx: Variant) -> void:
 		if not ok:
 			all_ok = false
 		ctx.probe_data = ctx.vol.get_probe_data()
-		if progress_ui.cancel_requested:
+		if _is_canceled():
 			return
 	if all_ok and ctx.probe_data and ctx.probe_data.has_method("set_static_source_params_hash"):
 		var hash_value: int = (
@@ -290,19 +297,17 @@ func _bake_static_listener(ctx: Variant) -> void:
 	var entries: Array = ctx.static_listener_entries
 	if entries.is_empty():
 		entries = [{"pos": ctx.listener_pos, "radius": ctx.listener_radius}]
-	var progress_ui = _runner._progress_ui
+
 	var total: int = entries.size()
 	var all_ok: bool = true
 	for i in total:
 		var e = entries[i]
 		var pos: Vector3 = e.pos
 		var radius: float = e.radius
-		progress_ui.set_bake_status(
-			(
-				tr(UIStrings.PROGRESS_BAKING_STATIC_LISTENER)
-				+ ctx.vol_info
-				+ (" [%d/%d]" % [i + 1, total] if total > 1 else "")
-			)
+
+		_update_status(
+			(tr(UIStrings.PROGRESS_BAKING_STATIC_LISTENER) + ctx.vol_info +
+			(" [%d/%d]" % [i + 1, total] if total > 1 else ""))
 		)
 		var do_static_listener = func() -> bool:
 			return srv.bake_static_listener(ctx.probe_data, pos, radius)
@@ -310,7 +315,7 @@ func _bake_static_listener(ctx: Variant) -> void:
 		if not ok:
 			all_ok = false
 		ctx.probe_data = ctx.vol.get_probe_data()
-		if progress_ui.cancel_requested:
+		if _is_canceled():
 			return
 	if all_ok and ctx.probe_data and ctx.probe_data.has_method("set_static_listener_params_hash"):
 		var hash_value: int = (
@@ -323,11 +328,10 @@ func _bake_static_listener(ctx: Variant) -> void:
 
 func _run_bake_for_volume(ctx: Variant) -> bool:
 	var srv = ResonanceServerAccess.get_server()
-	var progress_ui = _runner._progress_ui
 	srv.set_bake_params(ctx.bc.get_bake_params())
 	srv.set_bake_pipeline_pathing(ctx.need_pathing)
 	if _skip_if_up_to_date(ctx):
-		progress_ui.set_bake_status(tr(UIStrings.PROGRESS_SKIPPING) + ctx.vol_info)
+		_update_status(tr(UIStrings.PROGRESS_SKIPPING) + ctx.vol_info)
 		return true
 	if not await _bake_reflections(ctx):
 		return false
@@ -338,3 +342,36 @@ func _run_bake_for_volume(ctx: Variant) -> bool:
 	if ctx.need_static_listener and ctx.add_flags.static_listener:
 		await _bake_static_listener(ctx)
 	return true
+
+
+func _update_status(msg: String) -> void:
+	var pui = _runner.get("_progress_ui") if _runner else null
+	if pui:
+		pui.set_bake_status(msg)
+	elif _runner and _runner.has_signal("bake_progress_updated"):
+		_runner.emit_signal("bake_progress_updated", msg)
+
+
+func _is_canceled() -> bool:
+	var pui = _runner.get("_progress_ui") if _runner else null
+	return pui.cancel_requested if pui else false
+
+
+func _get_active_tree(volumes: Array[Node] = [], fallback_root: Node = null) -> SceneTree:
+	var ei = _runner.get("editor_interface") if _runner else null
+	if ei and ei.has_method("get_base_control"):
+		var base = ei.get_base_control()
+		if base: return base.get_tree()
+
+	# Try to grab the tree from the live scene arguments.
+	if fallback_root and fallback_root.is_inside_tree():
+		return fallback_root.get_tree()
+	if volumes.size() > 0 and volumes[0].is_inside_tree():
+		return volumes[0].get_tree()
+
+	# In a running game, the main loop will usually be the SceneTree.
+	var main_loop = Engine.get_main_loop()
+	if main_loop is SceneTree:
+		return main_loop
+
+	return null

@@ -29,6 +29,23 @@ Steam Audio integration for Godot 4: physics-based occlusion, reverb, and pathin
 
 Use the toolbar buttons (Bake Probes, Bake Pathing, Bake More) when a ResonanceProbeVolume is selected. Bake progress appears in the toolbar.
 
+### Runtime Baking (Procedural Generation)
+If you are generating levels dynamically or need to bake acoustics in an exported game without the Godot Editor UI, you can use the `ResonanceRuntimeBaker` public API. This bypasses the Editor's disk-write requirements and bakes acoustic data directly into RAM.
+
+```gdscript
+var runtime_baker = ResonanceRuntimeBaker.new()
+
+# Optional: Connect to signals for custom loading screens
+runtime_baker.bake_progress_updated.connect(func(msg): print("Baking: ", msg))
+runtime_baker.bake_finished.connect(_on_bake_finished)
+
+# Pass your array of ResonanceProbeVolumes and the root of your procedural level
+runtime_baker.bake_volumes_to_ram([my_probe_volume], map_root_node)
+
+# Clean up when you are completely finished
+runtime_baker.shutdown()
+```
+
 ## Audio Buffer & Latency
 
 - **ResonanceRuntimeConfig → Ray Tracer Settings → Audio Frame Size**: Steam Audio processing block size (256, 512, 1024). 512 matches Godot’s typical mix callback. 256 = lower latency, more CPU; 1024 = higher latency, less CPU.
