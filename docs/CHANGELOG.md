@@ -5,6 +5,12 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),  
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.9.17] - 2026-05-05
+
+### Added
+
+- **Runtime baking API** - Added `ResonanceRuntimeBaker`to support headless/runtime baking for procedural generation without relying on `EditorInterface` or `ResourceSaver` (bakes into RAM). Contributed by [garthand](https://github.com/garthand)
+
 ## [0.9.16] - 2026-05-04
 
 ### Changed

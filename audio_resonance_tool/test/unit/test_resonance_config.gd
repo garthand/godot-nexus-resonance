@@ -108,6 +108,17 @@ func test_direct_speaker_channels_default_and_passthrough():
 	)
 
 
+func test_get_config_includes_split_binaural_flags():
+	var rt = ResonanceRuntimeConfig.create_default()
+	rt.direct_binaural = false
+	rt.reverb_binaural = true
+	rt.pathing_binaural = false
+	var config = rt.get_config()
+	assert_eq(config.get("direct_binaural", true), false)
+	assert_eq(config.get("reverb_binaural", false), true)
+	assert_eq(config.get("pathing_binaural", true), false)
+
+
 func test_get_config_includes_simulator_and_hrtf_keys():
 	var rt = ResonanceRuntimeConfig.create_default()
 	rt.hrtf_volume_db = -3.0
@@ -136,6 +147,9 @@ func test_get_config_includes_simulator_and_hrtf_keys():
 func test_get_config_includes_reflection_performance_keys():
 	var rt = ResonanceRuntimeConfig.create_default()
 	rt.reflections_adaptive_budget_us = 50000
+	rt.reflections_adaptive_ray_min = 256
+	rt.reflections_adaptive_ray_recover_frac = 0.25
+	rt.reflections_adaptive_ray_recover_cap = 1024
 	rt.reflections_adaptive_step_sec = 0.03
 	rt.reflections_adaptive_max_extra_interval = 0.25
 	rt.reflections_adaptive_decay_per_sec = 0.08
@@ -143,6 +157,9 @@ func test_get_config_includes_reflection_performance_keys():
 	rt.convolution_ir_max_samples = 24000
 	var config = rt.get_config()
 	assert_eq(config.get("reflections_adaptive_budget_us", -1), 50000)
+	assert_eq(config.get("reflections_adaptive_ray_min", -1), 256)
+	assert_eq(config.get("reflections_adaptive_ray_recover_frac", -1.0), 0.25)
+	assert_eq(config.get("reflections_adaptive_ray_recover_cap", -1), 1024)
 	assert_eq(config.get("reflections_adaptive_step_sec", -1.0), 0.03)
 	assert_eq(config.get("reflections_adaptive_max_extra_interval", -1.0), 0.25)
 	assert_eq(config.get("reflections_adaptive_decay_per_sec", -1.0), 0.08)
@@ -155,14 +172,13 @@ func test_get_hrtf_sofa_effective_empty_list_returns_null():
 	assert_null(rt.get_hrtf_sofa_effective(), "no SOFA when library empty and legacy slot null")
 
 
-func test_apply_performance_schedule_preset_performance_sets_fields():
+func test_apply_performance_schedule_preset_balanced_sets_fields():
 	var rt = ResonanceRuntimeConfig.create_default()
-	rt.apply_performance_schedule_preset = 3
-	assert_eq(rt.simulation_update_interval, 0.2, "Performance preset interval")
-	assert_eq(rt.simulation_tick_throttle, 2, "Performance preset tick throttle")
-	assert_eq(rt.direct_sim_interval, 0.03, "Performance preset direct interval")
-	assert_eq(rt.geometry_update_throttle, 8, "Performance preset geometry throttle")
-	assert_eq(rt.apply_performance_schedule_preset, 0, "preset snaps back to Custom after apply")
+	rt.apply_performance_schedule_preset = 2
+	assert_eq(rt.reflections_sim_interval, 0.2, "Balanced preset reflections interval")
+	assert_eq(rt.pathing_sim_interval, 0.2, "Balanced preset pathing interval")
+	assert_eq(rt.direct_sim_interval, 0.03, "Balanced preset direct interval")
+	assert_eq(rt.apply_performance_schedule_preset, 2, "Balanced preset stays selected until a scheduling knob is tweaked")
 
 
 # --- get_effective_realtime_rays: pass-through on all platforms (v0.9.4+) ---

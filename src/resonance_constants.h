@@ -9,7 +9,7 @@ namespace resonance {
 
 /// Version string (centralized; override via NEXUS_RESONANCE_VERSION when building)
 #ifndef NEXUS_RESONANCE_VERSION
-#define NEXUS_RESONANCE_VERSION "0.9.16"
+#define NEXUS_RESONANCE_VERSION "0.9.17"
 #endif
 constexpr const char* kVersion = NEXUS_RESONANCE_VERSION;
 
