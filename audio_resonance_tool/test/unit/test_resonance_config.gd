@@ -178,7 +178,11 @@ func test_apply_performance_schedule_preset_balanced_sets_fields():
 	assert_eq(rt.reflections_sim_interval, 0.2, "Balanced preset reflections interval")
 	assert_eq(rt.pathing_sim_interval, 0.2, "Balanced preset pathing interval")
 	assert_eq(rt.direct_sim_interval, 0.03, "Balanced preset direct interval")
-	assert_eq(rt.apply_performance_schedule_preset, 2, "Balanced preset stays selected until a scheduling knob is tweaked")
+	assert_eq(
+		rt.apply_performance_schedule_preset,
+		2,
+		"Balanced preset stays selected until a scheduling knob is tweaked"
+	)
 
 
 # --- get_effective_realtime_rays: pass-through on all platforms (v0.9.4+) ---

@@ -6,9 +6,10 @@ class_name ResonanceRuntimeBaker
 ## or dynamic level pipelines where the Godot Editor UI is not available.
 
 signal bake_progress_updated(status_message: String)
-signal bake_finished()
+signal bake_finished
 
 var _runner: ResonanceBakeRunner
+
 
 func _init() -> void:
 	# Instantiate the runner with a null EditorInterface to trigger Headless Mode
@@ -17,6 +18,7 @@ func _init() -> void:
 	# Route the internal runner signals up to this public API
 	_runner.bake_progress_updated.connect(func(msg: String): bake_progress_updated.emit(msg))
 	_runner.bake_finished.connect(func(): bake_finished.emit())
+
 
 ## Bakes the provided volumes and injects the resulting acoustic data directly into RAM.
 ## This bypasses the ResourceSaver entirely, preventing disk write errors in exported builds.
@@ -28,6 +30,7 @@ func bake_volumes_to_ram(volumes: Array[Node], scene_root: Node) -> void:
 
 	# The third parameter (false) tells the Runner to skip saving to the hard drive!
 	_runner.run_bake(volumes, scene_root, false)
+
 
 ## Cleans up the runner and safely breaks reference cycles.
 func shutdown() -> void:
