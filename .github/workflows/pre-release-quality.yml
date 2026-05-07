@@ -16,7 +16,13 @@ jobs:
           submodules: recursive
 
       - name: Setup GDScript Toolkit
-        uses: Scony/godot-gdscript-toolkit@4.5.0
+        uses: actions/setup-python@v6
+        with:
+          python-version: '3.x'
+          cache: 'pip'
+
+      - name: Install GDScript Toolkit
+        run: pip install "gdtoolkit==4.5.0"
 
       - name: Check GDScript format
         working-directory: audio_resonance_tool
