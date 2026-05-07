@@ -70,6 +70,8 @@ ResonanceServer::ResonanceServer() {
     occlusion_cache_front_.store(0, std::memory_order_release);
     for (size_t i = 0; i < reflections_pending_.size(); i++)
         reflections_pending_[i].store(false, std::memory_order_release);
+    for (size_t i = 0; i < _source_baked_reverb_listener_probe_override_.size(); i++)
+        _source_baked_reverb_listener_probe_override_[i].store(-1, std::memory_order_release);
     for (int slot = 0; slot < kCacheSlots; slot++) {
         for (int i = 0; i < kMaxCacheHandles; i++) {
             reverb_param_cache_[static_cast<size_t>(slot)][static_cast<size_t>(i)].epoch = 0;
@@ -165,6 +167,7 @@ void ResonanceServer::_apply_config(Dictionary config) {
     reverb_transmission_amount = config_.reverb_transmission_amount;
     apply_occlusion_to_baked_reflections = config_.apply_occlusion_to_baked_reflections;
     apply_distance_curve_to_reflections = config_.apply_distance_curve_to_reflections;
+    baked_reverb_use_listener_probe = config_.baked_reverb_use_listener_probe;
     reflection_type = config_.reflection_type;
     default_reflections_mode = config_.default_reflections_mode;
     hybrid_reverb_transition_time = config_.hybrid_reverb_transition_time;

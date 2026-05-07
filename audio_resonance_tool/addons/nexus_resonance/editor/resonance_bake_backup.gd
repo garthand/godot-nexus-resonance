@@ -3,6 +3,11 @@ extends RefCounted
 class_name ResonanceBakeBackup
 
 ## Backup and restore logic for probe data before bake. Extracted for SRP.
+##
+## Backups are 1:1 file copies of the resource on disk (see [code]create_backups[/code]).
+## Using [DirAccess.copy_absolute] instead of [ResourceSaver.save] avoids invoking the custom
+## probe data saver, which would call [code]take_over_path[/code] on the resource and silently
+## reroute future saves to the .bak file. That bug previously produced .res.bak.bak.bak chains.
 
 const UIStrings = preload("res://addons/nexus_resonance/scripts/resonance_ui_strings.gd")
 const ResonanceEditorDialogs = preload(
@@ -12,19 +17,56 @@ const ResonanceEditorDialogs = preload(
 var _backup_paths: Dictionary = {}  # probe_data resource_path -> backup file path
 
 
+## Strips trailing .bak suffixes (e.g. self-heal a path like "foo.res.bak.bak" -> "foo.res").
+static func _strip_bak_suffixes(path: String) -> String:
+	var p := path
+	while p.ends_with(".bak"):
+		p = p.get_basename()
+	return p
+
+
 func create_backups(volumes: Array[Node]) -> void:
 	_backup_paths.clear()
 	for vol in volumes:
 		var pd = vol.get_probe_data() if vol.has_method("get_probe_data") else null
-		if pd and pd.resource_path and pd.resource_path.get_file().length() > 0:
-			var backup_path = pd.resource_path + ".bak"
-			var err = ResourceSaver.save(pd, backup_path)
-			if err == OK:
-				_backup_paths[pd.resource_path] = backup_path
+		if not pd or not pd.resource_path or pd.resource_path.get_file().length() == 0:
+			continue
+		var original_path: String = _strip_bak_suffixes(pd.resource_path)
+		# Self-heal: if a previous (buggy) bake left resource_path pointing at a .bak file,
+		# point it back to the canonical path before saving anything else.
+		if original_path != pd.resource_path and pd.has_method("take_over_path"):
+			pd.take_over_path(original_path)
+		if not FileAccess.file_exists(original_path):
+			continue
+		var backup_path: String = original_path + ".bak"
+		# DirAccess.copy_absolute overwrites if backup_path already exists.
+		var err: int = DirAccess.copy_absolute(original_path, backup_path)
+		if err == OK:
+			_backup_paths[original_path] = backup_path
+		else:
+			push_warning(
+				"Nexus Resonance: Failed to create probe data backup at %s (error %d)."
+				% [backup_path, err]
+			)
 
 
 func has_backups() -> bool:
 	return not _backup_paths.is_empty()
+
+
+func discard_backups() -> void:
+	for backup_path in _backup_paths.values():
+		_remove_backup_file(backup_path)
+	_backup_paths.clear()
+
+
+static func _remove_backup_file(backup_path: String) -> void:
+	if FileAccess.file_exists(backup_path):
+		DirAccess.remove_absolute(backup_path)
+	# Companion .uid files may exist from legacy ResourceSaver-based backups.
+	var uid_path := backup_path + ".uid"
+	if FileAccess.file_exists(uid_path):
+		DirAccess.remove_absolute(uid_path)
 
 
 func restore(
@@ -37,7 +79,8 @@ func restore(
 		var pd = vol.get_probe_data() if vol.has_method("get_probe_data") else null
 		if not pd or not pd.resource_path:
 			continue
-		var backup_path = _backup_paths.get(pd.resource_path, "")
+		var lookup_path: String = _strip_bak_suffixes(pd.resource_path)
+		var backup_path: String = _backup_paths.get(lookup_path, "")
 		if backup_path.is_empty() or not FileAccess.file_exists(backup_path):
 			continue
 		var backup = load(backup_path) as Resource
@@ -46,9 +89,15 @@ func restore(
 				pd.copy_from(backup)
 			else:
 				_copy_probe_data_properties(pd, backup)
-			ResourceSaver.save(pd, pd.resource_path)
+			# Make sure resource_path is the canonical path before saving.
+			if pd.resource_path != lookup_path and pd.has_method("take_over_path"):
+				pd.take_over_path(lookup_path)
+			ResourceSaver.save(pd, lookup_path)
 			on_reload.call(pd, volumes)
 	ResonanceEditorDialogs.show_success_toast(editor_interface, UIStrings.INFO_BACKUP_RESTORED)
+	# After successful restore, the .bak files are no longer needed.
+	for backup_path in _backup_paths.values():
+		_remove_backup_file(backup_path)
 	_backup_paths.clear()
 	on_complete.call()
 

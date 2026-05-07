@@ -41,9 +41,22 @@ func test_recognize_rejects_null():
 func test_get_recognized_extensions():
 	var saver = ProbeDataSaverScript.new()
 	var exts = saver._get_recognized_extensions(null)
-	assert_eq(exts.size(), 2, "should have tres + bak")
+	assert_eq(exts.size(), 1, "should only recognize tres (bak is no longer a save target)")
 	assert_true(exts.has("tres"), "should recognize tres")
-	assert_true(exts.has("bak"), "should recognize bak")
+	assert_false(exts.has("bak"), "must not recognize bak anymore")
+
+
+func test_save_rejects_bak_path():
+	if not ClassDB.class_exists("ResonanceProbeData"):
+		pass_test("ResonanceProbeData not available")
+		return
+	var probe_data = ClassDB.instantiate("ResonanceProbeData") as Resource
+	probe_data.set("data", PackedByteArray([1, 2, 3]))
+	var saver = ProbeDataSaverScript.new()
+	var bak_path := "user://gut_test_probe_save_reject.tres.bak"
+	var err = saver._save(probe_data, bak_path, 0)
+	assert_eq(err, ERR_INVALID_PARAMETER, "saver must refuse .bak destinations")
+	assert_false(FileAccess.file_exists(bak_path), "no file should be written for rejected save")
 
 
 func test_save_writes_valid_tres():

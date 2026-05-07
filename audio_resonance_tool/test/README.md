@@ -72,6 +72,7 @@ Godot **TYPE_AUDIO** uses `AudioStreamPolyphonic`; **ResonancePlayer** must use 
 | `test/run_resonance_method_track_smoke.gd` | Minimal scene: METHOD track → `play_animation_audio_clip`. |
 | `test/run_animation_audio_plain_smoke.gd` | Same as minimal but **AudioStreamPlayer3D** (native polyphonic reference). |
 | `test/run_reverb_tail_smoke.gd` | Verifies the v0.9.13 fix that lets the reverb / pathing tail decay after a one-shot stream ends and after explicit `ResonancePlayer.stop()` (asserts `mix_calls` keep advancing and `zero_input_count > 0` during the tail window). |
+| `test/run_hallway_reverb_capture.gd` | Headless diagnostic: loads `hallway_test/main.tscn`, captures **Master** and **ResonanceReverb** with `AudioEffectCapture`, logs logical clip via `get_stream()`, prints dual RMS/peak, sparklines, `zero_input` edge after blocks ran; writes `user://hallway_reverb_capture.csv` (rms columns = max chunk RMS per poll). Compare builds: `python scripts/compare_hallway_reverb_csv.py before.csv after.csv`. |
 
 Example:
 

@@ -12,6 +12,7 @@ enum class ReflectionInitFlags : int {
     NONE = 0,
     REFLECTIONEFFECT = 1 << 0,
     BUFFERS = 1 << 1,
+    AIRABSORPTIONEFFECT = 1 << 2,
 };
 inline ReflectionInitFlags operator|(ReflectionInitFlags a, ReflectionInitFlags b) {
     return static_cast<ReflectionInitFlags>(static_cast<int>(a) | static_cast<int>(b));
@@ -22,6 +23,12 @@ class ResonanceReflectionProcessor {
   private:
     IPLContext context = nullptr;
     IPLReflectionEffect reflection_effect = nullptr;
+    /// Secondary IPLDirectEffect used purely as a 3-band air-absorption pre-EQ on the wet mono tap, so the baked
+    /// reverb tail picks up source→listener air absorption that the IR itself does not encode (parity with
+    /// realtime ray-traced reflections, which include air absorption per ray).
+    IPLDirectEffect air_absorption_effect = nullptr;
+    IPLAudioBuffer sa_air_absorption_in_buffer{};
+    IPLAudioBuffer sa_air_absorption_out_buffer{};
 
     IPLAudioBuffer sa_mono_buffer{};     // downmixed dry feed for Apply
     IPLAudioBuffer sa_temp_out_buffer{}; // effect output (Ambisonics or parametric mono); API needs a destination even when feeding a mixer
@@ -36,6 +43,9 @@ class ResonanceReflectionProcessor {
     /// 0 = no cap. Clamp applied IR length (convolution/hybrid/tan) to at most this and effect allocation.
     int convolution_ir_max_samples_ = 0;
     int effect_max_ir_samples_ = 0;
+    /// Cached previous-block air absorption for ramping (avoid 3-band coefficient jumps producing zipper noise).
+    float prev_air_absorption_[3] = {1.0f, 1.0f, 1.0f};
+    bool prev_air_absorption_valid_ = false;
 
   public:
     ResonanceReflectionProcessor() = default;
@@ -52,17 +62,22 @@ class ResonanceReflectionProcessor {
     void cleanup();
 
     /// Downmix, ramp `reflections_mix_level` on mono (prev = -1: no ramp on first block), then `wet_extra_gain` (no cross-fade between blocks).
+    /// When `apply_air_absorption` is true, run the mono tap through the air-absorption pre-EQ before Apply; coefficients are ramped block-to-block.
     /// Returns false if convolution/hybrid IR is null so the caller’s ramp state stays aligned.
     bool process_mix(const IPLAudioBuffer& in_buffer,
                      const IPLReflectionEffectParams& reverb_params,
                      IPLReflectionMixer mixer_handle,
                      float prev_reflections_mix_level,
                      float reflections_mix_level,
-                     float wet_extra_gain);
+                     float wet_extra_gain,
+                     bool apply_air_absorption,
+                     const float air_absorption[3]);
 
     /// Mixer bypass: Apply with `mixer=null`, HOA (or parametric) in `sa_temp_out_buffer` until the next call—caller decodes/routes wet.
     bool process_mix_direct(const IPLAudioBuffer& in_buffer, const IPLReflectionEffectParams& reverb_params,
-                            float prev_reflections_mix_level, float reflections_mix_level);
+                            float prev_reflections_mix_level, float reflections_mix_level,
+                            bool apply_air_absorption,
+                            const float air_absorption[3]);
     IPLAudioBuffer* get_direct_output_buffer() { return &sa_temp_out_buffer; }
     bool is_parametric() const { return reflection_type == resonance::kReflectionParametric; }
 
@@ -75,6 +90,9 @@ class ResonanceReflectionProcessor {
 
   private:
     void sanitize_reflection_params(IPLReflectionEffectParams* params) const;
+    /// Run the mono tap through the air-absorption pre-EQ in place. No-op if the effect is not initialized.
+    /// Coefficients are ramped from `prev_air_absorption_` to `target` across the block to avoid zipper noise.
+    void apply_air_absorption_in_place(const float target[3]);
 };
 
 } // namespace godot

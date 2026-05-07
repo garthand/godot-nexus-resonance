@@ -5,6 +5,25 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),  
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.9.18] - 2026-05-07
+
+### Added
+
+- **Runtime baking API** - Added runtime helpers to flush and reload probe volume bakes in memory.
+- **Air absorption on baked reverb wet path** - Baked reflection modes (REVERB / STATICSOURCE / STATICLISTENER) now run the wet mono tap through a 3-band air-absorption pre-EQ before `iplReflectionEffectApply`, so distant baked sources lose high-frequency energy the same way realtime ray-traced IRs do (which encode air absorption per ray).
+- **Listener-centric probe lookup for baked REVERB** - Baked REVERB now selects the probe nearest the **listener** (instead of the source), so crossing room boundaries no longer plays the wrong IR. Controlled by API `baked_reverb_use_listener_probe` (default **on**) and / or `reflections_sampling_mode` in configs.
+
+### Changed
+
+- `reverb_max_distance` now defaults to **100 m** (was 0 / off). Wet reflections fade out smoothly past this distance instead of staying at full level forever.
+- **Wet distance attenuation** - The reverb / pathing wet path now follows a dedicated 1/d falloff (with smooth fade-to-zero in the last 10 % of `min_distance..max_distance`) for **all** attenuation modes — not just `LINEAR` / `CUSTOM_CURVE`. Previously, `INVERSE_NO_SIM` left the wet at unity at any distance and `INVERSE` stayed asymptotic, so distant baked reverb appeared to "stay loud forever". `LINEAR` / `CUSTOM_CURVE` users still see the direct curve win when it is steeper than 1/d. New helper `resonance::reverb_wet_distance_attenuation(dist, min, max)`.
+
+### Fixed
+
+- **Probe bake backups** - Fixed an issue where repeated bakes could create chained `.bak.bak.bak` files and fail to save the latest bake output to the expected resource path.
+- **ResonancePlayer.finished** - `finished` now emits when the **dry path** ends (not after wet/pathing tail drain), so equal-length clips fire deterministically regardless of reverb tail length.
+- **Wet path distance attenuation in `INVERSE_NO_SIM` / `INVERSE` modes** - `_compute_attenuation` no longer returns 1.0 (constant) for the wet path in `INVERSE_NO_SIM`, and no longer leaves the wet asymptotic in `INVERSE`. Both modes now decay with the new wet 1/d helper and reach zero at `max_distance`.
+
 ## [0.9.17] - 2026-05-05
 
 ### Added

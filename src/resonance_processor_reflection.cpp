@@ -101,6 +101,30 @@ void ResonanceReflectionProcessor::initialize(IPLContext p_context, int p_sample
         return;
     }
     init_flags = init_flags | ReflectionInitFlags::BUFFERS;
+
+    // Air-absorption pre-EQ (used only for baked reflections, where the IR does not encode source→listener
+    // air absorption). Cheap: 3-band IIR inside Steam Audio's IPLDirectEffect on a single mono channel.
+    IPLDirectEffectSettings airSettings{};
+    airSettings.numChannels = 1;
+    if (iplDirectEffectCreate(context, &audioSettings, &airSettings, &air_absorption_effect) == IPL_STATUS_SUCCESS) {
+        if (iplAudioBufferAllocate(context, 1, frame_size, &sa_air_absorption_in_buffer) == IPL_STATUS_SUCCESS &&
+            iplAudioBufferAllocate(context, 1, frame_size, &sa_air_absorption_out_buffer) == IPL_STATUS_SUCCESS) {
+            init_flags = init_flags | ReflectionInitFlags::AIRABSORPTIONEFFECT;
+        } else {
+            ResonanceLog::error("ResonanceReflectionProcessor: air-absorption buffer allocation failed; pre-EQ disabled.");
+            iplDirectEffectRelease(&air_absorption_effect);
+            air_absorption_effect = nullptr;
+            if (sa_air_absorption_in_buffer.data)
+                iplAudioBufferFree(context, &sa_air_absorption_in_buffer);
+            if (sa_air_absorption_out_buffer.data)
+                iplAudioBufferFree(context, &sa_air_absorption_out_buffer);
+            memset(&sa_air_absorption_in_buffer, 0, sizeof(sa_air_absorption_in_buffer));
+            memset(&sa_air_absorption_out_buffer, 0, sizeof(sa_air_absorption_out_buffer));
+        }
+    } else {
+        // Non-fatal: reflection processing still runs without the wet air-absorption stage.
+        ResonanceLog::error("ResonanceReflectionProcessor: iplDirectEffectCreate (air-absorption pre-EQ) failed; pre-EQ disabled.");
+    }
 }
 
 void ResonanceReflectionProcessor::cleanup() {
@@ -108,20 +132,34 @@ void ResonanceReflectionProcessor::cleanup() {
         iplReflectionEffectRelease(&reflection_effect);
         reflection_effect = nullptr;
     }
+    if (air_absorption_effect) {
+        iplDirectEffectRelease(&air_absorption_effect);
+        air_absorption_effect = nullptr;
+    }
 
     if (context) {
         if (sa_mono_buffer.data)
             iplAudioBufferFree(context, &sa_mono_buffer);
         if (sa_temp_out_buffer.data)
             iplAudioBufferFree(context, &sa_temp_out_buffer);
+        if (sa_air_absorption_in_buffer.data)
+            iplAudioBufferFree(context, &sa_air_absorption_in_buffer);
+        if (sa_air_absorption_out_buffer.data)
+            iplAudioBufferFree(context, &sa_air_absorption_out_buffer);
     }
     memset(&sa_mono_buffer, 0, sizeof(sa_mono_buffer));
     memset(&sa_temp_out_buffer, 0, sizeof(sa_temp_out_buffer));
+    memset(&sa_air_absorption_in_buffer, 0, sizeof(sa_air_absorption_in_buffer));
+    memset(&sa_air_absorption_out_buffer, 0, sizeof(sa_air_absorption_out_buffer));
 
     context = nullptr;
     init_flags = ReflectionInitFlags::NONE;
     convolution_ir_max_samples_ = 0;
     effect_max_ir_samples_ = 0;
+    prev_air_absorption_[0] = 1.0f;
+    prev_air_absorption_[1] = 1.0f;
+    prev_air_absorption_[2] = 1.0f;
+    prev_air_absorption_valid_ = false;
 }
 
 bool ResonanceReflectionProcessor::process_mix(const IPLAudioBuffer& in_buffer,
@@ -129,7 +167,9 @@ bool ResonanceReflectionProcessor::process_mix(const IPLAudioBuffer& in_buffer,
                                                IPLReflectionMixer mixer_handle,
                                                float prev_reflections_mix_level,
                                                float reflections_mix_level,
-                                               float wet_extra_gain) {
+                                               float wet_extra_gain,
+                                               bool apply_air_absorption,
+                                               const float air_absorption[3]) {
 
     if (!(init_flags & ReflectionInitFlags::REFLECTIONEFFECT) || !(init_flags & ReflectionInitFlags::BUFFERS) || !reflection_effect)
         return false;
@@ -158,6 +198,13 @@ bool ResonanceReflectionProcessor::process_mix(const IPLAudioBuffer& in_buffer,
             for (int i = 0; i < frame_size; i++)
                 mono[i] = resonance::sanitize_audio_float(mono[i] * eg);
         }
+        if (apply_air_absorption && air_absorption) {
+            apply_air_absorption_in_place(air_absorption);
+        } else if (prev_air_absorption_valid_) {
+            // Bypass path requested after a run of air-absorption blocks: invalidate state so the next applied
+            // block resets the IIR cleanly instead of mixing in stale filter history.
+            prev_air_absorption_valid_ = false;
+        }
     }
 
     iplReflectionEffectApply(reflection_effect, &params,
@@ -168,7 +215,9 @@ bool ResonanceReflectionProcessor::process_mix(const IPLAudioBuffer& in_buffer,
 bool ResonanceReflectionProcessor::process_mix_direct(const IPLAudioBuffer& in_buffer,
                                                       const IPLReflectionEffectParams& reverb_params,
                                                       float prev_reflections_mix_level,
-                                                      float reflections_mix_level) {
+                                                      float reflections_mix_level,
+                                                      bool apply_air_absorption,
+                                                      const float air_absorption[3]) {
     if (!(init_flags & ReflectionInitFlags::REFLECTIONEFFECT) || !(init_flags & ReflectionInitFlags::BUFFERS) || !reflection_effect)
         return false;
 
@@ -184,6 +233,11 @@ bool ResonanceReflectionProcessor::process_mix_direct(const IPLAudioBuffer& in_b
         float p = resonance::sanitize_audio_float(prev_reflections_mix_level);
         float c = resonance::sanitize_audio_float(reflections_mix_level);
         resonance::apply_volume_ramp_and_sanitize(p, c, frame_size, sa_mono_buffer.data[0]);
+        if (apply_air_absorption && air_absorption) {
+            apply_air_absorption_in_place(air_absorption);
+        } else if (prev_air_absorption_valid_) {
+            prev_air_absorption_valid_ = false;
+        }
     }
 
     iplReflectionEffectApply(reflection_effect, &params,
@@ -239,6 +293,40 @@ IPLAudioEffectState ResonanceReflectionProcessor::tail_apply_to_mixer(IPLReflect
     if ((params->type == IPL_REFLECTIONEFFECTTYPE_CONVOLUTION || params->type == IPL_REFLECTIONEFFECTTYPE_HYBRID) && !params->ir)
         return IPL_AUDIOEFFECTSTATE_TAILCOMPLETE;
     return iplReflectionEffectGetTail(reflection_effect, &sa_temp_out_buffer, mixer);
+}
+
+void ResonanceReflectionProcessor::apply_air_absorption_in_place(const float target[3]) {
+    if (!(init_flags & ReflectionInitFlags::AIRABSORPTIONEFFECT) || !air_absorption_effect || !target)
+        return;
+    if (!sa_mono_buffer.data || !sa_mono_buffer.data[0] || !sa_air_absorption_in_buffer.data || !sa_air_absorption_in_buffer.data[0] || !sa_air_absorption_out_buffer.data || !sa_air_absorption_out_buffer.data[0])
+        return;
+    // Sanitize/clamp band gains. Always run the IIR pass (cheap 3-band) even for identity targets so the internal
+    // filter state stays continuous block-to-block; skipping calls on identity blocks would let the next non-identity
+    // block ramp from a stale state and produce a click.
+    const float a0 = std::fmin(std::fmax(resonance::sanitize_audio_float(target[0]), 0.0f), 1.0f);
+    const float a1 = std::fmin(std::fmax(resonance::sanitize_audio_float(target[1]), 0.0f), 1.0f);
+    const float a2 = std::fmin(std::fmax(resonance::sanitize_audio_float(target[2]), 0.0f), 1.0f);
+    // First call after initialization (or after the wet path was bypassed for a while): reset the IIR so the new
+    // target ramps from a known-clean state instead of leftover history.
+    if (!prev_air_absorption_valid_)
+        iplDirectEffectReset(air_absorption_effect);
+    float* in_ch = sa_air_absorption_in_buffer.data[0];
+    float* out_ch = sa_air_absorption_out_buffer.data[0];
+    float* mono = sa_mono_buffer.data[0];
+    memcpy(in_ch, mono, static_cast<size_t>(frame_size) * sizeof(float));
+    IPLDirectEffectParams params{};
+    params.flags = IPL_DIRECTEFFECTFLAGS_APPLYAIRABSORPTION;
+    params.airAbsorption[0] = a0;
+    params.airAbsorption[1] = a1;
+    params.airAbsorption[2] = a2;
+    iplDirectEffectApply(air_absorption_effect, &params, &sa_air_absorption_in_buffer, &sa_air_absorption_out_buffer);
+    memcpy(mono, out_ch, static_cast<size_t>(frame_size) * sizeof(float));
+    for (int i = 0; i < frame_size; i++)
+        mono[i] = resonance::sanitize_audio_float(mono[i]);
+    prev_air_absorption_[0] = a0;
+    prev_air_absorption_[1] = a1;
+    prev_air_absorption_[2] = a2;
+    prev_air_absorption_valid_ = true;
 }
 
 } // namespace godot

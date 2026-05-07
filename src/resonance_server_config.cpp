@@ -157,6 +157,8 @@ void ResonanceServerConfig::apply(const Dictionary& config,
                                                        apply_occlusion_to_baked_reflections);
     apply_distance_curve_to_reflections = config_bool(config, "apply_distance_curve_to_reflections",
                                                       apply_distance_curve_to_reflections);
+    baked_reverb_use_listener_probe = config_bool(config, "baked_reverb_use_listener_probe",
+                                                  baked_reverb_use_listener_probe);
     reflection_type = config_int(config, "reflection_type", reflection_type);
     if (reflection_type < resonance::kReflectionConvolution)
         reflection_type = resonance::kReflectionConvolution;

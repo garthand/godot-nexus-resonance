@@ -3,7 +3,12 @@ extends ResourceFormatSaver
 class_name ResonanceProbeDataSaver
 
 ## Custom ResourceFormatSaver for ResonanceProbeData (GDExtension class).
-## Saves [.tres] and [.bak] paths as custom text (version-control friendly). [.res] uses the engine saver (Project Settings).
+## Saves [.tres] paths as custom text (version-control friendly). [.res] uses the engine saver (Project Settings).
+##
+## NOTE: [.bak] is intentionally NOT a recognized save extension. Backups are 1:1 file copies
+## handled by [ResonanceBakeBackup]; saving a probe data resource directly to a .bak path is
+## rejected to prevent the saver from calling [code]take_over_path[/code] on a .bak file
+## (which previously chained .res.bak.bak.bak names on every bake).
 ##
 ## Concurrency: Atomic save via tmp file + DirAccess.rename_absolute. Avoid simultaneous saves
 ## on the same .tres path (e.g. Bake pipeline + manual ResourceSaver.save) to prevent race conditions.
@@ -14,11 +19,19 @@ func _recognize(resource: Resource) -> bool:
 
 
 func _get_recognized_extensions(_resource: Resource) -> PackedStringArray:
-	return PackedStringArray(["tres", "bak"])
+	return PackedStringArray(["tres"])
 
 
 func _save(resource: Resource, path: String, _flags: int) -> Error:
 	if resource.get_class() != "ResonanceProbeData":
+		return ERR_INVALID_PARAMETER
+	# Defensive: never save a probe data resource as .bak. Backups are file copies,
+	# not engine-managed resources. Accepting .bak here would call take_over_path()
+	# on the resource and silently route subsequent saves to the .bak file.
+	if path.ends_with(".bak"):
+		push_warning(
+			"Nexus Resonance: Refusing to save ResonanceProbeData to a .bak path (%s)." % path
+		)
 		return ERR_INVALID_PARAMETER
 	if path.get_extension().to_lower() == "res":
 		return ResourceSaver.save(resource, path, _flags)
@@ -48,9 +61,7 @@ func _save(resource: Resource, path: String, _flags: int) -> Error:
 		resource.get("static_scene_params_hash") if "static_scene_params_hash" in resource else 0
 	)
 	var target_path: String = (
-		path
-		if (path.ends_with(".tres") or path.ends_with(".bak"))
-		else path.get_basename() + ".tres"
+		path if path.ends_with(".tres") else path.get_basename() + ".tres"
 	)
 	var tmp_path := target_path + ".tmp"
 	var data_str := var_to_str(data)

@@ -88,6 +88,10 @@ struct PlaybackParameters {
 
     /// Distance curve factor on reflection-effect input (1.0 = off / pass-through; see server apply_distance_curve_to_reflections).
     float refl_distance_attenuation = 1.0f;
+
+    /// When true, run the wet mono tap through the air-absorption pre-EQ in ResonanceReflectionProcessor.
+    /// Only set for baked reflection modes (variation >= 0) — realtime IRs already encode air absorption per ray.
+    bool apply_air_absorption_to_wet = false;
 };
 
 class ResonanceStreamPlayback : public AudioStreamPlayback {
@@ -218,6 +222,11 @@ class ResonanceStreamPlayback : public AudioStreamPlayback {
     /// branch (samples_read == 0).
     std::atomic<int64_t> tail_grace_blocks_remaining_{-1};
 
+    /// Set to true once the tail-drain window is complete (rings empty and grace exhausted).
+    /// This playback intentionally does not "naturally" end (no return 0) because `finished`
+    /// is emitted on dry-EOS by ResonancePlayer. ResonancePlayer will explicitly stop the node.
+    std::atomic<bool> tail_drain_complete_{false};
+
     // --- AUDIO INSTRUMENTATION (for dropout debugging) ---
     // Atomic counters updated from audio thread; read from main thread
     std::atomic<uint64_t> instrumentation_input_dropped{0};      // Samples dropped when input ring full
@@ -325,6 +334,8 @@ class ResonanceStreamPlayback : public AudioStreamPlayback {
     virtual bool _is_playing() const override;    // Checks if playback is active
     virtual int _get_loop_count() const override; // Returns the loop count for the playback
     virtual void _seek(double position) override; // Seeks to a specific position in the stream
+
+    bool is_tail_drain_complete() const { return tail_drain_complete_.load(std::memory_order_acquire); }
 
   protected:
     static void _bind_methods() {}
@@ -468,6 +479,8 @@ class ResonancePlayer : public AudioStreamPlayer3D {
         int apply_occlusion_to_baked_reflections_override = -1;
         /// -1 = use ResonanceServer.apply_distance_curve_to_reflections; 0 = Disabled; 1 = Enabled.
         int apply_distance_curve_to_reflections_override = -1;
+        /// -1 = use ResonanceServer.baked_reverb_use_listener_probe; 0 = Disabled (probe = source pos); 1 = Enabled (probe = listener pos).
+        int baked_reverb_use_listener_probe_override = -1;
         /// 0 = use ResonanceServer.reverb_transmission_amount (global); 1 = use reverb_transmission_amount below.
         int reverb_transmission_amount_input = 0;
         /// Per-source transmission damping on reverb (only used when reverb_transmission_amount_input == 1).
@@ -535,6 +548,7 @@ class ResonancePlayer : public AudioStreamPlayer3D {
     void _aggregate_debug_signal_levels(float& out_direct, float& out_reverb, float& out_pathing);
     void _update_reverb_split_child(const StringName& p_reverb_bus = StringName());
     void _nexus_deferred_spawn_anim_audio_helper();
+    void _nexus_deferred_emit_finished();
 
     bool reverb_split_output_ = false;
     /// When [member player_config] is set: spawn a helper that converts TYPE_AUDIO tracks on the current scene
@@ -547,6 +561,12 @@ class ResonancePlayer : public AudioStreamPlayer3D {
     std::vector<RID> registered_physics_auto_exclude_rids_;
     void _sync_physics_ray_auto_exclude_rids();
     void _clear_physics_ray_auto_exclude_rids();
+
+    /// `finished` should fire exactly once at dry-EOS. Wet/pathing tails may keep running afterwards.
+    bool dry_finished_emitted_ = false;
+    bool dry_finished_deferred_queued_ = false;
+    uint64_t play_serial_ = 0;
+    uint64_t dry_finished_deferred_serial_ = 0;
 
     float _config_float(const char* key, float default_val) const;
     int _config_int(const char* key, int default_val) const;

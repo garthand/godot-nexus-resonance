@@ -16,6 +16,7 @@ src/lib/steamaudio/
 
 # SCons database
 .sconsign.dblite
+compile_commands.json
 
 # Build artifacts
 build/

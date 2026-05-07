@@ -118,6 +118,9 @@
 		<member name="apply_distance_curve_to_reflections_override" type="int" default="-1">
 			Per-source override for [member ResonanceRuntimeConfig.apply_distance_curve_to_reflections]. -1=Use Global (Unity-parity default: Enabled), 0=Disabled, 1=Enabled. Disabled = this source's wet input does not fade with distance (useful for 2D ambience beds or sources where the distance curve already lives elsewhere).
 		</member>
+		<member name="reflections_sampling_mode_override" type="int" default="-1">
+			Per-source override for [member ResonanceRuntimeConfig.reflections_sampling_mode]. -1=Use Global, 0=Listener-centric (pick baked REVERB probe nearest the listener), 1=Source-centric (pick probe nearest the source; legacy behavior). Note: currently this only affects baked REVERB probe lookup; it does not change realtime reflection ray origin.
+		</member>
 		<member name="reverb_transmission_amount_input" type="int" default="0">
 			0=Use Global ([member ResonanceRuntimeConfig.reverb_transmission_amount]), 1=User Defined (use [member reverb_transmission_amount]). Only effective when the wet-path occlusion damping is on (global or [member apply_occlusion_to_baked_reflections_override]).
 		</member>

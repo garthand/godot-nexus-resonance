@@ -197,6 +197,15 @@ void ResonanceProbeVolume::_reload_probe_batch_after_reinit() {
     reload_probe_batch();
 }
 
+void ResonanceProbeVolume::release_probe_batch() {
+    if (probe_batch_handle < 0)
+        return;
+    ResonanceServer* srv = ResonanceServer::get_singleton();
+    if (srv && !ResonanceServer::is_shutting_down())
+        srv->remove_probe_batch(probe_batch_handle);
+    probe_batch_handle = -1;
+}
+
 void ResonanceProbeVolume::_exit_tree() {
     if (probe_batch_handle >= 0) {
         ResonanceServer* srv = ResonanceServer::get_singleton();
@@ -753,6 +762,8 @@ void ResonanceProbeVolume::_bind_methods() {
     ClassDB::bind_method(D_METHOD("bake_probes_with_floor_points", "points"), &ResonanceProbeVolume::bake_probes_with_floor_points);
     ClassDB::bind_method(D_METHOD("generate_probes_on_floor_raycast"), &ResonanceProbeVolume::generate_probes_on_floor_raycast);
     ClassDB::bind_method(D_METHOD("reload_probe_batch"), &ResonanceProbeVolume::reload_probe_batch);
+    ClassDB::bind_method(D_METHOD("release_probe_batch"), &ResonanceProbeVolume::release_probe_batch);
+    ClassDB::bind_method(D_METHOD("get_probe_batch_handle"), &ResonanceProbeVolume::get_probe_batch_handle);
     ClassDB::bind_method(D_METHOD("set_viz_visible", "p_visible"), &ResonanceProbeVolume::set_viz_visible);
     ClassDB::bind_method(D_METHOD("is_viz_visible"), &ResonanceProbeVolume::is_viz_visible);
     ClassDB::bind_method(D_METHOD("set_viz_probe_scale", "p_scale"), &ResonanceProbeVolume::set_viz_probe_scale);

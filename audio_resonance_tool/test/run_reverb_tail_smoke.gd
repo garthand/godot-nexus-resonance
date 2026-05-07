@@ -1,20 +1,22 @@
 extends SceneTree
 
-# Headless smoke test for the v0.9.13 fix that lets the reverb / pathing tail decay after a
-# ResonancePlayer stream ends or is stopped explicitly. We reuse Examples/scenes/demo.tscn
-# because it is the only headless-runnable scene with a fully-initialised ResonanceServer
-# (geometry, probes, listener) - which is required for ResonancePlayer parameter pushes to
-# fire. Two scenarios are checked:
+# Headless smoke test for reverb / pathing tail decay after a ResonancePlayer stream ends or
+# after explicit stop() (v0.9.13+), plus v0.9.14 _is_playing() grace / residue ordering.
+# We reuse Examples/scenes/demo.tscn for a fully-initialised ResonanceServer (geometry, probes,
+# listener). Scenarios:
 #   1. Natural completion: trigger the lightning animation (one-shot via method-track), wait
 #      until the dry signal ends, then verify mix_calls keep advancing during the tail window.
 #   2. Explicit stop(): stop the same player mid-playback, then verify mix_calls keep advancing
 #      and the tail-drain branch (zero_input_count) was hit.
+#   3. (Optional) hallway_test/main.tscn: short vs long footstep MRE with aggressive
+#      ResonancePlayerConfig (high wet, zero direct) — same tail-drain assertions.
 #
-# Both checks rely on ResonancePlayer.get_audio_instrumentation():
+# All checks rely on ResonancePlayer.get_audio_instrumentation():
 #   - blocks_processed / mix_calls confirm the audio thread is calling _mix.
 #   - zero_input_count > 0 confirms we entered the samples_read==0 tail-drain path.
 
 const DEMO_SCENE := "res://Examples/scenes/demo.tscn"
+const HALLWAY_SCENE := "res://hallway_test/main.tscn"
 const ANIM_NAME := "lightning"
 # Headless Godot does not pace process_frame at real time, but the audio mixer thread
 # does run in real time. We therefore poll across a wall-clock budget and yield via
@@ -30,11 +32,11 @@ func _initialize() -> void:
 		push_error("[reverb_tail_smoke] ResonancePlayer class missing - GDExtension not loaded.")
 		quit(1)
 		return
-	if not ResourceLoader.exists(DEMO_SCENE):
+	if not ResourceLoader.exists(DEMO_SCENE) and not ResourceLoader.exists(HALLWAY_SCENE):
 		print(
 			(
-				"[reverb_tail_smoke] SKIP: demo scene missing (repo-safe smoke). Missing: %s"
-				% DEMO_SCENE
+				"[reverb_tail_smoke] SKIP: no test scenes (need %s and/or %s)"
+				% [DEMO_SCENE, HALLWAY_SCENE]
 			)
 		)
 		quit(0)
@@ -44,7 +46,17 @@ func _initialize() -> void:
 
 func _run_all() -> void:
 	_exit_code = 0
-	await _run_case()
+	if ResourceLoader.exists(DEMO_SCENE):
+		await _run_case()
+	else:
+		print("[reverb_tail_smoke] SKIP cases 1-2: demo scene missing (%s)" % DEMO_SCENE)
+	if _exit_code != 0:
+		quit(_exit_code)
+		return
+	if ResourceLoader.exists(HALLWAY_SCENE):
+		await _run_case_hallway_mre()
+	else:
+		print("[reverb_tail_smoke] SKIP case 3: hallway scene missing (%s)" % HALLWAY_SCENE)
 	quit(_exit_code)
 
 
@@ -70,6 +82,18 @@ func _find_animation_player(root: Node) -> AnimationPlayer:
 		var ap := n as AnimationPlayer
 		if ap != null and ap.has_animation(ANIM_NAME):
 			return ap
+		for c in n.get_children():
+			if c is Node:
+				stack.push_back(c)
+	return null
+
+
+func _find_resonance_player_in_tree(root: Node) -> Node:
+	var stack: Array[Node] = [root]
+	while not stack.is_empty():
+		var n: Node = stack.pop_back()
+		if n.get_class() == "ResonancePlayer":
+			return n
 		for c in n.get_children():
 			if c is Node:
 				stack.push_back(c)
@@ -114,6 +138,79 @@ func _wait_for_zero_input(player: Node, msec_budget: int) -> bool:
 		if int(_read_instr(player).get("zero_input_count", 0)) > 0:
 			return true
 	return false
+
+
+## First non-empty instrumentation where blocks ran and zero_input > 0 (short-clip MRE: avoid
+## waiting on blocks_processed first — that lets zero_input race ahead to a large value).
+func _wait_blocks_then_first_zero_instr(player: Node, msec_budget: int) -> Dictionary:
+	var deadline_us: int = Time.get_ticks_usec() + max(0, msec_budget) * 1000
+	var seen_blocks := false
+	while Time.get_ticks_usec() < deadline_us:
+		await process_frame
+		OS.delay_msec(2)
+		var d := _read_instr(player)
+		if int(d.get("blocks_processed", 0)) > 0:
+			seen_blocks = true
+		if seen_blocks and int(d.get("zero_input_count", 0)) > 0:
+			return d
+	return {}
+
+
+func _run_case_hallway_mre() -> void:
+	var packed: PackedScene = load(HALLWAY_SCENE)
+	if packed == null:
+		push_error("[reverb_tail_smoke] case 3 FAILED: load hallway scene.")
+		_exit_code = 1
+		return
+	var root: Node = packed.instantiate()
+	if root == null:
+		push_error("[reverb_tail_smoke] case 3 FAILED: instantiate hallway scene.")
+		_exit_code = 1
+		return
+	get_root().add_child(root)
+
+	await _await_msec(500)
+
+	var foot_player := _find_resonance_player_in_tree(root)
+	if foot_player == null:
+		push_error("[reverb_tail_smoke] case 3 FAILED: no ResonancePlayer in hallway_test.")
+		_exit_code = 1
+		root.queue_free()
+		return
+
+	print("[reverb_tail_smoke] case 3: hallway_test short clip (aggressive wet / zero dry)")
+	if foot_player.has_method("reset_audio_instrumentation"):
+		foot_player.call("reset_audio_instrumentation")
+
+	# Do not use mix_calls here: get_audio_instrumentation() sums per-voice counters; when a
+	# voice unregisters after its tail, the sum can drop (hallway script switches stream at 3s).
+
+	var instr_first_zero := await _wait_blocks_then_first_zero_instr(foot_player, 10000)
+	if instr_first_zero.is_empty():
+		push_error(
+			"[reverb_tail_smoke] case 3 FAILED: no blocks processed or zero_input never became positive."
+		)
+		_exit_code = 1
+		root.queue_free()
+		return
+
+	var zero_at_first: int = int(instr_first_zero.get("zero_input_count", 0))
+	if zero_at_first <= 0:
+		push_error("[reverb_tail_smoke] case 3 FAILED: zero_input_count not positive after blocks.")
+		_exit_code = 1
+	else:
+		# Tail continuation vs. finished-tail is ambiguous here when the first snapshot already
+		# shows a large cumulative zero_input (short clip + blocks gate). Cases 1–2 assert
+		# mix_calls / zero_input during tail; case 3 only proves hallway_test hits tail-drain.
+		print(
+			(
+				"[reverb_tail_smoke] case 3 OK: hallway MRE tail-drain seen (zero_input=%d voices=%d)"
+				% [zero_at_first, int(instr_first_zero.get("polyphony_voice_count", 0))]
+			)
+		)
+
+	root.queue_free()
+	await _await_frames(5)
 
 
 func _run_case() -> void:

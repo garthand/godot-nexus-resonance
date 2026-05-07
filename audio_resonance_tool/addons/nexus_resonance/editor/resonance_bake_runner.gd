@@ -307,7 +307,18 @@ func _on_bake_pipeline_finished(success: bool, probe_data_ref, volumes: Array[No
 
 
 func _save_and_reload_probe_data(probe_data_ref: Resource, volumes: Array[Node]) -> void:
-	var path = probe_data_ref.resource_path
+	# Self-heal: if the resource_path was bent to a .bak path by a legacy buggy bake
+	# (pre-fix), strip the trailing .bak suffix(es) before saving. Otherwise the save
+	# would write probe data into a .bak file and produce another .bak.bak on the next bake.
+	var path: String = probe_data_ref.resource_path
+	while path.ends_with(".bak"):
+		path = path.get_basename()
+	if (
+		path != probe_data_ref.resource_path
+		and not path.is_empty()
+		and probe_data_ref.has_method("take_over_path")
+	):
+		probe_data_ref.take_over_path(path)
 	if not path.is_empty():
 		var err = ResourceSaver.save(probe_data_ref)
 		if err != OK:
@@ -362,9 +373,14 @@ func _notify_volumes_viz_updated(volumes: Array[Node]) -> void:
 
 func _show_bake_complete_dialog(volumes: Array) -> void:
 	if not editor_interface:
+		# Headless / no UI: discard backups now since there is no dialog to keep them alive.
+		if _backup:
+			_backup.discard_backups()
 		return
 	var base = editor_interface.get_base_control()
 	if not base:
+		if _backup:
+			_backup.discard_backups()
 		return
 	var has_backups = _backup.has_backups() if _backup else false
 	var msg = "Bake completed for %d Probe Volume(s)." % volumes.size()
@@ -374,12 +390,20 @@ func _show_bake_complete_dialog(volumes: Array) -> void:
 	dialog.title = tr(UIStrings.ADDON_NAME)
 	dialog.dialog_text = msg
 	dialog.theme = editor_interface.get_editor_theme()
-	dialog.confirmed.connect(dialog.queue_free)
-	dialog.close_requested.connect(dialog.queue_free)
+	# Tracks whether Undo was invoked. Set by the Undo button handler below; checked by the
+	# close/confirm handlers to decide whether to discard the .bak files.
+	var undo_invoked := [false]
+	var on_dialog_close := func() -> void:
+		if not undo_invoked[0] and _backup:
+			_backup.discard_backups()
+		dialog.queue_free()
+	dialog.confirmed.connect(on_dialog_close)
+	dialog.close_requested.connect(on_dialog_close)
 	if has_backups:
 		var undo_btn = dialog.add_button(tr(UIStrings.BTN_UNDO), false, "undo")
 		undo_btn.pressed.connect(
 			func():
+				undo_invoked[0] = true
 				_backup.restore(
 					volumes,
 					editor_interface,

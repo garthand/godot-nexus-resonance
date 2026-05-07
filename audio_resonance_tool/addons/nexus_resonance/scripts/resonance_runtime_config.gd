@@ -155,6 +155,12 @@ var realtime_rays: int:
 @export_group("Baked Reverb & Pathing")
 ## Probes beyond this radius (m) do not affect listener.
 @export var reverb_influence_radius: float = 10000.0
+## [b]Reflections sampling mode[/b]. This controls where baked REVERB chooses its probe from.
+## [br][b]Listener-centric[/b] = pick the probe nearest the listener (recommended for room reverb).
+## [br][b]Source-centric[/b] = pick the probe nearest the source (legacy behavior).
+## [br][br]Note: currently this only affects baked REVERB probe lookup. Steam Audio realtime reflections trace rays from the listener in the core API, so this mode does not yet change realtime ray origin.
+@export_enum("Listener-centric:0", "Source-centric:1")
+var reflections_sampling_mode: int = 0
 ## Extra wet attenuation by distance (meters). 0 = off (reflections/pathing wet not scaled by this).
 ## When > 0: full wet at or below this distance; linear fade to 0 by 2× this distance (convolution/TAN feed,
 ## parametric/hybrid wet, pathing). Does not replace per-source max_distance on the direct path.
@@ -496,6 +502,9 @@ func get_config() -> Dictionary:
 		"reverb_transmission_amount": reverb_transmission_amount,
 		"apply_occlusion_to_baked_reflections": apply_occlusion_to_baked_reflections,
 		"apply_distance_curve_to_reflections": apply_distance_curve_to_reflections,
+		# Native engine flag used for baked-REVERB probe selection (Phase 4). Keep the config key stable even if we
+		# later extend reflections_sampling_mode to realtime ray origin.
+		"baked_reverb_use_listener_probe": reflections_sampling_mode == 0,
 		"pathing_enabled": pathing_enabled,
 		"pathing_normalize_eq": pathing_normalize_eq,
 		"pathing_num_vis_samples": pathing_num_vis_samples,

@@ -42,6 +42,14 @@ runtime_baker.bake_finished.connect(_on_bake_finished)
 # Pass your array of ResonanceProbeVolumes and the root of your procedural level
 runtime_baker.bake_volumes_to_ram([my_probe_volume], map_root_node)
 
+# Optional: Flush and reload runtime bakes (RAM only)
+runtime_baker.flush_volumes([my_probe_volume])
+runtime_baker.reload_volumes([my_probe_volume])
+
+# Optional: Same, for all probe volumes under a scene root
+runtime_baker.flush_all_runtime_bakes(map_root_node)
+runtime_baker.reload_all_runtime_bakes(map_root_node)
+
 # Clean up when you are completely finished
 runtime_baker.shutdown()
 ```

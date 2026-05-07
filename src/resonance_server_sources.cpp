@@ -44,6 +44,8 @@ int32_t ResonanceServer::create_source_handle(Vector3 pos, float radius) {
         source_outputs_reflections_[static_cast<size_t>(handle)].store(1, std::memory_order_release);
         source_outputs_realtime_reflections_[static_cast<size_t>(handle)].store(0, std::memory_order_release);
         source_outputs_pathing_[static_cast<size_t>(handle)].store(pathing_enabled ? 1 : 0, std::memory_order_release);
+        // Reset listener-probe override to "use global flag" for recycled handle IDs.
+        _source_baked_reverb_listener_probe_override_[static_cast<size_t>(handle)].store(-1, std::memory_order_release);
     }
     {
         std::lock_guard<std::mutex> lock(pending_attach_handles_mutex_);
@@ -122,6 +124,7 @@ void ResonanceServer::_destroy_source_handle_under_simulation_lock(int32_t handl
         source_outputs_reflections_[static_cast<size_t>(handle)].store(0, std::memory_order_release);
         source_outputs_realtime_reflections_[static_cast<size_t>(handle)].store(0, std::memory_order_release);
         source_outputs_pathing_[static_cast<size_t>(handle)].store(0, std::memory_order_release);
+        _source_baked_reverb_listener_probe_override_[static_cast<size_t>(handle)].store(-1, std::memory_order_release);
     }
     source_manager.remove_source(handle);
 }
@@ -345,6 +348,15 @@ void ResonanceServer::set_source_attenuation_callback_data(int32_t handle, int a
     for (int i = 0; i < d.num_curve_samples && i < curve_samples.size(); i++) {
         d.curve_samples[i] = curve_samples[i];
     }
+}
+
+void ResonanceServer::set_source_baked_reverb_use_listener_probe_override(int32_t handle, int override_value) {
+    if (handle < 0 || handle >= kMaxCacheHandles)
+        return;
+    // Encode tri-state as int8_t: -1 = use global flag, 0 = off, 1 = on. Lock-free so the player can flip it
+    // from any thread (main during config refresh) without contending with the worker's simulation_mutex.
+    int8_t encoded = (override_value < 0) ? -1 : ((override_value > 0) ? 1 : 0);
+    _source_baked_reverb_listener_probe_override_[static_cast<size_t>(handle)].store(encoded, std::memory_order_release);
 }
 
 void ResonanceServer::clear_source_attenuation_callback_data(int32_t handle) {
@@ -604,6 +616,31 @@ void ResonanceServer::_update_source_internal(IPLSource src, int32_t handle, Vec
 
     iplSourceSetInputs(src, sim_flags, &inputs);
 
+    // IPL_BAKEDDATAVARIATION_REVERB picks the probe nearest inputs.source.origin in the simulator's reflection lookup.
+    // The bake assumes source==listener (the IR is the listener's room), so feeding the source position picks the
+    // wrong probe whenever the source is in a different room than the listener. The fix is a second SetInputs call
+    // limited to IPL_SIMULATIONFLAGS_REFLECTIONS that overrides only source.{origin,ahead,up,right} with the
+    // listener's coordinate space; the prior DIRECT inputs (occlusion etc., which still want the source position)
+    // remain untouched. Steam Audio explicitly allows split-flag SetInputs calls (see iplSourceSetInputs docs).
+    bool use_listener_probe = baked_reverb_use_listener_probe;
+    if (handle >= 0 && handle < kMaxCacheHandles) {
+        const int8_t ov = _source_baked_reverb_listener_probe_override_[static_cast<size_t>(handle)].load(std::memory_order_acquire);
+        if (ov >= 0)
+            use_listener_probe = (ov != 0);
+    }
+    if (use_listener_probe && baked_data_variation == 0 && enable_reflections &&
+        (sim_flags & IPL_SIMULATIONFLAGS_REFLECTIONS) != 0 &&
+        pending_listener_valid.load(std::memory_order_acquire)) {
+        IPLCoordinateSpace3 listener_cs = _read_listener_coords_seqlock();
+        IPLSimulationInputs reflections_inputs = inputs;
+        reflections_inputs.flags = static_cast<IPLSimulationFlags>(IPL_SIMULATIONFLAGS_REFLECTIONS);
+        reflections_inputs.source.origin = listener_cs.origin;
+        reflections_inputs.source.ahead = listener_cs.ahead;
+        reflections_inputs.source.up = listener_cs.up;
+        reflections_inputs.source.right = listener_cs.right;
+        iplSourceSetInputs(src, IPL_SIMULATIONFLAGS_REFLECTIONS, &reflections_inputs);
+    }
+
     if (pathing_batch_retained)
         pathing_probe_batches_pending_release_.push_back(pathing_batch_retained);
 }
@@ -664,6 +701,7 @@ void ResonanceServer::_drain_pending_source_lifecycle_assume_locked() {
             source_outputs_reflections_[static_cast<size_t>(handle)].store(0, std::memory_order_release);
             source_outputs_realtime_reflections_[static_cast<size_t>(handle)].store(0, std::memory_order_release);
             source_outputs_pathing_[static_cast<size_t>(handle)].store(0, std::memory_order_release);
+            _source_baked_reverb_listener_probe_override_[static_cast<size_t>(handle)].store(-1, std::memory_order_release);
         }
     }
     // Apply initial inputs now that iplSourceAdd + Commit have run.

@@ -138,6 +138,10 @@ class ResonanceProbeVolume : public Node3D {
     /// Returns the probe batch handle for pathing (used when ResonancePlayer.pathing_probe_volume points here). -1 if not loaded.
     int32_t get_probe_batch_handle() const { return probe_batch_handle; }
     void reload_probe_batch();
+    /// Unloads the native IPLProbeBatch from the Steam Audio simulator and resets the local handle
+    /// to -1. Leaves [code]probe_data[/code] untouched so a subsequent [code]reload_probe_batch[/code]
+    /// can re-register the same data. Safe to call when no batch is loaded (no-op).
+    void release_probe_batch();
     void _update_visuals();
     void _runtime_load_probe_batch();
     void _reload_probe_batch_after_reinit();

@@ -226,6 +226,12 @@ var apply_occlusion_to_baked_reflections_override: int = -1
 ## for 2D ambience beds or sources where the distance curve already lives elsewhere).
 @export_enum("Use Global:-1", "Disabled:0", "Enabled:1")
 var apply_distance_curve_to_reflections_override: int = -1
+## Per-source override for [member ResonanceRuntimeConfig.reflections_sampling_mode]. Use Global = follow runtime.
+## [br][b]Listener-centric[/b] picks the baked REVERB probe nearest the listener (recommended for room reverb).
+## [br][b]Source-centric[/b] picks the probe nearest the source (legacy behavior).
+## [br][br]Note: currently this only affects baked REVERB probe lookup. It does not change realtime reflection ray origin.
+@export_enum("Use Global:-1", "Listener-centric:0", "Source-centric:1")
+var reflections_sampling_mode_override: int = -1
 var _reverb_transmission_amount_input: int = 0
 ## Use Global = read [member ResonanceRuntimeConfig.reverb_transmission_amount]; User Defined = use the per-source
 ## [member reverb_transmission_amount] below. Only effective when the wet-path occlusion damping is on (global or

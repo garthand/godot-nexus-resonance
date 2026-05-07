@@ -131,6 +131,11 @@ class ResonanceServer : public Object {
     std::vector<int> _runtime_static_debug_mesh_ids; // Debug viz mesh IDs for static scenes (unregister on clear)
     std::unordered_map<int32_t, std::unique_ptr<AttenuationEntry>> _source_attenuation_entries;
     std::unordered_map<int32_t, SourceUpdateSnapshot> _source_update_snapshot_;
+    /// Per-source override for baked_reverb_use_listener_probe. Encodes -1 (use global), 0 (off), 1 (on)
+    /// as int8_t per source slot. Lock-free so the player can update it from the main thread without touching
+    /// simulation_mutex (the global flag rarely flips, but we still want zero overhead in the hot path).
+    /// Sized via resonance::kMaxSimulationSourcesUserMax (kMaxCacheHandles isn't declared yet in this scope).
+    std::array<std::atomic<int8_t>, resonance::kMaxSimulationSourcesUserMax> _source_baked_reverb_listener_probe_override_{};
     /// Handles that already logged the realtime-reflections debug line once (cleared on destroy for ID recycle).
     std::unordered_set<int32_t> realtime_reflection_log_once_handles_;
     std::recursive_mutex _attenuation_callback_mutex;
@@ -325,15 +330,19 @@ class ResonanceServer : public Object {
     int max_rays = 4096;
     int max_bounces = 4;
     float reverb_influence_radius = 10000.0f;
-    float reverb_max_distance = 0.0f;        // Extra wet falloff: 0 = off; >0 = linear 1..0 wet from d to 2d (player applies)
+    float reverb_max_distance = 100.0f;      // Extra wet falloff: 0 = off; >0 = linear 1..0 wet from d to 2d (player applies)
     float reverb_transmission_amount = 1.0f; // 0 = no transmission damping on reverb, 1 = full damping
-    /// Baked-REVERB only: when true, the reflection effect input gain is multiplied by the direct-path
-    /// occlusion/transmission factor so walls also damp the wet signal. Defaults to false because direct-line
-    /// occlusion cannot tell "around the corner, same open room" apart from "sealed-off room" – enabling this
-    /// dampens both uniformly and makes baked REVERB sound less plausible than realtime convolution in the
-    /// common case. Prefer per-source Realtime or the STATICSOURCE bake workflow for accurate
-    /// outdoor-to-indoor reflections.
-    bool apply_occlusion_to_baked_reflections = false;
+    /// Baked-REVERB only: when true (default), the reflection effect input gain is multiplied by the direct-path
+    /// occlusion/transmission factor so walls also damp the wet signal — the baked IR cannot encode the
+    /// source/listener geometry the way realtime ray-traced convolution does. Disable for stylised, always-on
+    /// reverb beds or scenes where direct-line occlusion would over-dampen plausible corner leakage.
+    bool apply_occlusion_to_baked_reflections = true;
+    /// Baked-REVERB only: when true (default), the reflection-side iplSourceSetInputs is fed the listener position
+    /// instead of the source position so Steam Audio looks up the probe nearest the listener — IPL_BAKEDDATAVARIATION_REVERB
+    /// assumes source==listener at the probe, so the listener's room is the correct IR to play back. Disable when the
+    /// source's room should win even with a distant listener (e.g. one giant cathedral probe and tiny side rooms you
+    /// want to keep dry).
+    bool baked_reverb_use_listener_probe = true;
     /// When true (default), baked/realtime reflection input gain is multiplied by the per-source distance attenuation factor.
     /// Per-source override on ResonancePlayerConfig beats this global flag.
     bool apply_distance_curve_to_reflections = true;
@@ -978,6 +987,8 @@ class ResonanceServer : public Object {
     float get_reverb_transmission_amount() const;
     void set_apply_occlusion_to_baked_reflections(bool p_enabled);
     bool get_apply_occlusion_to_baked_reflections() const;
+    void set_baked_reverb_use_listener_probe(bool p_enabled);
+    bool get_baked_reverb_use_listener_probe() const;
     void set_apply_distance_curve_to_reflections(bool p_enabled);
     bool get_apply_distance_curve_to_reflections() const;
     void set_perspective_correction_enabled(bool p_enabled);
@@ -1111,6 +1122,9 @@ class ResonanceServer : public Object {
     void set_source_attenuation_callback_data(int32_t handle, int attenuation_mode, float min_distance, float max_distance, const PackedFloat32Array& curve_samples);
     /// Clear attenuation callback data when switching to Inverse mode.
     void clear_source_attenuation_callback_data(int32_t handle);
+    /// Per-source override for [member baked_reverb_use_listener_probe]. -1 = use global flag, 0 = disabled, 1 = enabled.
+    /// Cleared automatically on [method destroy_source_handle].
+    void set_source_baked_reverb_use_listener_probe_override(int32_t handle, int override_value);
 
     // Handles
     int32_t create_source_handle(Vector3 position, float radius);
