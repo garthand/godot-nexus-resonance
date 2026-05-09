@@ -174,8 +174,10 @@ func _write_to_file(entry: Dictionary) -> void:
 		f = FileAccess.open(path, FileAccess.WRITE)
 	if f == null:
 		push_warning(
-			"Nexus Resonance: Cannot open log file for writing: %s (error %d)"
-			% [path, FileAccess.get_open_error()]
+			(
+				"Nexus Resonance: Cannot open log file for writing: %s (error %d)"
+				% [path, FileAccess.get_open_error()]
+			)
 		)
 		return
 	f.seek_end()

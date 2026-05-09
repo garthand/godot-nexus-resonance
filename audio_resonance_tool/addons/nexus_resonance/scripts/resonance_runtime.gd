@@ -285,7 +285,9 @@ func _input(event: InputEvent) -> void:
 func _init_fmod_bridge() -> void:
 	_fmod_bridge = ResonanceFMODBridgeScript.new()
 	if not _fmod_bridge.init_bridge():
-		push_warning("Nexus Resonance: FMOD bridge init failed. Ensure phonon_fmod plugin is in FMOD path.")
+		push_warning(
+			"Nexus Resonance: FMOD bridge init failed. Ensure phonon_fmod plugin is in FMOD path."
+		)
 
 
 func _toggle_debug_overlay() -> void:

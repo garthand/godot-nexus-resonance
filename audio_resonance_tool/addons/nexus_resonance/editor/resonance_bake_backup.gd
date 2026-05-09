@@ -43,8 +43,10 @@ func create_backups(volumes: Array[Node]) -> void:
 			_backup_paths[original_path] = backup_path
 		else:
 			push_warning(
-				"Nexus Resonance: Failed to create probe data backup at %s (error %d)."
-				% [backup_path, err]
+				(
+					"Nexus Resonance: Failed to create probe data backup at %s (error %d)."
+					% [backup_path, err]
+				)
 			)
 
 

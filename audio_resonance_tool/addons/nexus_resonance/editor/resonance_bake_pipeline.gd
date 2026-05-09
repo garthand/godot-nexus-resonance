@@ -58,7 +58,9 @@ func run_bake_pipeline_main_thread(volumes: Array[Node]) -> void:
 		return
 
 	if not root:
-		_runner._log_and_show_error("No scene root", "Open a scene or assign a target_root before baking.")
+		_runner._log_and_show_error(
+			"No scene root", "Open a scene or assign a target_root before baking."
+		)
 		_runner._finish_pipeline(false, null, volumes)
 		return
 	var static_scene_node = _BakeDiscovery.find_resonance_static_scene_for_bake(volumes, root)
@@ -72,8 +74,13 @@ func run_bake_pipeline_main_thread(volumes: Array[Node]) -> void:
 			return
 		vol_index += 1
 		var ctx = _VolumeCtx.build(
-			vol, root, vol_index, volumes.size(), static_asset,
-			Callable(_runner, "_get_bake_config_for_volume"), DEFAULT_BAKE_INFLUENCE_RADIUS
+			vol,
+			root,
+			vol_index,
+			volumes.size(),
+			static_asset,
+			Callable(_runner, "_get_bake_config_for_volume"),
+			DEFAULT_BAKE_INFLUENCE_RADIUS
 		)
 		var bc = _runner._get_bake_config_for_volume(vol)
 		if progress_ui:

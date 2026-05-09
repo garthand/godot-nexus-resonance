@@ -125,8 +125,10 @@ func _parse_tres_data(content: String) -> Variant:
 			data_result = r
 		elif r != null:
 			push_warning(
-				"Nexus Resonance: ResonanceProbeDataLoader: invalid data (expected PackedByteArray), type %s"
-				% typeof(r)
+				(
+					"Nexus Resonance: ResonanceProbeDataLoader: invalid data (expected PackedByteArray), type %s"
+					% typeof(r)
+				)
 			)
 	var probe_positions_result = PackedVector3Array()
 	# Cap probe_positions expression size.
@@ -140,8 +142,10 @@ func _parse_tres_data(content: String) -> Variant:
 			probe_positions_result = r
 		elif r != null:
 			push_warning(
-				"Nexus Resonance: ResonanceProbeDataLoader: invalid probe_positions (expected PackedVector3Array), type %s"
-				% typeof(r)
+				(
+					"Nexus Resonance: ResonanceProbeDataLoader: invalid probe_positions (expected PackedVector3Array), type %s"
+					% typeof(r)
+				)
 			)
 	return {
 		"data": data_result,

@@ -28,6 +28,7 @@ var bc: Resource
 var vol_info: String
 var static_asset = null  # Packed static geometry for the server bake
 
+
 static func _influence_radius(vol: Node, default_influence_radius: float) -> float:
 	return (
 		vol.get("bake_influence_radius")

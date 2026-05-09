@@ -6,7 +6,9 @@ class_name ResonanceBakeServerSetup
 const ResonanceBakeConfig = preload("res://addons/nexus_resonance/scripts/resonance_bake_config.gd")
 const ResonanceRuntimeScript = preload("res://addons/nexus_resonance/scripts/resonance_runtime.gd")
 const _BakeDiscovery = preload("res://addons/nexus_resonance/editor/resonance_bake_discovery.gd")
-const ResonanceEditorDialogs = preload("res://addons/nexus_resonance/editor/resonance_editor_dialogs.gd")
+const ResonanceEditorDialogs = preload(
+	"res://addons/nexus_resonance/editor/resonance_editor_dialogs.gd"
+)
 const UIStrings = preload("res://addons/nexus_resonance/scripts/resonance_ui_strings.gd")
 
 var _runner: Object
@@ -62,6 +64,7 @@ func log_and_show_error(
 		push_error(full_error)
 		print(full_error)
 
+
 func ensure_resonance_server_initialized(volumes: Array[Node]) -> bool:
 	if not ResonanceServerAccess.has_server():
 		log_and_show_error(
@@ -76,7 +79,9 @@ func ensure_resonance_server_initialized(volumes: Array[Node]) -> bool:
 	if _runner and _runner.has_method("_get_edited_scene_root"):
 		root = _runner._get_edited_scene_root(volumes)
 
-	var cfg_node := _BakeDiscovery.find_resonance_runtime(root, ResonanceRuntimeScript) if root else null
+	var cfg_node := (
+		_BakeDiscovery.find_resonance_runtime(root, ResonanceRuntimeScript) if root else null
+	)
 	var config := _runtime_config_from_node(cfg_node)
 	if config.is_empty():
 		var data := {"error": true}
@@ -100,7 +105,11 @@ func ensure_resonance_server_initialized(volumes: Array[Node]) -> bool:
 		return false
 	var bake_params := ResonanceBakeConfig.create_default().get_bake_params()
 	if volumes.size() > 0:
-		var bc = _runner._get_bake_config_for_volume(volumes[0]) if _runner and _runner.has_method("_get_bake_config_for_volume") else null
+		var bc = (
+			_runner._get_bake_config_for_volume(volumes[0])
+			if _runner and _runner.has_method("_get_bake_config_for_volume")
+			else null
+		)
 		if bc:
 			bake_params = bc.get_bake_params()
 	srv.set_bake_params(bake_params)

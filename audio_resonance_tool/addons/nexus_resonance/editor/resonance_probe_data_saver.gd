@@ -51,9 +51,7 @@ func _save(resource: Resource, path: String, _flags: int) -> Error:
 	var static_scene_params_hash: int = (
 		resource.get("static_scene_params_hash") if "static_scene_params_hash" in resource else 0
 	)
-	var target_path: String = (
-		path if path.ends_with(".tres") else path.get_basename() + ".tres"
-	)
+	var target_path: String = path if path.ends_with(".tres") else path.get_basename() + ".tres"
 	var tmp_path := target_path + ".tmp"
 	var data_str := var_to_str(data)
 	var probe_pos_str := var_to_str(probe_positions)
@@ -80,7 +78,10 @@ func _save(resource: Resource, path: String, _flags: int) -> Error:
 		if FileAccess.file_exists(tmp_path):
 			DirAccess.remove_absolute(tmp_path)
 		push_warning(
-			"Nexus Resonance: Atomic probe save failed (rename), error %d. Temp removed." % rename_err
+			(
+				"Nexus Resonance: Atomic probe save failed (rename), error %d. Temp removed."
+				% rename_err
+			)
 		)
 		return rename_err
 	resource.take_over_path(target_path)

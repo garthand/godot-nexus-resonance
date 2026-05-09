@@ -11,16 +11,22 @@ const _BakeEstimates = preload("res://addons/nexus_resonance/editor/resonance_ba
 const _BakeHashes = preload("res://addons/nexus_resonance/editor/resonance_bake_hashes.gd")
 const _BakeDiscovery = preload("res://addons/nexus_resonance/editor/resonance_bake_discovery.gd")
 const _BakeValidation = preload("res://addons/nexus_resonance/editor/resonance_bake_validation.gd")
-const _BakeServerSetup = preload("res://addons/nexus_resonance/editor/resonance_bake_server_setup.gd")
+const _BakeServerSetup = preload(
+	"res://addons/nexus_resonance/editor/resonance_bake_server_setup.gd"
+)
 const _BakePipeline = preload("res://addons/nexus_resonance/editor/resonance_bake_pipeline.gd")
-const ResonanceEditorDialogs = preload("res://addons/nexus_resonance/editor/resonance_editor_dialogs.gd")
-const ResonanceBakeProgressUI = preload("res://addons/nexus_resonance/editor/resonance_bake_progress_ui.gd")
+const ResonanceEditorDialogs = preload(
+	"res://addons/nexus_resonance/editor/resonance_editor_dialogs.gd"
+)
+const ResonanceBakeProgressUI = preload(
+	"res://addons/nexus_resonance/editor/resonance_bake_progress_ui.gd"
+)
 const ResonanceBakeBackup = preload("res://addons/nexus_resonance/editor/resonance_bake_backup.gd")
 const UIStrings = preload("res://addons/nexus_resonance/scripts/resonance_ui_strings.gd")
 
 const DEFAULT_BAKE_INFLUENCE_RADIUS := 10000.0
 
-var editor_interface # Untyped to allow null passing in Godot 4.x safely
+var editor_interface  # Untyped to allow null passing in Godot 4.x safely
 ## When set, used as quick link in validation dialog when static scene not exported.
 var export_static_callback: Callable = Callable()
 var _bake_in_progress: bool = false
@@ -29,11 +35,11 @@ var _bake_in_progress: bool = false
 var target_root: Node
 var save_to_disk: bool = true
 signal bake_progress_updated(status_message: String)
-signal bake_finished()
+signal bake_finished
 # -------------------------
 
-var _progress_ui # Untyped to allow headless operation
-var _backup # Untyped to allow headless operation
+var _progress_ui  # Untyped to allow headless operation
+var _backup  # Untyped to allow headless operation
 var _server_setup: RefCounted
 var _pipeline: RefCounted
 
@@ -83,7 +89,9 @@ func run_bake(volumes: Array[Node], root: Node = null, save_results: bool = true
 		_log_and_show_error("No scene open", "Open a scene before baking.")
 		return
 
-	var static_scene_node = _BakeDiscovery.find_resonance_static_scene_for_bake(volumes, actual_root)
+	var static_scene_node = _BakeDiscovery.find_resonance_static_scene_for_bake(
+		volumes, actual_root
+	)
 	_auto_reexport_static_scene_if_stale(actual_root, static_scene_node)
 	var static_asset = static_scene_node.get("static_scene_asset") if static_scene_node else null
 	_do_run_bake_with_backup(volumes, actual_root, static_scene_node, static_asset)
@@ -105,7 +113,9 @@ func _auto_reexport_static_scene_if_stale(root: Node, static_scene_node: Node) -
 	var has_valid: bool = (
 		static_scene_node.has_method("has_valid_asset") and static_scene_node.has_valid_asset()
 	)
-	var stored_hash: int = static_scene_node.export_hash if "export_hash" in static_scene_node else 0
+	var stored_hash: int = (
+		static_scene_node.export_hash if "export_hash" in static_scene_node else 0
+	)
 	if has_valid and stored_hash == current_hash:
 		return
 	export_static_callback.call(null)
@@ -169,8 +179,10 @@ func _get_edited_scene_root(volumes: Array[Node]) -> Node:
 func estimate_probe_count(vol: Node) -> int:
 	return _BakeEstimates.estimate_probe_count(vol)
 
+
 func estimate_bake_time(vol: Node) -> String:
 	return _BakeEstimates.estimate_bake_time(vol, _get_bake_config_for_volume(vol))
+
 
 func get_volume_bake_status(vol: Node) -> String:
 	if not vol or not vol.has_method("get_probe_data"):
@@ -184,7 +196,11 @@ func get_volume_bake_status(vol: Node) -> String:
 	var bc = _get_bake_config_for_volume(vol)
 	var want_path = bc.pathing_enabled
 	var path_hash = _BakeHashes.compute_pathing_hash(bc) if want_path else 0
-	var ph = probe_data.get_pathing_params_hash() if probe_data.has_method("get_pathing_params_hash") else 0
+	var ph = (
+		probe_data.get_pathing_params_hash()
+		if probe_data.has_method("get_pathing_params_hash")
+		else 0
+	)
 	var desired_refl = bc.reflection_type
 	var refl_matches = (
 		probe_data.get_baked_reflection_type() == desired_refl
@@ -209,15 +225,27 @@ func get_volume_bake_status(vol: Node) -> String:
 		var stored_union: int = probe_data.get_static_scene_params_hash()
 		if stored_union == 0 or stored_union != union_static_hash:
 			return "Outdated"
-	var rad = vol.get("bake_influence_radius") if "bake_influence_radius" in vol else DEFAULT_BAKE_INFLUENCE_RADIUS
+	var rad = (
+		vol.get("bake_influence_radius")
+		if "bake_influence_radius" in vol
+		else DEFAULT_BAKE_INFLUENCE_RADIUS
+	)
 	if bc.static_source_enabled and root:
 		var src_hash := _bake_entries_hash(vol, root, "bake_sources", "ResonancePlayer", rad)
-		var ssh = probe_data.get_static_source_params_hash() if probe_data.has_method("get_static_source_params_hash") else 0
+		var ssh = (
+			probe_data.get_static_source_params_hash()
+			if probe_data.has_method("get_static_source_params_hash")
+			else 0
+		)
 		if src_hash != 0 and (ssh == 0 or ssh != src_hash):
 			return "Outdated"
 	if bc.static_listener_enabled and root:
 		var lst_hash := _bake_entries_hash(vol, root, "bake_listeners", "ResonanceListener", rad)
-		var lsh = probe_data.get_static_listener_params_hash() if probe_data.has_method("get_static_listener_params_hash") else 0
+		var lsh = (
+			probe_data.get_static_listener_params_hash()
+			if probe_data.has_method("get_static_listener_params_hash")
+			else 0
+		)
 		if lst_hash != 0 and (lsh == 0 or lsh != lst_hash):
 			return "Outdated"
 	return "Probes baked"

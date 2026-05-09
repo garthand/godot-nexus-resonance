@@ -36,7 +36,9 @@ func _on_export_pressed(obj: Object) -> void:
 	var parent = geom.get_parent()
 	var parent_name = parent.name if parent else "mesh"
 	if not DirAccess.dir_exists_absolute(ResonancePaths.PATH_RESONANCE_MESHES):
-		var mk_err: int = DirAccess.make_dir_recursive_absolute(ResonancePaths.PATH_RESONANCE_MESHES)
+		var mk_err: int = DirAccess.make_dir_recursive_absolute(
+			ResonancePaths.PATH_RESONANCE_MESHES
+		)
 		if mk_err != OK or not DirAccess.dir_exists_absolute(ResonancePaths.PATH_RESONANCE_MESHES):
 			if editor_interface:
 				ResonanceEditorDialogs.show_error_dialog(

@@ -99,7 +99,11 @@ func show_ui() -> void:
 
 func hide_ui() -> void:
 	var srv: Variant = ResonanceServerAccess.get_server()
-	if srv and srv.has_signal("bake_progress") and srv.bake_progress.is_connected(_on_bake_progress):
+	if (
+		srv
+		and srv.has_signal("bake_progress")
+		and srv.bake_progress.is_connected(_on_bake_progress)
+	):
 		srv.bake_progress.disconnect(_on_bake_progress)
 	if _progress_dialog == null:
 		_progress_bar = null
@@ -107,7 +111,10 @@ func hide_ui() -> void:
 		_status_label = null
 		_details_panel = null
 		return
-	if _progress_dialog.is_inside_tree() and _progress_dialog.close_requested.is_connected(_on_cancel_pressed):
+	if (
+		_progress_dialog.is_inside_tree()
+		and _progress_dialog.close_requested.is_connected(_on_cancel_pressed)
+	):
 		_progress_dialog.close_requested.disconnect(_on_cancel_pressed)
 	_progress_dialog.queue_free()
 	_progress_dialog = null

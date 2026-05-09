@@ -62,9 +62,10 @@ func _export_begin_android() -> void:
 		var opt := "architectures/%s" % abi
 		if bool(get_option(opt)):
 			push_warning(
-				"Nexus Resonance Export: Android ABI '%s' is enabled but this addon does not ship libphonon.so for it. "
-				+ "Disable the ABI or provide a matching library."
-				% abi
+				(
+					"Nexus Resonance Export: Android ABI '%s' is enabled but this addon does not ship libphonon.so for it. "
+					+ "Disable the ABI or provide a matching library." % abi
+				)
 			)
 
 

@@ -154,8 +154,7 @@ var realtime_rays: int:
 ## [br][b]Listener-centric[/b] = pick the probe nearest the listener (recommended for room reverb).
 ## [br][b]Source-centric[/b] = pick the probe nearest the source (legacy behavior).
 ## [br][br]Note: currently this only affects baked REVERB probe lookup. Steam Audio realtime reflections trace rays from the listener in the core API, so this mode does not yet change realtime ray origin.
-@export_enum("Listener-centric:0", "Source-centric:1")
-var reflections_sampling_mode: int = 0
+@export_enum("Listener-centric:0", "Source-centric:1") var reflections_sampling_mode: int = 0
 ## Extra wet attenuation by distance (meters). 0 = off (reflections/pathing wet not scaled by this).
 ## When > 0: full wet at or below this distance; linear fade to 0 by 2× this distance (convolution/TAN feed,
 ## parametric/hybrid wet, pathing). Does not replace per-source max_distance on the direct path.
@@ -443,7 +442,12 @@ func get_config() -> Dictionary:
 	var mix_rate := int(AudioServer.get_mix_rate())
 	var rate := sample_rate_override if sample_rate_override > 0 else mix_rate
 	if sample_rate_override > 0 and sample_rate_override != mix_rate:
-		push_warning("Nexus Resonance: sample_rate_override (%d) differs from Godot mix rate (%d). No resampling; audio may be affected." % [sample_rate_override, mix_rate])
+		push_warning(
+			(
+				"Nexus Resonance: sample_rate_override (%d) differs from Godot mix rate (%d). No resampling; audio may be affected."
+				% [sample_rate_override, mix_rate]
+			)
+		)
 	var frame_size := (
 		audio_frame_size if audio_frame_size > 0 else _get_audio_frame_size_from_project()
 	)

@@ -6,6 +6,7 @@ class_name ResonanceEditorDialogs
 
 const UIStrings = preload("res://addons/nexus_resonance/scripts/resonance_ui_strings.gd")
 
+
 ## Checklist row: icon + label. [param icon_size] 16 default, 14 for compact inspector; [param row_separation] icon–text gap.
 static func create_checklist_row(
 	base: Control, label: String, ok: bool, icon_size: int = 16, row_separation: int = 8

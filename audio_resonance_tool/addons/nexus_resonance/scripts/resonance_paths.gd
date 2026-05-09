@@ -53,4 +53,11 @@ static func get_probe_data_asset_extension() -> String:
 
 ## [code]audio_data/{{scene}}_{{node}}_batch.{{ext}}[/code] (same as bake pipeline / editor).
 static func probe_data_save_path(scene_basename: String, node_key: String) -> String:
-	return get_audio_data_dir() + scene_basename + "_" + node_key + "_batch." + get_probe_data_asset_extension()
+	return (
+		get_audio_data_dir()
+		+ scene_basename
+		+ "_"
+		+ node_key
+		+ "_batch."
+		+ get_probe_data_asset_extension()
+	)

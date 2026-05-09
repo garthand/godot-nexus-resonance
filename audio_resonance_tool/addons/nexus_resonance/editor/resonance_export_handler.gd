@@ -338,9 +338,11 @@ func export_all_open_scenes(_unused: Variant = null) -> void:
 		)
 	elif result.skipped > 0:
 		_show_warning(
-			tr(UIStrings.WARN_NO_SCENES_EXPORTED)
-			+ " "
-			+ (tr(UIStrings.INFO_SCENES_FILTERED) % result.skipped)
+			(
+				tr(UIStrings.WARN_NO_SCENES_EXPORTED)
+				+ " "
+				+ (tr(UIStrings.INFO_SCENES_FILTERED) % result.skipped)
+			)
 		)
 	else:
 		_show_warning(tr(UIStrings.WARN_NO_SCENES_EXPORTED))
@@ -416,8 +418,10 @@ func export_dynamic_mesh(_unused: Variant = null) -> void:
 			editor_interface.mark_scene_as_unsaved()
 			ResonanceEditorDialogs.show_success_toast(
 				editor_interface,
-				tr(UIStrings.INFO_DYNAMIC_MESHES_EXPORTED) % exported
-				+ tr(UIStrings.WARN_SAVE_SCENE_TO_PERSIST)
+				(
+					tr(UIStrings.INFO_DYNAMIC_MESHES_EXPORTED) % exported
+					+ tr(UIStrings.WARN_SAVE_SCENE_TO_PERSIST)
+				)
 			)
 
 
