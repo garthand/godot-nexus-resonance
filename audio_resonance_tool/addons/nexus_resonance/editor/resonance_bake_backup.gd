@@ -2,12 +2,10 @@
 extends RefCounted
 class_name ResonanceBakeBackup
 
-## Backup and restore logic for probe data before bake. Extracted for SRP.
+## Backup/restore for probe data before bake.
 ##
-## Backups are 1:1 file copies of the resource on disk (see [code]create_backups[/code]).
-## Using [DirAccess.copy_absolute] instead of [ResourceSaver.save] avoids invoking the custom
-## probe data saver, which would call [code]take_over_path[/code] on the resource and silently
-## reroute future saves to the .bak file. That bug previously produced .res.bak.bak.bak chains.
+## Uses 1:1 disk copies via [DirAccess.copy_absolute] to avoid triggering the custom probe saver,
+## which may call [code]take_over_path[/code] and accidentally redirect future saves to the .bak file.
 
 const UIStrings = preload("res://addons/nexus_resonance/scripts/resonance_ui_strings.gd")
 const ResonanceEditorDialogs = preload(
@@ -45,10 +43,8 @@ func create_backups(volumes: Array[Node]) -> void:
 			_backup_paths[original_path] = backup_path
 		else:
 			push_warning(
-				(
-					"Nexus Resonance: Failed to create probe data backup at %s (error %d)."
-					% [backup_path, err]
-				)
+				"Nexus Resonance: Failed to create probe data backup at %s (error %d)."
+				% [backup_path, err]
 			)
 
 

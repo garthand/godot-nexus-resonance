@@ -1,9 +1,7 @@
 extends Object
 class_name ResonanceFsPaths
 
-## Canonical filesystem paths for [DirAccess]/[FileAccess] on disk.
-## [code]res://[/code] and [code]user://[/code] are globalized via [method ProjectSettings.globalize_path];
-## already-absolute project paths pass through (slashes normalized).
+## Map [code]res://[/code] / [code]user://[/code] to OS paths for [DirAccess] / [FileAccess].
 
 
 static func filesystem_path_for_dir_access(path: String) -> String:
@@ -15,8 +13,7 @@ static func filesystem_path_for_dir_access(path: String) -> String:
 	return p
 
 
-## Opens [DirAccess] for the given path. Tries [method filesystem_path_for_dir_access] first, then the logical path
-## (same policy as listing [code]audio_data[/code] in the export handler).
+## [method DirAccess.open]: globalized path first, then logical (export handler convention).
 static func open_dir_for_path(path: String) -> DirAccess:
 	if path.is_empty():
 		return null
@@ -27,8 +24,7 @@ static func open_dir_for_path(path: String) -> DirAccess:
 	return DirAccess.open(path)
 
 
-## Returns whether a file exists at the given path ([code]res://[/code], [code]user://[/code], or absolute).
-## Tries the globalized path first, then the logical path.
+## [method FileAccess.file_exists] with same globalized-then-logical try order.
 static func file_exists_for_path(path: String) -> bool:
 	if path.is_empty():
 		return false
@@ -38,7 +34,7 @@ static func file_exists_for_path(path: String) -> bool:
 	return FileAccess.file_exists(path)
 
 
-## Reads the file as a UTF-8 string. Uses the globalized path when that file exists, otherwise the logical path.
+## UTF-8 text: prefer globalized path if that file exists.
 static func read_file_as_string(path: String) -> String:
 	if path.is_empty():
 		return ""
@@ -48,7 +44,7 @@ static func read_file_as_string(path: String) -> String:
 	return FileAccess.get_file_as_string(path)
 
 
-## Needles to detect a probe resource path inside [.tscn] text (full path, absolute, basename, [code]res://[/code] form).
+## Search strings for probe references in [code].tscn[/code] text (path variants).
 static func probe_reference_needles_for_path(probe_logical_path: String) -> PackedStringArray:
 	var out: PackedStringArray = []
 	if probe_logical_path.is_empty():

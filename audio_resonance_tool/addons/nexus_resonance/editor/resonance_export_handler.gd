@@ -1,8 +1,7 @@
 @tool
 extends RefCounted
 
-## Central export logic for Nexus Resonance addon. Handles static/dynamic mesh export, OBJ export, probe cleanup.
-## Reduces plugin.gd size and centralizes DRY helpers for GDExtension, main scene, and directory checks.
+## Static/dynamic export, OBJ, probe cleanup. Shared from the editor plugin.
 
 const ResonancePaths = preload("res://addons/nexus_resonance/scripts/resonance_paths.gd")
 const ResonanceFsPaths = preload("res://addons/nexus_resonance/scripts/resonance_fs_paths.gd")
@@ -103,10 +102,7 @@ func ensure_resonance_meshes_dir() -> bool:
 	return true
 
 
-## Registers freshly written OBJ files in the EditorFileSystem cache via update_file() and then
-## triggers a reimport. Avoids scan() which would conflict with reimport_files() ("Task 'reimport'
-## already exists"), and avoids the "Can't find file ... during file reimport" error that occurs
-## when reimport_files() runs before the editor has discovered the new file.
+## update_file + reimport_files for new OBJ paths (avoids full scan + reimport race).
 func _request_obj_reimport(paths: PackedStringArray) -> void:
 	if paths.is_empty():
 		return
@@ -317,9 +313,7 @@ func export_active_scene(_unused: Variant = null) -> void:
 		static_scene_node.name = "ResonanceStaticScene"
 		root.add_child(static_scene_node)
 		static_scene_node.owner = root
-	# CACHE_MODE_REPLACE forces ResourceLoader to read the freshly written file from disk and replace
-	# any cached instance. Plain `load()` would keep returning the stale resource on repeat exports
-	# to the same path because Godot's resource cache is keyed by `res://` path, not by mtime.
+	# CACHE_MODE_REPLACE: reload from disk; plain load() can keep a stale cached resource at same path.
 	var asset: Resource = ResourceLoader.load(save_path, "", ResourceLoader.CACHE_MODE_REPLACE)
 	if asset:
 		static_scene_node.static_scene_asset = asset
@@ -344,11 +338,9 @@ func export_all_open_scenes(_unused: Variant = null) -> void:
 		)
 	elif result.skipped > 0:
 		_show_warning(
-			(
-				tr(UIStrings.WARN_NO_SCENES_EXPORTED)
-				+ " "
-				+ (tr(UIStrings.INFO_SCENES_FILTERED) % result.skipped)
-			)
+			tr(UIStrings.WARN_NO_SCENES_EXPORTED)
+			+ " "
+			+ (tr(UIStrings.INFO_SCENES_FILTERED) % result.skipped)
 		)
 	else:
 		_show_warning(tr(UIStrings.WARN_NO_SCENES_EXPORTED))
@@ -424,10 +416,8 @@ func export_dynamic_mesh(_unused: Variant = null) -> void:
 			editor_interface.mark_scene_as_unsaved()
 			ResonanceEditorDialogs.show_success_toast(
 				editor_interface,
-				(
-					tr(UIStrings.INFO_DYNAMIC_MESHES_EXPORTED) % exported
-					+ tr(UIStrings.WARN_SAVE_SCENE_TO_PERSIST)
-				)
+				tr(UIStrings.INFO_DYNAMIC_MESHES_EXPORTED) % exported
+				+ tr(UIStrings.WARN_SAVE_SCENE_TO_PERSIST)
 			)
 
 

@@ -1,17 +1,17 @@
 @tool
 extends EditorNode3DGizmoPlugin
 
-## Nexus Resonance Gizmo for ResonanceProbeVolume
+## Editor gizmo for ResonanceProbeVolume (box + handles + optional icon).
 
 const UIStrings = preload("res://addons/nexus_resonance/scripts/resonance_ui_strings.gd")
 const GIZMO_RAY_LENGTH := 10000.0
 const MIN_REGION_SIZE := 0.1
 
 var undo_redo: EditorUndoRedoManager
-## Optional fallback icon when custom icon file is missing. Set by plugin after instantiation.
+## Set by plugin if ICON_PROBE_VOLUME_GIZMO is missing.
 var fallback_icon: Texture2D = null
 var _icon_material_created: bool = false
-## Per-plugin-instance material names so re-adding the gizmo after disable/enable does not clash with editor caches.
+## Unique material names per plugin instance (avoid cache clashes on disable/enable).
 var _mat_main: String = ""
 var _mat_handles: String = ""
 var _mat_icon: String = ""
@@ -33,7 +33,7 @@ func _has_gizmo(node: Node) -> bool:
 	return node.is_class(UIStrings.GIZMO_PROBE_VOLUME_CLASS)
 
 
-func _init():
+func _init() -> void:
 	var sid := str(get_instance_id())
 	_mat_main = "nexus_probe_vol_main_" + sid
 	_mat_handles = "nexus_probe_vol_handles_" + sid
@@ -41,7 +41,7 @@ func _init():
 	create_material(_mat_main, Color(0.1, 0.8, 1.0))
 	create_handle_material(_mat_handles)
 
-	# Icon material is created lazily in _redraw to avoid EditorInterface in _init
+	# Icon material: lazy in _redraw (no EditorInterface in _init).
 
 
 func _ensure_icon_material(_gizmo: EditorNode3DGizmo) -> void:
@@ -61,12 +61,12 @@ func _ensure_icon_material(_gizmo: EditorNode3DGizmo) -> void:
 		_icon_material_created = true
 
 
-func _redraw(gizmo: EditorNode3DGizmo):
+func _redraw(gizmo: EditorNode3DGizmo) -> void:
 	gizmo.clear()
 	var node = gizmo.get_node_3d()
 	_ensure_icon_material(gizmo)
 
-	# add icon
+	# Billboard icon
 	var icon_mat = get_material(_mat_icon, gizmo)
 	if icon_mat:
 		gizmo.add_unscaled_billboard(icon_mat, 0.05)
@@ -122,8 +122,7 @@ func _get_handle_value(gizmo: EditorNode3DGizmo, _handle_id: int, _secondary: bo
 	return {"region_size": _get_valid_region_size(node), "global_position": node.global_position}
 
 
-## Applies handle drag immediately; Undo is registered in _commit_handle (standard Gizmo pattern).
-## Alt: symmetric scaling (both sides from center, like original). Default: asymmetric (opposite face fixed, like CSGBox).
+## Live resize; undo in [method _commit_handle]. Alt: symmetric from center; default: one face moves (CSGBox-like).
 func _set_handle(
 	gizmo: EditorNode3DGizmo, handle_id: int, _secondary: bool, camera: Camera3D, point: Vector2
 ) -> void:
@@ -135,19 +134,17 @@ func _set_handle(
 	var origin = transform.origin
 	var basis = transform.basis
 
-	var axis_dir = Vector3.ZERO
-	if handle_id == 0:
-		axis_dir = basis.x.normalized()
-	elif handle_id == 1:
-		axis_dir = basis.y.normalized()
-	elif handle_id == 2:
-		axis_dir = basis.z.normalized()
-	elif handle_id == 3:
-		axis_dir = -basis.x.normalized()
-	elif handle_id == 4:
-		axis_dir = -basis.y.normalized()
-	elif handle_id == 5:
-		axis_dir = -basis.z.normalized()
+	var axis_dirs: Array[Vector3] = [
+		basis.x.normalized(),
+		basis.y.normalized(),
+		basis.z.normalized(),
+		-basis.x.normalized(),
+		-basis.y.normalized(),
+		-basis.z.normalized(),
+	]
+	var axis_dir: Vector3 = (
+		axis_dirs[handle_id] if handle_id >= 0 and handle_id < axis_dirs.size() else Vector3.ZERO
+	)
 
 	var ray_from = camera.project_ray_origin(point)
 	var ray_dir = camera.project_ray_normal(point)

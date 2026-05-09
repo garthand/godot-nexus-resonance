@@ -2,16 +2,9 @@
 extends ResourceFormatSaver
 class_name ResonanceProbeDataSaver
 
-## Custom ResourceFormatSaver for ResonanceProbeData (GDExtension class).
-## Saves [.tres] paths as custom text (version-control friendly). [.res] uses the engine saver (Project Settings).
-##
-## NOTE: [.bak] is intentionally NOT a recognized save extension. Backups are 1:1 file copies
-## handled by [ResonanceBakeBackup]; saving a probe data resource directly to a .bak path is
-## rejected to prevent the saver from calling [code]take_over_path[/code] on a .bak file
-## (which previously chained .res.bak.bak.bak names on every bake).
-##
-## Concurrency: Atomic save via tmp file + DirAccess.rename_absolute. Avoid simultaneous saves
-## on the same .tres path (e.g. Bake pipeline + manual ResourceSaver.save) to prevent race conditions.
+## Text [.tres] saver for ResonanceProbeData (VC-friendly). [.res] defers to the default saver.
+## [.bak] saves are rejected (backups are file copies; saving here caused take_over_path → .bak chains).
+## Writes via tmp + rename; avoid concurrent saves to the same .tres path.
 
 
 func _recognize(resource: Resource) -> bool:
@@ -25,9 +18,7 @@ func _get_recognized_extensions(_resource: Resource) -> PackedStringArray:
 func _save(resource: Resource, path: String, _flags: int) -> Error:
 	if resource.get_class() != "ResonanceProbeData":
 		return ERR_INVALID_PARAMETER
-	# Defensive: never save a probe data resource as .bak. Backups are file copies,
-	# not engine-managed resources. Accepting .bak here would call take_over_path()
-	# on the resource and silently route subsequent saves to the .bak file.
+	# Refuse .bak: backups are copies; take_over_path on .bak used to break subsequent saves.
 	if path.ends_with(".bak"):
 		push_warning(
 			"Nexus Resonance: Refusing to save ResonanceProbeData to a .bak path (%s)." % path
@@ -89,10 +80,7 @@ func _save(resource: Resource, path: String, _flags: int) -> Error:
 		if FileAccess.file_exists(tmp_path):
 			DirAccess.remove_absolute(tmp_path)
 		push_warning(
-			(
-				"Nexus Resonance: Atomic save failed (rename), error %d. Temp file removed."
-				% rename_err
-			)
+			"Nexus Resonance: Atomic probe save failed (rename), error %d. Temp removed." % rename_err
 		)
 		return rename_err
 	resource.take_over_path(target_path)

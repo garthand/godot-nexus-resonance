@@ -1,7 +1,7 @@
 extends Object
 class_name ResonanceBakeHashes
 
-## Hash helpers for bake params and static source/listener positions (shared by context + status UI).
+## Hashes for bake params and static source/listener positions (shared by bake context + UI).
 
 const ResonanceSceneUtils = preload("res://addons/nexus_resonance/scripts/resonance_scene_utils.gd")
 
@@ -27,22 +27,24 @@ static func compute_position_radius_hash(pos: Vector3, radius: float) -> int:
 	return hash_dict({"pos": pos, "radius": radius})
 
 
-## Combined hash for a list of (position, radius) tuples. Invalidates STATICSOURCE/STATICLISTENER
-## bakes when the set of outdoor emitters changes (added/removed/moved or radius changed).
+## Combined hash for (position, radius) entries. Changes invalidate STATICSOURCE / STATICLISTENER bakes.
+static func _entry_pos_radius(e: Variant) -> Dictionary:
+	if e is Dictionary:
+		return {"pos": e.get("pos", Vector3.ZERO), "radius": e.get("radius", 0.0)}
+	return {"pos": Vector3.ZERO, "radius": 0.0}
+
+
 static func compute_position_radius_list_hash(entries: Array) -> int:
 	if entries.is_empty():
 		return 0
 	var buckets: Array = []
 	for e in entries:
-		var pos: Vector3 = e.get("pos", Vector3.ZERO) if e is Dictionary else Vector3.ZERO
-		var radius: float = e.get("radius", 0.0) if e is Dictionary else 0.0
-		buckets.append({"pos": pos, "radius": radius})
+		buckets.append(_entry_pos_radius(e))
 	return hash_dict({"entries": buckets})
 
 
-## Combined hash for all [ResonanceStaticScene] nodes under [param root] (geometry asset hash + global transform each).
-## Order follows [method ResonanceSceneUtils.collect_resonance_static_scenes] (depth-first, first child first).
-## Used so probe bake invalidation sees every static pack, not only the first scene.
+## Hash for every ResonanceStaticScene under [param root] (asset hash + global transform). Order matches
+## [method ResonanceSceneUtils.collect_resonance_static_scenes] so all packs affect invalidation.
 static func compute_all_resonance_static_scenes_params_hash(root: Node) -> int:
 	if root == null or not ResonanceServerAccess.has_server():
 		return 0
@@ -61,9 +63,7 @@ static func compute_all_resonance_static_scenes_params_hash(root: Node) -> int:
 		if not (ss.has_method("has_valid_asset") and ss.has_valid_asset()):
 			continue
 		var ah: int = int(srv.get_geometry_asset_hash(asset))
-		var xf: Transform3D = (
-			(ss as Node3D).global_transform if ss is Node3D else Transform3D.IDENTITY
-		)
+		var xf := (ss as Node3D).global_transform if ss is Node3D else Transform3D.IDENTITY
 		parts.append({"h": ah, "t": xf})
 	if parts.is_empty():
 		return 0

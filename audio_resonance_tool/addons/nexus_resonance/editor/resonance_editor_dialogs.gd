@@ -2,14 +2,11 @@
 extends RefCounted
 class_name ResonanceEditorDialogs
 
-## Central dialog helper for consistent styles in Nexus Resonance addon.
+## Dialogs, toasts, and checklist rows for the addon (consistent with editor theme).
 
 const UIStrings = preload("res://addons/nexus_resonance/scripts/resonance_ui_strings.gd")
 
-
-## Creates a checklist row with status icon and label. Used by validation dialogs and inspector.
-## icon_size: pixel size for the status icon (default 16). Use 14 for compact inspector layout.
-## row_separation: spacing between icon and label (default 8).
+## Checklist row: icon + label. [param icon_size] 16 default, 14 for compact inspector; [param row_separation] icon–text gap.
 static func create_checklist_row(
 	base: Control, label: String, ok: bool, icon_size: int = 16, row_separation: int = 8
 ) -> HBoxContainer:
@@ -27,12 +24,14 @@ static func create_checklist_row(
 	lbl.text = label
 	if icon_size == 14:
 		lbl.add_theme_font_size_override("font_size", 12)
-	lbl.add_theme_color_override("font_color", Color(0.4, 0.9, 0.4) if ok else Color(1.0, 0.5, 0.5))
+	var ok_col := Color(0.4, 0.9, 0.4)
+	var err_col := Color(1.0, 0.5, 0.5)
+	lbl.add_theme_color_override("font_color", ok_col if ok else err_col)
 	row.add_child(lbl)
 	return row
 
 
-## Loads icon from path or falls back to EditorIcons. Returns null if base is null.
+## Icon from [param icon_path], else theme icon [param fallback_icon]. Null if [param base] is null.
 static func get_icon(base: Control, icon_path: String, fallback_icon: String) -> Texture2D:
 	if not base:
 		return null
@@ -42,7 +41,7 @@ static func get_icon(base: Control, icon_path: String, fallback_icon: String) ->
 	return base.get_theme_icon(fallback_icon, "EditorIcons")
 
 
-## Critical errors -> modal dialog. Blocks until user acknowledges.
+## Modal error (blocking).
 static func show_critical(
 	editor_interface: EditorInterface, message: String, title: String = ""
 ) -> void:
@@ -50,25 +49,19 @@ static func show_critical(
 	show_error_dialog(editor_interface, t, message)
 
 
-## Warnings -> EditorToaster notification (non-blocking).
+## Non-blocking warning (EditorToaster when available).
 static func show_warning(editor_interface: EditorInterface, message: String) -> void:
-	if not editor_interface:
-		push_warning(UIStrings.PREFIX + message)
+	if _try_push_toast(editor_interface, message, 1):
 		return
-	if editor_interface.has_method("get_editor_toaster"):
-		var toaster = editor_interface.get_editor_toaster()
-		if toaster and toaster.has_method("push_toast"):
-			toaster.push_toast(message, 1, "")  # EditorToaster.SEVERITY_WARNING = 1
-			return
 	push_warning(UIStrings.PREFIX + message)
 
 
-## Info -> console only.
+## Prints colored line (no dialog).
 static func show_info(message: String) -> void:
 	print_rich("[color=cyan]Nexus Resonance:[/color] " + message)
 
 
-## Structured error dialog with optional cause, solution, doc link.
+## Error dialog; optional cause, solution, doc link button.
 static func show_error_dialog(
 	editor_interface: EditorInterface,
 	title: String,
@@ -107,16 +100,13 @@ static func show_error_dialog(
 	dialog.popup_centered()
 
 
-## Success toast (EditorToaster if available, else small AcceptDialog).
+## Success: toaster if available, else small AcceptDialog.
 static func show_success_toast(editor_interface: EditorInterface, message: String) -> void:
 	if not editor_interface:
 		show_info(message)
 		return
-	if editor_interface.has_method("get_editor_toaster"):
-		var toaster = editor_interface.get_editor_toaster()
-		if toaster and toaster.has_method("push_toast"):
-			toaster.push_toast(message, 0, "")  # EditorToaster.SEVERITY_INFO = 0
-			return
+	if _try_push_toast(editor_interface, message, 0):
+		return
 	_fallback_success_dialog(editor_interface, message)
 
 
@@ -136,9 +126,20 @@ static func _fallback_success_dialog(editor_interface: EditorInterface, message:
 	dialog.get_ok_button().call_deferred("grab_focus")
 
 
-## Confirmation dialog for bake validation. checklist: Array of { "label": str, "ok": bool }
-## Returns true if user confirmed. Calls on_confirmed(all_ok) when confirmed.
-## When show_export_link and on_export_static valid: adds "Export Static Scene (Ctrl+Shift+E)" quick link.
+static func _try_push_toast(
+	editor_interface: EditorInterface, message: String, severity: int
+) -> bool:
+	if not editor_interface or not editor_interface.has_method("get_editor_toaster"):
+		return false
+	var toaster = editor_interface.get_editor_toaster()
+	if toaster and toaster.has_method("push_toast"):
+		toaster.push_toast(message, severity, "")
+		return true
+	return false
+
+
+## Bake validation checklist: [code]{ "label", "ok" }[/code]. [param on_confirmed] receives [param all_ok].
+## Optional export link when [param show_export_link] and [param on_export_static] are set.
 static func show_validation_dialog(
 	editor_interface: EditorInterface,
 	title: String,
@@ -191,7 +192,7 @@ static func show_validation_dialog(
 	dialog.get_ok_button().call_deferred("grab_focus")
 
 
-## Generic confirmation dialog with title, message, and optional on_confirmed callback.
+## Simple confirmation; [param on_confirmed] on OK.
 static func show_confirm_dialog(
 	editor_interface: EditorInterface,
 	title: String,
@@ -220,7 +221,7 @@ static func show_confirm_dialog(
 	dialog.get_ok_button().call_deferred("grab_focus")
 
 
-## Backup confirmation before bake. on_confirmed(cancel_requested: bool) when user chooses.
+## Backup prompt; [param on_confirmed] gets [code]cancel_requested[/code] (true = cancel/close).
 static func show_backup_confirm_dialog(
 	editor_interface: EditorInterface, on_confirmed: Callable
 ) -> void:

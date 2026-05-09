@@ -1,15 +1,14 @@
 @tool
 extends EditorInspectorPlugin
 
-## Adds Bake Probes button to ResonanceProbeVolume inspector. Uses shared ResonanceBakeRunner.
-## bake_runner must be set by the plugin before add_inspector_plugin.
+## ResonanceProbeVolume inspector: bake / preview / probe batch edits. [member bake_runner] is set by the plugin.
 
 const UIStrings = preload("res://addons/nexus_resonance/scripts/resonance_ui_strings.gd")
 const ResonanceEditorDialogs = preload(
 	"res://addons/nexus_resonance/editor/resonance_editor_dialogs.gd"
 )
 
-var bake_runner = null  # ResonanceBakeRunner
+var bake_runner = null
 var editor_interface: EditorInterface = null
 
 
@@ -156,9 +155,25 @@ func _probe_edit_post_success(vol: Object, pd: Resource, batch_ui: Dictionary = 
 		editor_interface.mark_scene_as_unsaved()
 	if not batch_ui.is_empty():
 		_refresh_probe_batch_section_ui(vol, batch_ui)
-	# Deferred so the resource flush and editor state settle before native reload (avoids silent no-op).
+	# Deferred: let save/mark unsaved settle before native reload (avoids no-op).
 	if vol.has_method("reload_probe_batch"):
 		vol.call_deferred("reload_probe_batch")
+
+
+func _warn_probe_server_required() -> void:
+	ResonanceEditorDialogs.show_warning(editor_interface, tr(UIStrings.WARN_PROBE_EDIT_NO_SERVER))
+
+
+func _warn_probe_edit_failed() -> void:
+	ResonanceEditorDialogs.show_warning(editor_interface, tr(UIStrings.WARN_PROBE_EDIT_FAILED))
+
+
+func _require_server_method(method_name: StringName) -> Variant:
+	var srv = ResonanceServerAccess.get_server()
+	if srv == null or not srv.is_initialized() or not srv.has_method(method_name):
+		_warn_probe_server_required()
+		return null
+	return srv
 
 
 func _ensure_server_for_probe_edit(vol: Object) -> bool:
@@ -179,23 +194,14 @@ func _on_remove_probe_at_index_pressed(vol: Object, spin: SpinBox, batch_ui: Dic
 	if pd == null or pd.get_data().is_empty():
 		return
 	if not _ensure_server_for_probe_edit(vol):
-		ResonanceEditorDialogs.show_warning(
-			editor_interface, tr(UIStrings.WARN_PROBE_EDIT_NO_SERVER)
-		)
+		_warn_probe_server_required()
 		return
-	var srv = ResonanceServerAccess.get_server()
-	if (
-		srv == null
-		or not srv.is_initialized()
-		or not srv.has_method("editor_probe_data_remove_probe")
-	):
-		ResonanceEditorDialogs.show_warning(
-			editor_interface, tr(UIStrings.WARN_PROBE_EDIT_NO_SERVER)
-		)
+	var srv := _require_server_method(&"editor_probe_data_remove_probe")
+	if srv == null:
 		return
 	var idx := int(spin.value)
 	if not srv.editor_probe_data_remove_probe(pd, idx):
-		ResonanceEditorDialogs.show_warning(editor_interface, tr(UIStrings.WARN_PROBE_EDIT_FAILED))
+		_warn_probe_edit_failed()
 		return
 	_probe_edit_post_success(vol, pd, batch_ui)
 
@@ -205,23 +211,14 @@ func _on_remove_baked_pathing_pressed(vol: Object, batch_ui: Dictionary) -> void
 	if pd == null or pd.get_data().is_empty():
 		return
 	if not _ensure_server_for_probe_edit(vol):
-		ResonanceEditorDialogs.show_warning(
-			editor_interface, tr(UIStrings.WARN_PROBE_EDIT_NO_SERVER)
-		)
+		_warn_probe_server_required()
 		return
-	var srv = ResonanceServerAccess.get_server()
-	if (
-		srv == null
-		or not srv.is_initialized()
-		or not srv.has_method("editor_probe_data_remove_baked_layer")
-	):
-		ResonanceEditorDialogs.show_warning(
-			editor_interface, tr(UIStrings.WARN_PROBE_EDIT_NO_SERVER)
-		)
+	var srv := _require_server_method(&"editor_probe_data_remove_baked_layer")
+	if srv == null:
 		return
-	# baked_data_type 1 = pathing; variation 3 = dynamic (matches bake_pathing)
+	# Type 1 = pathing, variation 3 = dynamic (same as bake_pathing).
 	if not srv.editor_probe_data_remove_baked_layer(pd, 1, 3, Vector3.ZERO, 0.0):
-		ResonanceEditorDialogs.show_warning(editor_interface, tr(UIStrings.WARN_PROBE_EDIT_FAILED))
+		_warn_probe_edit_failed()
 		return
 	_probe_edit_post_success(vol, pd, batch_ui)
 
@@ -231,23 +228,14 @@ func _on_remove_baked_reflection_reverb_pressed(vol: Object, batch_ui: Dictionar
 	if pd == null or pd.get_data().is_empty():
 		return
 	if not _ensure_server_for_probe_edit(vol):
-		ResonanceEditorDialogs.show_warning(
-			editor_interface, tr(UIStrings.WARN_PROBE_EDIT_NO_SERVER)
-		)
+		_warn_probe_server_required()
 		return
-	var srv = ResonanceServerAccess.get_server()
-	if (
-		srv == null
-		or not srv.is_initialized()
-		or not srv.has_method("editor_probe_data_remove_baked_layer")
-	):
-		ResonanceEditorDialogs.show_warning(
-			editor_interface, tr(UIStrings.WARN_PROBE_EDIT_NO_SERVER)
-		)
+	var srv := _require_server_method(&"editor_probe_data_remove_baked_layer")
+	if srv == null:
 		return
-	# baked_data_type 0 = reflections; variation 0 = reverb
+	# Type 0 = reflections/reverb, variation 0 = reverb IR.
 	if not srv.editor_probe_data_remove_baked_layer(pd, 0, 0, Vector3.ZERO, 0.0):
-		ResonanceEditorDialogs.show_warning(editor_interface, tr(UIStrings.WARN_PROBE_EDIT_FAILED))
+		_warn_probe_edit_failed()
 		return
 	_probe_edit_post_success(vol, pd, batch_ui)
 

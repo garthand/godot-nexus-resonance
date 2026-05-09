@@ -25,15 +25,15 @@ var _pathing_enabled: bool = false
 		if _pathing_enabled != v:
 			_pathing_enabled = v
 			notify_property_list_changed()
-## Baking Visibility Range: Probes beyond this distance (m) are not considered mutually visible. Unity: Baking Visibility Range.
+## Baking Visibility Range: Probes beyond this distance (m) are not considered mutually visible.
 @export_range(10, 2000, 10) var bake_pathing_vis_range: float = 500.0
-## Baking Path Range: Probes beyond this distance (m) have no path between them. Unity: Baking Path Range.
+## Baking Path Range: Probes beyond this distance (m) have no path between them.
 @export_range(10, 500, 10) var bake_pathing_path_range: float = 100.0
-## Baking Visibility Samples: Point samples per probe for visibility tests. Unity: Baking Visibility Samples. Higher = smoother, longer bake.
+## Baking Visibility Samples: Point samples per probe for visibility tests. Higher = smoother, longer bake.
 @export_range(4, 128, 4) var bake_pathing_num_samples: int = 16
-## Baking Visibility Radius: Each probe is a sphere of this radius (m). Unity: Baking Visibility Radius. Larger = more samples, longer bake.
+## Baking Visibility Radius: Each probe is a sphere of this radius (m). Larger = more samples, longer bake.
 @export_range(0.1, 2.0, 0.1) var bake_pathing_radius: float = 0.5
-## Baking Visibility Threshold: Fraction of unoccluded rays required. Lower = more paths, longer bake. Unity: Baking Visibility Threshold.
+## Baking Visibility Threshold: Fraction of unoccluded rays required. Lower = more paths, longer bake.
 @export_range(0.01, 1.0, 0.01) var bake_pathing_threshold: float = 0.1
 
 # --- Additional Bake ---

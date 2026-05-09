@@ -3,9 +3,7 @@
 class_name ResonanceRuntime
 extends Node
 
-## Nexus Resonance scene configuration node.
-## Add via **Add Child Node** → **ResonanceRuntime** (global class; always includes this script).
-## Assign a ResonanceRuntimeConfig resource (create new or link existing) for runtime settings.
+## Scene root config for Nexus Resonance. Add **ResonanceRuntime** (global class); assign [ResonanceRuntimeConfig] or use defaults.
 
 const ResonanceRuntimeConfig = preload(
 	"res://addons/nexus_resonance/scripts/resonance_runtime_config.gd"
@@ -50,8 +48,8 @@ var _runtime: ResonanceRuntimeConfig
 @export var performance_overlay_toggle_key: Key = KEY_F2
 ## Key to toggle player/source ray visualization (occlusion + reflection rays in engine). Requires ResonanceServer debug support.
 @export var player_overlay_toggle_key: Key = KEY_F3
-## Debugger [Performance] custom monitors from Nexus (main/worker/audio µs). [b]Off[/b] removes all; [b]Standard[/b] is default (~12 graphs). [b]Full[/b] matches pre-0.9.5 verbosity and enables per-phase main/physics timing in [method _process].
-@export_enum("Off:0", "Core:1", "Standard:2", "Full:3",) var performance_custom_monitors: int = 2:
+## Custom Performance monitors (main/worker/audio). Off clears all; Standard default; Full adds per-phase timing in [method _process] / [method _physics_process].
+@export_enum("Off:0", "Core:1", "Standard:2", "Full:3") var performance_custom_monitors: int = 2:
 	get:
 		return _performance_custom_monitors
 	set(v):
@@ -65,7 +63,7 @@ var _runtime: ResonanceRuntimeConfig
 		_performance_custom_monitors = nv
 		_refresh_performance_custom_monitors_if_ready()
 
-## Caps the Steam Audio IPL context SIMD level (older CPUs / crash debugging). **Default** lets Phonon pick the highest usable set. Lower sets trade some speed for broader CPU support.
+## IPL context SIMD cap (debug / old CPUs). Default lets Phonon choose; lower = wider CPU support, slower.
 @export_enum("Default:-1", "AVX-512:0", "AVX2:1", "AVX:2", "SSE4:3", "SSE2:4")
 var context_simd_level: int = -1:
 	get:
@@ -76,7 +74,7 @@ var context_simd_level: int = -1:
 		_context_simd_level = v
 		_warn_restart_if_needed()
 
-## Enables Steam Audio [code]IPL_CONTEXTFLAGS_VALIDATION[/code]: extra API checks and more console warnings. For diagnosing integration issues only; hurts performance.
+## [code]IPL_CONTEXTFLAGS_VALIDATION[/code]: extra checks and warnings; slower - integration diagnostics only.
 @export var context_validation: bool = false:
 	get:
 		return _context_validation
@@ -106,13 +104,13 @@ var activator_instrumentation: Dictionary:
 	get:
 		return _reverb_activator.instrumentation if _reverb_activator else {}
 
-## Duration of the last [method _process] work in microseconds (sum of sub-phases below, including any overhead between them). See [code]docs/NEXUS_PERFORMANCE_TUNING.md[/code] for comparison with worker totals.
+## Last [method _process] wall time (µs), including sub-phases below. See [code]docs/NEXUS_PERFORMANCE_TUNING.md[/code] vs worker totals.
 var main_thread_last_tick_usec: int = 0
 ## Last [method _process]: [method _fill_activator_buffer] only.
 var main_thread_activator_usec: int = 0
 ## Last [method _process]: audio engine reinit when the reverb bus reports a new frame size ([code]consume_pending_reinit_frame_size[/code]). Usually 0.
 var main_thread_reinit_usec: int = 0
-## Last [method _process]: [method _apply_resonance_viewport_to_server] (Embree/Default path only; 0 when Custom tracer — work moves to [method _physics_process]).
+## Last [method _process]: [method _apply_resonance_viewport_to_server] (Embree/Default path only; 0 when Custom tracer - work moves to [method _physics_process]).
 var main_thread_viewport_usec: int = 0
 ## Last [method _process]: [method ResonanceServer.tick] (0 when Custom tracer).
 var main_thread_tick_usec: int = 0
@@ -127,10 +125,7 @@ var runtime_physics_server_tick_usec: int = 0
 ## Last [method _physics_process] (Custom tracer): [method ResonanceServer.flush_pending_source_updates] if present.
 var runtime_physics_flush_usec: int = 0
 
-## Audio-thread aggregates across all living [ResonancePlayer] nodes. Refreshed from
-## [method _sample_audio_aggregates] every [code]AUDIO_AGGREGATE_SAMPLE_PERIOD_SEC[/code]; queried by the
-## audio-dropout custom monitors. Cumulative counters are per-player-lifetime (calling
-## [method ResonancePlayer.reset_audio_instrumentation] resets them).
+## Sampled audio aggregates ([method _sample_audio_aggregates_if_due], [constant AUDIO_AGGREGATE_SAMPLE_PERIOD_SEC]); per-player lifetime until [method ResonancePlayer.reset_audio_instrumentation].
 var _audio_agg_output_underruns_total: int = 0
 var _audio_agg_late_mix_total: int = 0
 var _audio_agg_max_block_time_us: int = 0
@@ -138,7 +133,7 @@ var _audio_agg_voice_count: int = 0
 var _audio_agg_last_sample_sec: float = -1.0
 const AUDIO_AGGREGATE_SAMPLE_PERIOD_SEC: float = 0.25
 
-## Cached viewport sync: skip redundant [code]set_physics_world[/code] / exclude RIDs / camera [code]update_listener[/code] when unchanged.
+## Viewport sync cache: skip redundant world / exclude RIDs / listener updates when unchanged.
 var _vp_sync_cache_valid: bool = false
 var _vp_sync_last_world_rid: RID = RID()
 var _vp_sync_last_exclude_ids: PackedInt64Array = PackedInt64Array()
@@ -196,10 +191,7 @@ func get_bus_effective() -> StringName:
 	return _get_bus_effective()
 
 
-## Re-applies [ResonanceRuntimeBus] routing ([code]set_bus[/code] / [code]set_reverb_split_output[/code]) to every
-## node in group [code]resonance_player[/code]. [ResonanceRuntime] runs this once at startup; spawned
-## [ResonancePlayer] nodes must call this (or you call it once after spawning) so config mix levels and
-## buses match editor-placed sources instead of falling back to plain [AudioStreamPlayer3D] behavior.
+## Re-run [ResonanceRuntimeBus] on all [code]resonance_player[/code] (startup + after spawning players so buses match config).
 func refresh_player_bus_routing() -> void:
 	_apply_bus_to_players()
 
@@ -292,12 +284,8 @@ func _input(event: InputEvent) -> void:
 
 func _init_fmod_bridge() -> void:
 	_fmod_bridge = ResonanceFMODBridgeScript.new()
-	if _fmod_bridge.init_bridge():
-		pass  # Success; bridge is ready
-	else:
-		push_warning(
-			"Nexus Resonance: FMOD bridge init failed. Ensure phonon_fmod plugin is in FMOD path."
-		)
+	if not _fmod_bridge.init_bridge():
+		push_warning("Nexus Resonance: FMOD bridge init failed. Ensure phonon_fmod plugin is in FMOD path.")
 
 
 func _toggle_debug_overlay() -> void:
@@ -354,8 +342,7 @@ func _refresh_resonance_geometry_for_debug_viz() -> void:
 	var srv: Variant = ResonanceServerAccess.get_server_if_initialized()
 	if srv == null:
 		return
-	# sync_reflection_debug_viz updates RayTraceDebugContext only. Full refresh_geometry() rebuilds
-	# IPL InstancedMesh/sub-scenes and breaks Embree dynamic occlusion when toggling F3.
+	# sync_reflection_debug_viz only - full refresh_geometry() breaks Embree dynamic occlusion on F3 toggle.
 	get_tree().call_group_flags(
 		SceneTree.GROUP_CALL_DEFERRED, "resonance_geometry", "sync_reflection_debug_viz"
 	)
@@ -417,11 +404,7 @@ func _apply_resonance_viewport_to_server(vp: Viewport) -> void:
 	_vp_sync_cache_valid = true
 
 
-## Custom (Godot Physics) scene type runs [method ResonanceServer.tick] in [method _physics_process] so simulation
-## stays aligned with the physics step and the active [code]World3D[/code]. Godot still serves
-## [code]PhysicsDirectSpaceState3D[/code] only on the main thread when 3D physics uses
-## [code]physics/3d/run_on_separate_thread[/code]; in that mode [method _physics_process] runs on the physics
-## thread, so ray queries fail — turn off separate-thread 3D physics for Custom or use a non-Custom scene type.
+## Custom tracer: [method ResonanceServer.tick] in [method _physics_process] with [code]World3D[/code]. If [code]physics/3d/run_on_separate_thread[/code] is on, space state may be wrong on the physics thread - disable it for Custom or use another scene type.
 func _sync_physics_process_for_custom_tracer() -> void:
 	if Engine.is_editor_hint():
 		set_physics_process(false)
@@ -534,10 +517,7 @@ func _physics_process(delta: float) -> void:
 	runtime_physics_tick_usec = dt_usec if dt_usec > 0 else 0
 
 
-## Public: rebuilds the IPL static-scene set from the current scene tree. Use after a
-## [member ResonanceStaticScene.static_scene_asset] is swapped at runtime. Debounced to one
-## reload per frame so multiple simultaneous swaps (e.g. level streaming) batch into a single
-## [code]clear_static_scenes[/code] + [code]add_static_scene_from_asset[/code] pass.
+## Rebuild static IPL scenes from the tree after runtime asset swaps. Debounced one reload per frame (streaming batches).
 func request_static_scene_reload() -> void:
 	if not is_inside_tree():
 		return
@@ -614,12 +594,10 @@ func _initialize_server() -> void:
 	# FMOD Bridge: Connect Steam Audio to FMOD when enabled
 	if fmod_bridge_enabled:
 		_init_fmod_bridge()
-	# Unity-style: load static scene(s) from ResonanceStaticScene nodes. Additive: one per scene.
+	# load static scene(s) from ResonanceStaticScene nodes. Additive: one per scene.
 	if is_inside_tree():
 		_reload_static_scenes_from_tree(srv, get_tree().get_root())
-	# add_static_scene_from_asset / load_static_scene_from_asset commit the IPL scene and set scene_dirty;
-	# the simulation worker runs iplSceneCommit + RunDirect on the next tick. Deferred refresh re-runs
-	# ResonanceGeometry::_create_meshes for nodes that missed server init during _ready (same as reinit path).
+	# Scene commit runs next worker tick; deferred refresh catches geometry that missed init in _ready (same as reinit).
 	if is_inside_tree():
 		var tree = get_tree()
 		if tree:
@@ -667,8 +645,8 @@ func _get_reverb_bus_name() -> StringName:
 	return _runtime.get_reverb_bus_name_effective() if _runtime else &"ResonanceReverb"
 
 
+## Reverb bus send target - same as dry bus ([member ResonanceRuntimeConfig.bus] effective).
 func _get_reverb_bus_send() -> StringName:
-	## Reverb bus send follows runtime dry bus (same as Steam Audio Unity indirect routing model).
 	return _get_bus_effective()
 
 
@@ -691,10 +669,8 @@ func _setup_activator() -> void:
 	_reverb_activator.setup(self, _runtime_bus)
 
 
+## Keeps the wet bus alive via [ResonanceReverbActivator] (silent generator feed).
 func _fill_activator_buffer() -> void:
-	## Keeps the Reverb Bus active so Godot does not disable it after silence.
-	## The activator feeds a low-level signal so the bus stays active; the effect
-	## overwrites output with mixer content.
 	if _reverb_activator == null or _runtime_bus == null:
 		return
 	_reverb_activator.fill_buffer(_runtime_bus)
@@ -721,10 +697,7 @@ func _reload_after_reinit() -> void:
 	_sync_physics_process_for_custom_tracer()
 
 
-## Connects to `ResonanceRuntimeConfig` change signals so live tweaks (settings menus,
-## debug overlays, GDScript scripting, etc.) trigger an audio engine reinit. The connect
-## path runs in BOTH editor and play mode; `_disconnect_runtime_signals` below is also
-## play-mode-active, so symmetry is required to avoid stuck connections after reinit.
+## Wire [ResonanceRuntimeConfig] signals → reinit; mirror with [method _disconnect_runtime_signals] to avoid leaks.
 func _connect_runtime_signals() -> void:
 	if not _runtime:
 		return
@@ -936,9 +909,7 @@ func _nexus_perf_read_mixer_sanitize_stereo_last_us() -> int:
 	return int(t.get("us_mixer_sanitize_stereo_last", 0))
 
 
-## Re-scan all living [ResonancePlayer]s and refresh the cached audio-thread aggregates. Throttled to at most
-## [constant AUDIO_AGGREGATE_SAMPLE_PERIOD_SEC] to avoid iterating the scene every frame — the aggregates feed
-## ~Hz-rate Performance monitors, so higher update rates have no UI benefit.
+## Refresh audio aggregates from all [code]resonance_player[/code] nodes (throttled by [constant AUDIO_AGGREGATE_SAMPLE_PERIOD_SEC]).
 func _sample_audio_aggregates_if_due() -> void:
 	var now_sec := float(Time.get_ticks_msec()) * 0.001
 	if (

@@ -1,7 +1,7 @@
 extends Object
 class_name ResonanceBakeEstimates
 
-## Probe count and rough bake duration estimates for the bake UI (no [EditorInterface] dependency).
+## Rough probe counts and bake duration strings for the bake UI (no editor dependency).
 
 const BAKE_RAY_BASE_SEC_PER_PROBE := 0.001
 const BAKE_RAY_BASE_COUNT := 4096
@@ -15,13 +15,12 @@ static func estimate_probe_count(vol: Node) -> int:
 	if spacing <= 0:
 		return -1
 	var gen_type: int = vol.get("generation_type") if "generation_type" in vol else 1
+	var nx := int(ceil(extents.x * 2 / spacing))
+	var nz := int(ceil(extents.z * 2 / spacing))
 	if gen_type == 1:
-		return int(ceil(extents.x * 2 / spacing)) * int(ceil(extents.z * 2 / spacing))
-	return (
-		int(ceil(extents.x * 2 / spacing))
-		* int(ceil(extents.y * 2 / spacing))
-		* int(ceil(extents.z * 2 / spacing))
-	)
+		return nx * nz
+	var ny := int(ceil(extents.y * 2 / spacing))
+	return nx * ny * nz
 
 
 ## [param bc] must be a [ResonanceBakeConfig]-like resource with bake_num_rays, pathing_enabled, etc.
@@ -35,11 +34,8 @@ static func estimate_bake_time(vol: Node, bc: Resource) -> String:
 	var bounces = bc.bake_num_bounces
 	var threads = bc.bake_num_threads
 	var pathing = bc.pathing_enabled
-	var sec_per_probe = (
-		BAKE_RAY_BASE_SEC_PER_PROBE
-		* (rays / float(BAKE_RAY_BASE_COUNT))
-		* bounces
-		/ max(1, threads)
+	var sec_per_probe: float = (
+		BAKE_RAY_BASE_SEC_PER_PROBE * (rays / float(BAKE_RAY_BASE_COUNT)) * bounces / max(1, threads)
 	)
 	var total = count * sec_per_probe
 	if pathing:

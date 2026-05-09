@@ -4,7 +4,7 @@
 		HRTF SOFA file as Resource with volume and normalization.
 	</brief_description>
 	<description>
-		Add to [member ResonanceRuntimeConfig.hrtf_sofa_assets] for custom HRTFs with gain and norm control. Load .sofa via load_from_file() or import .sofa in editor. volume_db adjusts loudness (0 = unity). norm_type: None or RMS (normalize across directions).
+		Add to [member ResonanceRuntimeConfig.hrtf_sofa_assets] for custom HRTFs with gain and norm control. Load .sofa via load_from_file() or import .sofa in editor. volume_db adjusts loudness. norm_type: None or RMS (normalize across directions).
 	</description>
 	<tutorials>
 	</tutorials>
@@ -13,7 +13,7 @@
 			Raw .sofa file bytes. Set via load_from_file or importer.
 		</member>
 		<member name="volume_db" type="float" setter="set_volume_db" getter="get_volume_db" default="0.0">
-			Volume correction in dB. 0 = unity. Different SOFA files may need adjustment for mix balance.
+			Volume correction in dB. Different SOFA files may need adjustment for mix balance.
 		</member>
 		<member name="norm_type" type="int" setter="set_norm_type" getter="get_norm_type" default="0">
 			Normalization: 0 = None, 1 = RMS (equalize volume across directions).

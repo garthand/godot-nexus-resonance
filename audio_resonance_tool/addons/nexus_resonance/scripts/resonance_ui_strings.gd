@@ -95,14 +95,14 @@ const WARN_NO_RESONANCE_RUNTIME := "Scene has no ResonanceRuntime. Add Resonance
 const WARN_NO_EXPORTABLE_STATIC_CONTENT := "Scene has no ResonanceStaticGeometry or ResonanceStaticScene. Add ResonanceStaticGeometry for export."
 const WARN_STATIC_SCENE_NO_ASSET_STILL_MERGED := (
 	"ResonanceStaticScene at %s has no static_scene_asset; nested ResonanceStaticGeometry is still merged into this export. "
-	+ "Export the sub-scene first to assign an asset, or remove the node — then parent exports will skip this subtree."
+	+ "Export the sub-scene first to assign an asset, or remove the node - then parent exports will skip this subtree."
 )
 const WARN_NO_SCENES_OPEN := "No scenes open."
 const WARN_NO_SCENES_EXPORTED := "No scenes exported."
 const WARN_NO_SCENE_FILES := "No scene files found."
 const WARN_NO_DYNAMIC_EXPORTED := "No dynamic objects exported."
 const WARN_EXPORTED_BUT_SAVE_FAILED := "Exported %d mesh(es) but failed to save scene: %s"
-const WARN_SAVE_SCENE_TO_PERSIST := " — Save scene to persist mesh_asset."
+const WARN_SAVE_SCENE_TO_PERSIST := " - Save scene to persist mesh_asset."
 
 # --- Info (console) ---
 const INFO_STATIC_UNCHANGED := "Static geometry unchanged (hash match). Skipping export."
@@ -136,7 +136,7 @@ const INFO_CONVERT_ALL_SCENES_SUMMARY := (
 	"Project-wide conversion: %d track(s) converted, %d scene file(s) saved, %d scene(s) failed. "
 	+ "Skipped %d blend track(s), %d non-ResonancePlayer target(s)."
 )
-const INFO_CONVERT_SKIPPED_BLEND := " Skipped %d audio track(s) with use blend — convert manually (method keys) for full Steam Audio."
+const INFO_CONVERT_SKIPPED_BLEND := " Skipped %d audio track(s) with use blend - convert manually (method keys) for full Steam Audio."
 
 # --- Tooltips ---
 const TT_BAKE_PROBES := "Bake reflections, pathing, static source/listener. Skips up-to-date stages. Configure in bake_config."

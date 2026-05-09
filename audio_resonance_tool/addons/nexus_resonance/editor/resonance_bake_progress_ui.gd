@@ -2,7 +2,7 @@
 extends RefCounted
 class_name ResonanceBakeProgressUI
 
-## Progress dialog and status updates for bake pipeline. Extracted for SRP.
+## Bake progress dialog, stage label, and details log. Used by the bake pipeline.
 
 const UIStrings = preload("res://addons/nexus_resonance/scripts/resonance_ui_strings.gd")
 
@@ -99,20 +99,18 @@ func show_ui() -> void:
 
 func hide_ui() -> void:
 	var srv: Variant = ResonanceServerAccess.get_server()
-	if (
-		srv
-		and srv.has_signal("bake_progress")
-		and srv.bake_progress.is_connected(_on_bake_progress)
-	):
+	if srv and srv.has_signal("bake_progress") and srv.bake_progress.is_connected(_on_bake_progress):
 		srv.bake_progress.disconnect(_on_bake_progress)
-	if _progress_dialog:
-		if (
-			_progress_dialog.is_inside_tree()
-			and _progress_dialog.close_requested.is_connected(_on_cancel_pressed)
-		):
-			_progress_dialog.close_requested.disconnect(_on_cancel_pressed)
-		_progress_dialog.queue_free()
-		_progress_dialog = null
+	if _progress_dialog == null:
+		_progress_bar = null
+		_stage_label = null
+		_status_label = null
+		_details_panel = null
+		return
+	if _progress_dialog.is_inside_tree() and _progress_dialog.close_requested.is_connected(_on_cancel_pressed):
+		_progress_dialog.close_requested.disconnect(_on_cancel_pressed)
+	_progress_dialog.queue_free()
+	_progress_dialog = null
 	_progress_bar = null
 	_stage_label = null
 	_status_label = null
@@ -120,7 +118,7 @@ func hide_ui() -> void:
 
 
 func shutdown() -> void:
-	# Ensure we always disconnect signals and free dialog on editor shutdown.
+	# Disconnect signals and free the dialog so shutdown cannot leak nodes or connections.
 	hide_ui()
 	editor_interface = null
 

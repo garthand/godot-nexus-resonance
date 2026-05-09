@@ -2,12 +2,8 @@
 extends ResourceFormatLoader
 class_name ResonanceProbeDataLoader
 
-## Loads ResonanceProbeData from custom text [.tres] (and [.bak] snapshots with the same header).
-## Binary [.res] probe files use the engine loader (not this class).
-##
-## Size limits (to avoid str_to_var memory/performance issues on huge payloads):
-## - data field: 256 MiB (256 * 1024 * 1024 chars). Larger files are rejected.
-## - probe_positions: 1 MiB. Larger arrays are rejected.
+## Custom text loader for ResonanceProbeData [.tres] / [.bak] headers. [.res] stays on the default loader.
+## Caps: [code]data[/code] expression max 256 MiB; [code]probe_positions[/code] max 1 MiB (str_to_var safety).
 
 
 func _read_tres_header(path: String) -> String:
@@ -121,7 +117,7 @@ func _parse_tres_data(content: String) -> Variant:
 		elif stripped.begins_with("static_scene_params_hash = "):
 			static_scene_params_hash = int(stripped.substr(27))
 	var data_result = PackedByteArray()
-	# Limit: 256 MiB to avoid str_to_var memory/performance issues. See class doc.
+	# Cap str_to_var payload size (class doc).
 	const MAX_DATA_EXPR_LEN := 256 * 1024 * 1024
 	if not data_expr.is_empty() and data_expr.length() < MAX_DATA_EXPR_LEN:
 		var r = str_to_var(data_expr)
@@ -129,13 +125,11 @@ func _parse_tres_data(content: String) -> Variant:
 			data_result = r
 		elif r != null:
 			push_warning(
-				(
-					"ResonanceProbeDataLoader: Invalid data field (expected PackedByteArray), got %s"
-					% typeof(r)
-				)
+				"Nexus Resonance: ResonanceProbeDataLoader: invalid data (expected PackedByteArray), type %s"
+				% typeof(r)
 			)
 	var probe_positions_result = PackedVector3Array()
-	# Limit: 1 MiB for probe_positions expression. See class doc.
+	# Cap probe_positions expression size.
 	const MAX_PROBE_POSITIONS_EXPR_LEN := 1024 * 1024
 	if (
 		not probe_positions_expr.is_empty()
@@ -146,10 +140,8 @@ func _parse_tres_data(content: String) -> Variant:
 			probe_positions_result = r
 		elif r != null:
 			push_warning(
-				(
-					"ResonanceProbeDataLoader: Invalid probe_positions field (expected PackedVector3Array), got %s"
-					% typeof(r)
-				)
+				"Nexus Resonance: ResonanceProbeDataLoader: invalid probe_positions (expected PackedVector3Array), type %s"
+				% typeof(r)
 			)
 	return {
 		"data": data_result,

@@ -1,7 +1,7 @@
 extends RefCounted
 class_name VolumeBakeContext
 
-## Per-volume bake state for one pipeline step (reflections, pathing, static source/listener).
+## Per-volume bake state for the pipeline (reflections, pathing, static source/listener).
 
 const _Self = preload("res://addons/nexus_resonance/editor/resonance_bake_volume_context.gd")
 const ResonanceBakeConfig = preload("res://addons/nexus_resonance/scripts/resonance_bake_config.gd")
@@ -20,16 +20,36 @@ var player_pos: Vector3
 var player_radius: float
 var listener_pos: Vector3
 var listener_radius: float
-## Every outdoor emitter listed in [member ResonanceProbeVolume.bake_sources]. Each entry is
-## [code]{pos: Vector3, radius: float, node: Node3D}[/code]. The pipeline iterates this list and
-## issues one [code]bake_static_source[/code] pass per entry so multiple fixed sources (e.g. rain,
-## thunder) produce position-dependent baked IRs instead of a single listener-only REVERB IR.
+## bake_sources resolved to { pos, radius, node } per emitter; one bake_static_source pass each.
 var static_source_entries: Array = []
-## As [member static_source_entries] but for [member ResonanceProbeVolume.bake_listeners].
+## Same pattern for bake_listeners / bake_static_listener.
 var static_listener_entries: Array = []
 var bc: Resource
 var vol_info: String
-var static_asset = null  # ResonanceGeometryAsset used for bake; for static_scene_params_hash
+var static_asset = null  # Packed static geometry for the server bake
+
+static func _influence_radius(vol: Node, default_influence_radius: float) -> float:
+	return (
+		vol.get("bake_influence_radius")
+		if "bake_influence_radius" in vol
+		else default_influence_radius
+	)
+
+
+static func _entries_from_nodes(nodes: Array, radius: float) -> Array:
+	var out: Array = []
+	for n in nodes:
+		if n is Node3D:
+			out.append({"pos": n.global_position, "radius": radius, "node": n})
+	return out
+
+
+static func _static_pass_need_hash(
+	entries: Array, single_pos: Vector3, single_radius: float
+) -> int:
+	if entries.size() > 1:
+		return _BakeHashes.compute_position_radius_list_hash(entries)
+	return _BakeHashes.compute_position_radius_hash(single_pos, single_radius)
 
 
 static func build(
@@ -54,38 +74,22 @@ static func build(
 		"static_listener": ctx.bc.static_listener_enabled
 	}
 	ctx.player_pos = Vector3.ZERO
-	ctx.player_radius = (
-		vol.get("bake_influence_radius")
-		if "bake_influence_radius" in vol
-		else default_influence_radius
-	)
+	var infl := _influence_radius(vol, default_influence_radius)
+	ctx.player_radius = infl
 	ctx.listener_pos = Vector3.ZERO
-	ctx.listener_radius = (
-		vol.get("bake_influence_radius")
-		if "bake_influence_radius" in vol
-		else default_influence_radius
-	)
+	ctx.listener_radius = infl
 	if ctx.add_flags.static_source:
 		var src_nodes: Array = _BakeDiscovery.resolve_bake_nodes_for_volume(
 			vol, root, "bake_sources", "ResonancePlayer"
 		)
-		for n in src_nodes:
-			if n is Node3D:
-				ctx.static_source_entries.append(
-					{"pos": n.global_position, "radius": ctx.player_radius, "node": n}
-				)
-		# Keep legacy single-value fields populated for status UI / debug that still read them.
+		ctx.static_source_entries = _entries_from_nodes(src_nodes, ctx.player_radius)
 		if ctx.static_source_entries.size() > 0:
 			ctx.player_pos = ctx.static_source_entries[0].pos
 	if ctx.add_flags.static_listener:
 		var lst_nodes: Array = _BakeDiscovery.resolve_bake_nodes_for_volume(
 			vol, root, "bake_listeners", "ResonanceListener"
 		)
-		for n in lst_nodes:
-			if n is Node3D:
-				ctx.static_listener_entries.append(
-					{"pos": n.global_position, "radius": ctx.listener_radius, "node": n}
-				)
+		ctx.static_listener_entries = _entries_from_nodes(lst_nodes, ctx.listener_radius)
 		if ctx.static_listener_entries.size() > 0:
 			ctx.listener_pos = ctx.static_listener_entries[0].pos
 	var want_path = ctx.bc.pathing_enabled
@@ -126,11 +130,9 @@ static func build(
 	ctx.need_static_source = false
 	ctx.need_static_listener = false
 	if ctx.add_flags.static_source:
-		var sh := 0
-		if ctx.static_source_entries.size() > 1:
-			sh = _BakeHashes.compute_position_radius_list_hash(ctx.static_source_entries)
-		else:
-			sh = _BakeHashes.compute_position_radius_hash(ctx.player_pos, ctx.player_radius)
+		var sh := _static_pass_need_hash(
+			ctx.static_source_entries, ctx.player_pos, ctx.player_radius
+		)
 		var ssh = (
 			probe_data.get_static_source_params_hash()
 			if probe_data.has_method("get_static_source_params_hash")
@@ -138,11 +140,9 @@ static func build(
 		)
 		ctx.need_static_source = ssh == 0 or ssh != sh
 	if ctx.add_flags.static_listener:
-		var lh := 0
-		if ctx.static_listener_entries.size() > 1:
-			lh = _BakeHashes.compute_position_radius_list_hash(ctx.static_listener_entries)
-		else:
-			lh = _BakeHashes.compute_position_radius_hash(ctx.listener_pos, ctx.listener_radius)
+		var lh := _static_pass_need_hash(
+			ctx.static_listener_entries, ctx.listener_pos, ctx.listener_radius
+		)
 		var lsh = (
 			probe_data.get_static_listener_params_hash()
 			if probe_data.has_method("get_static_listener_params_hash")

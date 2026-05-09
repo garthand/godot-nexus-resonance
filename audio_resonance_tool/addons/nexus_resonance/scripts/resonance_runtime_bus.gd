@@ -1,7 +1,7 @@
 extends RefCounted
 class_name ResonanceRuntimeBus
 
-## Reverb bus creation and routing for [ResonanceRuntime] (AudioServer + [ResonancePlayer] group).
+## Reverb bus wiring for [ResonanceRuntime]: create/configure the wet bus and sync [ResonancePlayer] routing.
 
 const EFFECT_CLASS := "ResonanceAudioEffect"
 
@@ -51,6 +51,7 @@ func get_reverb_bus_send() -> StringName:
 	return _get_reverb_bus_send.call()
 
 
+## Ensures the named bus exists, sets its send, pins [ResonanceAudioEffect] at index 0.
 func ensure_reverb_bus_exists() -> bool:
 	var bus_name := get_reverb_bus_name()
 	var send_name := get_reverb_bus_send()
@@ -68,6 +69,7 @@ func ensure_reverb_bus_exists() -> bool:
 	return idx >= 0
 
 
+## Pushes effective buses and reverb split mode to every node in group [code]resonance_player[/code].
 func apply_bus_to_players(tree: SceneTree) -> void:
 	if tree == null:
 		return

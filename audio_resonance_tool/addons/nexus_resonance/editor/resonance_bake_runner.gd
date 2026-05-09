@@ -2,9 +2,7 @@
 extends RefCounted
 class_name ResonanceBakeRunner
 
-## Shared bake logic for ResonanceProbeVolume. Used by inspector plugin and Project menu.
-## Run bake for selected volume(s) or all volumes in scene. Hash-based incremental baking.
-## Heavy logic lives in resonance_bake_*.gd modules; this class is the public facade.
+## Public bake entry for ResonanceProbeVolume (inspector / project menu). Delegates to bake_* modules.
 
 const ResonanceBakeConfig = preload("res://addons/nexus_resonance/scripts/resonance_bake_config.gd")
 const ResonanceRuntimeScript = preload("res://addons/nexus_resonance/scripts/resonance_runtime.gd")
@@ -52,7 +50,7 @@ func _init(p_editor_interface = null) -> void:
 
 
 func shutdown() -> void:
-	# Break RefCounted reference cycles and release UI/resources on editor shutdown.
+	# Drop RefCounted cycles; release UI and backup state on editor shutdown.
 	_bake_in_progress = false
 	if _progress_ui and _progress_ui.has_method("shutdown"):
 		_progress_ui.shutdown()
@@ -91,11 +89,8 @@ func run_bake(volumes: Array[Node], root: Node = null, save_results: bool = true
 	_do_run_bake_with_backup(volumes, actual_root, static_scene_node, static_asset)
 
 
-## Re-runs export_static_callback when the [ResonanceStaticScene] asset is missing or its
-## stored [code]export_hash[/code] does not match the live scene's current geometry hash.
-## Prevents bakes from silently using a stale, previously exported static asset (e.g. floors
-## or other [ResonanceGeometry] added after the last manual export are otherwise invisible
-## to Steam Audio's [code]UniformFloor[/code] probe placement and reflection rays).
+## Calls export_static_callback when the static asset is missing or export_hash != live scene hash
+## (avoids baking against stale geometry).
 func _auto_reexport_static_scene_if_stale(root: Node, static_scene_node: Node) -> void:
 	if not static_scene_node or not export_static_callback.is_valid():
 		return
@@ -110,9 +105,7 @@ func _auto_reexport_static_scene_if_stale(root: Node, static_scene_node: Node) -
 	var has_valid: bool = (
 		static_scene_node.has_method("has_valid_asset") and static_scene_node.has_valid_asset()
 	)
-	var stored_hash: int = (
-		static_scene_node.export_hash if "export_hash" in static_scene_node else 0
-	)
+	var stored_hash: int = static_scene_node.export_hash if "export_hash" in static_scene_node else 0
 	if has_valid and stored_hash == current_hash:
 		return
 	export_static_callback.call(null)
@@ -180,36 +173,53 @@ func estimate_bake_time(vol: Node) -> String:
 	return _BakeEstimates.estimate_bake_time(vol, _get_bake_config_for_volume(vol))
 
 func get_volume_bake_status(vol: Node) -> String:
-	if not vol or not vol.has_method("get_probe_data"): return "Not baked"
+	if not vol or not vol.has_method("get_probe_data"):
+		return "Not baked"
 	var probe_data = vol.get_probe_data()
-	if not probe_data: return "Not baked"
+	if not probe_data:
+		return "Not baked"
 	var has_data = probe_data.get_data().size() > 0
-	if not has_data: return "Not baked"
+	if not has_data:
+		return "Not baked"
 	var bc = _get_bake_config_for_volume(vol)
 	var want_path = bc.pathing_enabled
 	var path_hash = _BakeHashes.compute_pathing_hash(bc) if want_path else 0
 	var ph = probe_data.get_pathing_params_hash() if probe_data.has_method("get_pathing_params_hash") else 0
 	var desired_refl = bc.reflection_type
-	var refl_matches = probe_data.get_baked_reflection_type() == desired_refl if probe_data.has_method("get_baked_reflection_type") else false
-	var hash_matches = probe_data.get_bake_params_hash() == vol.get_bake_params_hash() if vol.has_method("get_bake_params_hash") else false
-	if not want_path and ph > 0: return "Outdated"
-	if not hash_matches or not refl_matches: return "Outdated"
-	if want_path and (ph == 0 or ph != path_hash): return "Outdated"
+	var refl_matches = (
+		probe_data.get_baked_reflection_type() == desired_refl
+		if probe_data.has_method("get_baked_reflection_type")
+		else false
+	)
+	var hash_matches = (
+		probe_data.get_bake_params_hash() == vol.get_bake_params_hash()
+		if vol.has_method("get_bake_params_hash")
+		else false
+	)
+	if not want_path and ph > 0:
+		return "Outdated"
+	if not hash_matches or not refl_matches:
+		return "Outdated"
+	if want_path and (ph == 0 or ph != path_hash):
+		return "Outdated"
 	var vols: Array[Node] = [vol]
 	var root = _get_edited_scene_root(vols)
 	var union_static_hash: int = _BakeHashes.compute_all_resonance_static_scenes_params_hash(root)
 	if union_static_hash != 0 and probe_data.has_method("get_static_scene_params_hash"):
 		var stored_union: int = probe_data.get_static_scene_params_hash()
-		if stored_union == 0 or stored_union != union_static_hash: return "Outdated"
+		if stored_union == 0 or stored_union != union_static_hash:
+			return "Outdated"
 	var rad = vol.get("bake_influence_radius") if "bake_influence_radius" in vol else DEFAULT_BAKE_INFLUENCE_RADIUS
 	if bc.static_source_enabled and root:
 		var src_hash := _bake_entries_hash(vol, root, "bake_sources", "ResonancePlayer", rad)
 		var ssh = probe_data.get_static_source_params_hash() if probe_data.has_method("get_static_source_params_hash") else 0
-		if src_hash != 0 and (ssh == 0 or ssh != src_hash): return "Outdated"
+		if src_hash != 0 and (ssh == 0 or ssh != src_hash):
+			return "Outdated"
 	if bc.static_listener_enabled and root:
 		var lst_hash := _bake_entries_hash(vol, root, "bake_listeners", "ResonanceListener", rad)
 		var lsh = probe_data.get_static_listener_params_hash() if probe_data.has_method("get_static_listener_params_hash") else 0
-		if lst_hash != 0 and (lsh == 0 or lsh != lst_hash): return "Outdated"
+		if lst_hash != 0 and (lsh == 0 or lsh != lst_hash):
+			return "Outdated"
 	return "Probes baked"
 
 
@@ -230,8 +240,7 @@ func _bake_entries_hash(
 	return _BakeHashes.compute_position_radius_list_hash(entries)
 
 
-## Ensures ResonanceServer is initialized and refreshes probe visuals.
-## Call when a volume is selected in the inspector (so show_probes works without baking first).
+## Ensures the server is initialized and refreshes probe visuals (e.g. inspector selection).
 func ensure_resonance_server_for_volumes(volumes: Array[Node]) -> bool:
 	if not _server_setup.ensure_resonance_server_initialized(volumes):
 		return false
@@ -283,7 +292,7 @@ func _on_bake_pipeline_finished(success: bool, probe_data_ref, volumes: Array[No
 					_save_and_reload_probe_data(probe_data_ref, volumes)
 			_show_bake_complete_dialog(volumes)
 		else:
-			# RUNTIME: Inject directly into RAM! Skip the dialogs and saving.
+			# Runtime: apply to memory only (no save / completion dialog).
 			bake_progress_updated.emit("Applying generated acoustics to memory...")
 			match probe_data_ref:
 				var arr when arr is Array:
@@ -307,9 +316,7 @@ func _on_bake_pipeline_finished(success: bool, probe_data_ref, volumes: Array[No
 
 
 func _save_and_reload_probe_data(probe_data_ref: Resource, volumes: Array[Node]) -> void:
-	# Self-heal: if the resource_path was bent to a .bak path by a legacy buggy bake
-	# (pre-fix), strip the trailing .bak suffix(es) before saving. Otherwise the save
-	# would write probe data into a .bak file and produce another .bak.bak on the next bake.
+	# Strip legacy .bak resource_path so saves go to the canonical .res (avoids .bak chains).
 	var path: String = probe_data_ref.resource_path
 	while path.ends_with(".bak"):
 		path = path.get_basename()
@@ -373,7 +380,7 @@ func _notify_volumes_viz_updated(volumes: Array[Node]) -> void:
 
 func _show_bake_complete_dialog(volumes: Array) -> void:
 	if not editor_interface:
-		# Headless / no UI: discard backups now since there is no dialog to keep them alive.
+		# Headless: no dialog; drop .bak files immediately.
 		if _backup:
 			_backup.discard_backups()
 		return
@@ -390,8 +397,7 @@ func _show_bake_complete_dialog(volumes: Array) -> void:
 	dialog.title = tr(UIStrings.ADDON_NAME)
 	dialog.dialog_text = msg
 	dialog.theme = editor_interface.get_editor_theme()
-	# Tracks whether Undo was invoked. Set by the Undo button handler below; checked by the
-	# close/confirm handlers to decide whether to discard the .bak files.
+	# True if user chose Undo; otherwise on_dialog_close discards .bak files.
 	var undo_invoked := [false]
 	var on_dialog_close := func() -> void:
 		if not undo_invoked[0] and _backup:

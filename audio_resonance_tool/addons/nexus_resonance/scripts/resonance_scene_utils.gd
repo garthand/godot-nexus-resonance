@@ -4,8 +4,7 @@ class_name ResonanceSceneUtils
 
 const UIStrings = preload("res://addons/nexus_resonance/scripts/resonance_ui_strings.gd")
 
-## Shared scene traversal utilities for Nexus Resonance.
-## Centralizes _find_resonance_static_scene, _collect_resonance_probe_volumes, _collect_resonance_dynamic_geometry.
+## Shared scene walks (runtime, static scene, probe volumes, dynamic geometry, export checks).
 
 
 ## Returns true if node or any descendant is ResonanceRuntime.
@@ -20,10 +19,7 @@ static func scene_has_resonance_runtime(node: Node) -> bool:
 	return false
 
 
-## Returns true if scene has exportable resonance content for the given export type.
-## Used to decide whether a scene should be included in static/dynamic export.
-## export_type: "static" -> ResonanceRuntime OR ResonanceStaticGeometry OR ResonanceStaticScene with valid asset
-## export_type: "dynamic" -> ResonanceDynamicGeometry
+## [param export_type] [code]"static"[/code] (runtime, static mesh, or static scene with asset) or [code]"dynamic"[/code] ([ResonanceDynamicGeometry]).
 static func scene_has_exportable_resonance_content(node: Node, export_type: StringName) -> bool:
 	if not node:
 		return false
@@ -94,8 +90,7 @@ static func collect_resonance_static_scenes(node: Node, collected: Array[Node]) 
 		collect_resonance_static_scenes(c, collected)
 
 
-## Warns once per branch: ResonanceStaticScene without static_scene_asset still merges child
-## ResonanceStaticGeometry into parent export until the sub-scene is exported (matches C++ prune rule).
+## [ResonanceStaticScene] without asset: child [ResonanceStaticGeometry] may still merge into parent export (C++ rule); warn per subtree.
 static func warn_static_scenes_without_asset_covering_geometry(root: Node) -> void:
 	if not root:
 		return

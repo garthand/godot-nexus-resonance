@@ -1,7 +1,7 @@
 extends RefCounted
 class_name ResonanceBakeServerSetup
 
-## Ensures [ResonanceServerAccess] is initialized for editor bakes and surfaces init errors.
+## Initializes ResonanceServer for editor bakes and surfaces init / config errors.
 
 const ResonanceBakeConfig = preload("res://addons/nexus_resonance/scripts/resonance_bake_config.gd")
 const ResonanceRuntimeScript = preload("res://addons/nexus_resonance/scripts/resonance_runtime.gd")
@@ -17,8 +17,20 @@ func _init(runner: Object) -> void:
 
 
 func shutdown() -> void:
-	# Break RefCounted reference cycles (runner <-> server setup).
 	_runner = null
+
+
+static func _runtime_config_from_node(cfg_node: Node) -> Dictionary:
+	if cfg_node == null:
+		return {}
+	if cfg_node.has_method("get_config_dict"):
+		return cfg_node.get_config_dict()
+	var rt = cfg_node.get("runtime")
+	if rt and rt.has_method("get_config"):
+		var c: Dictionary = rt.get_config()
+		c["debug_occlusion"] = false
+		return c
+	return {}
 
 
 func log_and_show_error(
@@ -36,18 +48,17 @@ func log_and_show_error(
 	if Engine.has_singleton("ResonanceLogger"):
 		Engine.get_singleton("ResonanceLogger").log(&"bake", "Bake error: " + message, data)
 
-	# SAFELY fetch the editor interface, allowing for headless/runtime runners
 	var ei = _runner.get("editor_interface") if _runner else null
-
 	if ei:
 		ResonanceEditorDialogs.show_error_dialog(
 			ei, tr(UIStrings.DIALOG_BAKE_FAILED_TITLE), message, cause, solution
 		)
 	else:
-		# Runtime / Headless fallback
-		var full_error = "AUDIO BAKE ERROR: " + message
-		if not cause.is_empty(): full_error += " | Cause: " + cause
-		if not solution.is_empty(): full_error += " | Solution: " + solution
+		var full_error := "Nexus Resonance: Bake error: " + message
+		if not cause.is_empty():
+			full_error += " | Cause: " + cause
+		if not solution.is_empty():
+			full_error += " | Solution: " + solution
 		push_error(full_error)
 		print(full_error)
 
@@ -61,23 +72,12 @@ func ensure_resonance_server_initialized(volumes: Array[Node]) -> bool:
 	if srv.is_initialized():
 		return true
 
-	# Duck-typing: If the runner has a scene root resolver, use it!
 	var root: Node = null
 	if _runner and _runner.has_method("_get_edited_scene_root"):
 		root = _runner._get_edited_scene_root(volumes)
 
-	var cfg_node = (
-		_BakeDiscovery.find_resonance_runtime(root, ResonanceRuntimeScript) if root else null
-	)
-	var config := {}
-	if cfg_node:
-		if cfg_node.has_method("get_config_dict"):
-			config = cfg_node.get_config_dict()
-		else:
-			var rt = cfg_node.get("runtime")
-			if rt and rt.has_method("get_config"):
-				config = rt.get_config()
-				config["debug_occlusion"] = false
+	var cfg_node := _BakeDiscovery.find_resonance_runtime(root, ResonanceRuntimeScript) if root else null
+	var config := _runtime_config_from_node(cfg_node)
 	if config.is_empty():
 		var data := {"error": true}
 		if Engine.has_singleton("ResonanceLogger"):
@@ -95,8 +95,7 @@ func ensure_resonance_server_initialized(volumes: Array[Node]) -> bool:
 				if toaster and toaster.has_method("push_toast"):
 					push_warning(UIStrings.PREFIX + msg)
 		else:
-			# Runtime / Headless fallback
-			push_warning("AUDIO BAKE WARNING: " + msg)
+			push_warning("Nexus Resonance: " + msg)
 
 		return false
 	var bake_params := ResonanceBakeConfig.create_default().get_bake_params()

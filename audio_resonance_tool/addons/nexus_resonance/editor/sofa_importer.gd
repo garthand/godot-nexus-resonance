@@ -78,7 +78,7 @@ func _import(
 	var err := ResourceSaver.save(asset, out_path)
 	if err != OK:
 		return err
-	# Also save beside .sofa for easy reference (e.g. res://addons/nexus_resonance/sofa/QU_KEMAR_anechoic_1m.tres)
+	# Also save beside .sofa for easy reference
 	var beside_path := source_file.get_basename() + ".tres"
 	if beside_path != out_path:
 		var beside_err := ResourceSaver.save(asset, beside_path)

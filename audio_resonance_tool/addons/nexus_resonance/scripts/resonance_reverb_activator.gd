@@ -1,17 +1,17 @@
 extends RefCounted
 class_name ResonanceReverbActivator
 
-## Keeps the reverb bus active via a low-level [AudioStreamGenerator] feed (see [ResonanceRuntime]).
+## Feeds silence into the reverb bus via [AudioStreamGenerator] so the effect stays active ([ResonanceRuntime]).
 
 var _player: AudioStreamPlayer
 var _frames_pushed: int = 0
 var _fill_calls: int = 0
-## Cached reverb bus index; refreshed when [member _cached_reverb_bus_name] differs from runtime bus name.
+## Invalidated when runtime reverb bus name changes.
 var _cached_reverb_bus_index: int = -1
 var _cached_reverb_bus_name: StringName = &""
-## When true, [member instrumentation] holds the active success shape; keys updated in place to avoid per-frame Dictionary allocation.
+## When true, [member instrumentation] keeps a stable dict shape (in-place updates, less alloc).
 var _instrumentation_shape_ok: bool = false
-## Instrumentation for debug overlay ([member ResonanceRuntime.activator_instrumentation] delegates here).
+## Read by [member ResonanceRuntime.activator_instrumentation].
 var instrumentation: Dictionary = {}
 
 
@@ -60,8 +60,7 @@ func fill_buffer(bus: ResonanceRuntimeBus) -> void:
 		return
 	var avail = playback.get_frames_available()
 	if avail <= 0:
-		# Reuse success dict in place when possible; do not set _instrumentation_shape_ok on a minimal dict
-		# (would break the full-key update path on the next successful push).
+		# In-place counter when shape ok; else minimal dict (do not flip _instrumentation_shape_ok here).
 		if _instrumentation_shape_ok:
 			instrumentation["avail_zero_count"] = (
 				int(instrumentation.get("avail_zero_count", 0)) + 1
@@ -100,8 +99,7 @@ func fill_buffer(bus: ResonanceRuntimeBus) -> void:
 		instrumentation["skips"] = skips
 
 
-## Stops the generator player and frees it immediately. Use [method Node.free], not [method Node.queue_free]:
-## on application quit deferred frees may never run, leaving [AudioStreamGeneratorPlayback] in ObjectDB.
+## [method Node.free] immediately (quit may not run [method Node.queue_free]; avoids stuck generator playback).
 func cleanup() -> void:
 	if _player == null:
 		return

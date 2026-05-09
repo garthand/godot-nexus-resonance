@@ -31,29 +31,20 @@ static func _collect_audio_keys(anim: Animation, track_idx: int) -> Array[Dictio
 	var out: Array[Dictionary] = []
 	var n: int = anim.track_get_key_count(track_idx)
 	for k in range(n):
-		(
-			out
-			. append(
-				{
-					"time": anim.track_get_key_time(track_idx, k),
-					"stream": anim.audio_track_get_key_stream(track_idx, k),
-					"start": anim.audio_track_get_key_start_offset(track_idx, k),
-				}
-			)
+		out.append(
+			{
+				"time": anim.track_get_key_time(track_idx, k),
+				"stream": anim.audio_track_get_key_stream(track_idx, k),
+				"start": anim.audio_track_get_key_start_offset(track_idx, k),
+			}
 		)
 	return out
 
 
 static func _resolve_track_node(ap: AnimationPlayer, path: NodePath) -> Node:
 	var rn: NodePath = ap.root_node
-	var base_n: Node = null
-	if rn.is_empty():
-		base_n = ap.get_node_or_null(NodePath(".."))
-	else:
-		base_n = ap.get_node_or_null(rn)
-	if base_n == null:
-		return null
-	return base_n.get_node_or_null(path)
+	var base_n: Node = ap.get_node_or_null(NodePath("..")) if rn.is_empty() else ap.get_node_or_null(rn)
+	return base_n.get_node_or_null(path) if base_n else null
 
 
 static func _convert_one_player(ap: AnimationPlayer, result: Dictionary) -> void:
@@ -78,10 +69,8 @@ static func _convert_one_player(ap: AnimationPlayer, result: Dictionary) -> void
 					continue
 				if anim.audio_track_is_use_blend(t):
 					push_warning(
-						(
-							"Nexus Resonance: skipped audio track with use_blend (library '%s', anim '%s')."
-							% [String(lib_key), String(anim_name)]
-						)
+						"Nexus Resonance: skipped audio track with use_blend (library '%s', anim '%s')."
+						% [String(lib_key), String(anim_name)]
 					)
 					result.skipped_blend += 1
 					t -= 1
@@ -112,9 +101,9 @@ static func collect_tscn_paths_from_filesystem(root_dir) -> PackedStringArray:
 
 
 static func _collect_tscn_paths_recursive(dir, out: PackedStringArray) -> void:
-	for i in dir.get_subdir_count():
+	for i in range(dir.get_subdir_count()):
 		_collect_tscn_paths_recursive(dir.get_subdir(i), out)
-	for i in dir.get_file_count():
+	for i in range(dir.get_file_count()):
 		if String(dir.get_file(i)).ends_with(".tscn"):
 			out.append(dir.get_file_path(i))
 

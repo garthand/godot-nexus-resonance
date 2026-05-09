@@ -1,19 +1,14 @@
 @tool
 extends EditorNode3DGizmoPlugin
 
-## Nexus Resonance directivity gizmo for [code]ResonancePlayer[/code].
-##
-## Draws a wireframe polar curve (dipole) or unit sphere + forward arrow (omni / user-defined)
-## derived from [code]ResonancePlayerConfig[/code]. Shape math comes from the native
-## [code]ResonancePlayer.build_directivity_gizmo_lines()[/code] static method so editor and
-## runtime drawer stay in sync.
+## ResonancePlayer directivity gizmo: dipole curve or omni sphere + arrow from [code]player_config[/code].
+## Line geometry from [method ResonancePlayer.build_directivity_gizmo_lines] (matches runtime).
 
 const GIZMO_CLASS_NAME := "ResonancePlayer"
 const GIZMO_SIZE_METERS := 1.0
 const MAT_DIPOLE := "nexus_player_directivity_dipole"
 const MAT_OMNI := "nexus_player_directivity_omni"
 
-## Signals us when the editor's selection / scene changes so we can redraw gizmos per frame.
 var _mat_dipole_name: String = ""
 var _mat_omni_name: String = ""
 
@@ -40,7 +35,7 @@ func _redraw(gizmo: EditorNode3DGizmo) -> void:
 	if node == null:
 		return
 	_ensure_live_connection(node)
-	# [code]show_directivity_gizmo[/code] is the single source of truth for editor and runtime visibility.
+	# show_directivity_gizmo toggles visibility (editor + runtime).
 	if not bool(node.get("show_directivity_gizmo")):
 		return
 	var cfg: Object = node.get("player_config") as Object
@@ -56,8 +51,7 @@ func _redraw(gizmo: EditorNode3DGizmo) -> void:
 		power = float(cfg.get("directivity_power"))
 		user_value = float(cfg.get("directivity_value"))
 
-	# [method ResonancePlayer.build_directivity_gizmo_lines] is a static method bound from GDExtension;
-	# calling it through the instance works in GDScript regardless of editor global-class registration timing.
+	# Instance call is fine for the GDExtension-bound static (global class timing).
 	var lines: PackedVector3Array = node.build_directivity_gizmo_lines(
 		enabled, input_mode, weight, power, user_value, GIZMO_SIZE_METERS
 	)
@@ -69,11 +63,8 @@ func _redraw(gizmo: EditorNode3DGizmo) -> void:
 	gizmo.add_lines(lines, get_material(mat_name, gizmo))
 
 
-## Keeps the editor gizmo live while the user edits directivity parameters inline. GDExtension nodes
-## do not run [code]_process[/code] in the editor, so the native [signal Resource.changed] hook on
-## [code]ResonancePlayer[/code] does not repaint the editor viewport. We connect the signal from this
-## [code]@tool[/code] plugin and forward it to [method Node3D.update_gizmos] — [code]is_connected[/code]
-## with an identical [Callable] keeps the call idempotent across repeated [method _redraw] invocations.
+## Connect [signal Resource.changed] on [code]player_config[/code] to [method Node3D.update_gizmos]
+## (native nodes may not repaint in editor on config edits). [Callable] match keeps this idempotent.
 func _ensure_live_connection(node: Node3D) -> void:
 	var cfg: Resource = node.get("player_config") as Resource
 	if cfg == null:

@@ -1,6 +1,8 @@
 @tool
 extends EditorInspectorPlugin
 
+## Inspector toolbar: export ResonanceDynamicGeometry to a mesh asset.
+
 const ResonancePaths = preload("res://addons/nexus_resonance/scripts/resonance_paths.gd")
 const UIStrings = preload("res://addons/nexus_resonance/scripts/resonance_ui_strings.gd")
 const ResonanceEditorDialogs = preload(
@@ -34,40 +36,40 @@ func _on_export_pressed(obj: Object) -> void:
 	var parent = geom.get_parent()
 	var parent_name = parent.name if parent else "mesh"
 	if not DirAccess.dir_exists_absolute(ResonancePaths.PATH_RESONANCE_MESHES):
-		var err: int = DirAccess.make_dir_recursive_absolute(ResonancePaths.PATH_RESONANCE_MESHES)
-		if err != OK or not DirAccess.dir_exists_absolute(ResonancePaths.PATH_RESONANCE_MESHES):
+		var mk_err: int = DirAccess.make_dir_recursive_absolute(ResonancePaths.PATH_RESONANCE_MESHES)
+		if mk_err != OK or not DirAccess.dir_exists_absolute(ResonancePaths.PATH_RESONANCE_MESHES):
 			if editor_interface:
 				ResonanceEditorDialogs.show_error_dialog(
 					editor_interface,
-					UIStrings.DIALOG_EXPORT_FAILED_TITLE,
-					UIStrings.ERR_MKDIR_RESONANCE_MESHES % err,
+					tr(UIStrings.DIALOG_EXPORT_FAILED_TITLE),
+					tr(UIStrings.ERR_MKDIR_RESONANCE_MESHES) % mk_err,
 					"",
 					""
 				)
 			else:
-				push_error(UIStrings.PREFIX + UIStrings.ERR_MKDIR_RESONANCE_MESHES % err)
+				push_error(UIStrings.PREFIX + (tr(UIStrings.ERR_MKDIR_RESONANCE_MESHES) % mk_err))
 			return
 	var save_path = (
 		ResonancePaths.PATH_RESONANCE_MESHES + str(parent_name).to_snake_case() + "_dynamic.tres"
 	)
-	var err = geom.export_dynamic_mesh_to_asset(save_path)
+	var err: int = geom.export_dynamic_mesh_to_asset(save_path)
 	if err == OK:
 		if editor_interface:
 			ResonanceEditorDialogs.show_success_toast(
-				editor_interface, UIStrings.INFO_DYNAMIC_EXPORTED % save_path
+				editor_interface, tr(UIStrings.INFO_DYNAMIC_EXPORTED) % save_path
 			)
 			if editor_interface.get_resource_filesystem():
 				editor_interface.get_resource_filesystem().scan()
 		else:
-			ResonanceEditorDialogs.show_info(UIStrings.INFO_DYNAMIC_EXPORTED % save_path)
+			ResonanceEditorDialogs.show_info(tr(UIStrings.INFO_DYNAMIC_EXPORTED) % save_path)
 	else:
 		if editor_interface:
 			ResonanceEditorDialogs.show_error_dialog(
 				editor_interface,
-				UIStrings.DIALOG_EXPORT_FAILED_TITLE,
-				UIStrings.ERR_EXPORT_FAILED % err,
+				tr(UIStrings.DIALOG_EXPORT_FAILED_TITLE),
+				tr(UIStrings.ERR_EXPORT_FAILED) % err,
 				"Export returned error %s." % err,
 				"Ensure the mesh has valid geometry and res://resonance_meshes/ is writable."
 			)
 		else:
-			push_error(UIStrings.PREFIX + UIStrings.ERR_EXPORT_FAILED % err)
+			push_error(UIStrings.PREFIX + (tr(UIStrings.ERR_EXPORT_FAILED) % err))

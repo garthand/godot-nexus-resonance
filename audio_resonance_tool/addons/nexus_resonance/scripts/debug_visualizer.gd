@@ -1,17 +1,9 @@
 extends Node3D
 
-## Debug Visualizer (Physics Fallback)
-##
-## NOTE: This visualizer uses Godot's Physics Raycasts (DirectSpaceState).
-## It does NOT visualize the actual Steam Audio Embree geometry.
-## If your visual geometry differs from your collision geometry, this debug view might differ from the audio result.
-##
-## For accurate Audio Debugging, enable 'Debug Occlusion' in the ResonanceRuntime node,
-## which draws lines based on the actual C++ Raycast data.
+## Physics-ray occlusion preview (Godot collision only - not Steam Audio / Embree geometry).
+## For real audio occlusion debug, use ResonanceRuntime "Debug Occlusion" (native ray data).
 
-## Camera used as listener position for the debug ray. Usually the active 3D camera. Green line = clear path, red = blocked (uses Godot Physics, not Steam Audio geometry).
 @export var listener_camera: Camera3D
-## 3D node representing the sound source. Used as ray endpoint for occlusion visualization. Draws a line from listener to source; color indicates if path is blocked by Physics collision.
 @export var audio_source_node: Node3D
 
 var debug_mesh_instance: MeshInstance3D
@@ -24,7 +16,7 @@ func _ready() -> void:
 	debug_mesh_instance.mesh = immediate_mesh
 	debug_mesh_instance.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
 
-	var mat = StandardMaterial3D.new()
+	var mat := StandardMaterial3D.new()
 	mat.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
 	mat.vertex_color_use_as_albedo = true
 	mat.no_depth_test = true
@@ -37,28 +29,23 @@ func _physics_process(_delta: float) -> void:
 	if not listener_camera or not audio_source_node:
 		return
 
-	var start = listener_camera.global_position
-	var end = audio_source_node.global_position
+	var start := listener_camera.global_position
+	var end := audio_source_node.global_position
 
-	# REVIEW FIX: ImmediateMesh is slow.
-	# However, for debugging purposes, recreating it per frame is acceptable if geometry counts are low (1 line).
-	# We stick to this for simplicity but acknowledge it's not for production.
-
+	# One line per frame: fine for debug; not a production path.
 	immediate_mesh.clear_surfaces()
 	immediate_mesh.surface_begin(Mesh.PRIMITIVE_LINES)
 
-	var color = Color.GREEN  # Green = Clear
-
-	var w3d = get_world_3d()
+	var color := Color.GREEN
+	var w3d := get_world_3d()
 	if not w3d:
 		return
-	var space_state = w3d.direct_space_state
+	var space_state := w3d.direct_space_state
 	if space_state:
-		var query = PhysicsRayQueryParameters3D.create(start, end)
-		var result = space_state.intersect_ray(query)
-
+		var query := PhysicsRayQueryParameters3D.create(start, end)
+		var result := space_state.intersect_ray(query)
 		if result:
-			color = Color.RED  # Red = Blocked (by Godot Physics)
+			color = Color.RED
 
 	immediate_mesh.surface_set_color(color)
 	immediate_mesh.surface_add_vertex(start - global_position)

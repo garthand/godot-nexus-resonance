@@ -1,19 +1,12 @@
 extends Node
 
-## Nexus Resonance Logger with thematic category filtering.
-## Access via Engine.get_singleton("ResonanceLogger"). Do not use class_name (conflicts with autoload).
-## Use from GDScript: ResonanceLogger.log("reflections", "message", {...})
-## C++ calls via Engine.get_singleton("ResonanceLogger").log(...)
-##
-## Categories: reflections, realtime_rays, source_volume, pathing, occlusion, init, bake, validation
-##
-## File output uses a mutex-protected queue for thread-safe writes when log() is called from
-## multiple threads (e.g. C++). Entries are flushed to disk in _process() on the main thread.
+## Category-filtered logger (Autoload [code]ResonanceLogger[/code], not [code]class_name[/code]).
+## [method log] from GDScript; C++ via [code]Engine.get_singleton[/code]. File queue + mutex; flush in [method _process].
 
 const DEFAULT_BUFFER_SIZE := 128
 const PROJECT_PREFIX := "nexus/resonance/logger/"
 
-## Standard categories for filtering
+## Filter keys
 const CATEGORY_REFLECTIONS := &"reflections"
 const CATEGORY_REALTIME_RAYS := &"realtime_rays"
 const CATEGORY_SOURCE_VOLUME := &"source_volume"
@@ -35,7 +28,7 @@ const ALL_CATEGORIES: Array[StringName] = [
 ]
 
 
-## Default Project Settings value for `logger/categories_enabled` (all categories on).
+## Default categories dict (all on).
 static func get_default_categories_enabled_dict() -> Dictionary:
 	var d := {}
 	for c in ALL_CATEGORIES:
@@ -43,7 +36,7 @@ static func get_default_categories_enabled_dict() -> Dictionary:
 	return d
 
 
-## Emitted when a log entry is added (after category filter). Args: category, message, data
+## Fired after filter: category, message, data
 signal log_entry_added(category: StringName, message: String, data: Dictionary)
 
 var _buffer: Array[Dictionary] = []
@@ -56,7 +49,7 @@ var _file_write_queue: Array = []
 var _file_write_mutex: Mutex = Mutex.new()
 
 
-## Rejects absolute system paths and path traversal. Only user:// and res:// are allowed.
+## [code]user://[/code] / [code]res://[/code] only; no [code]..[/code].
 static func _is_safe_log_path(path: String) -> bool:
 	if path.is_empty():
 		return false
@@ -75,7 +68,7 @@ func _init() -> void:
 
 
 func _ready() -> void:
-	# ProjectSettings and plugin-registered keys are guaranteed after entering the tree.
+	# Settings available after entering the tree.
 	_load_category_defaults()
 
 
@@ -114,7 +107,7 @@ func _load_category_defaults() -> void:
 			)
 
 
-## Log a message. Category determines filtering. Data is optional extra context.
+## Log if category enabled. [param data] optional.
 func log(category: StringName, message: String, data: Dictionary = {}) -> void:
 	if not _is_category_enabled(category):
 		return
@@ -153,11 +146,10 @@ func _add_to_buffer(entry: Dictionary) -> void:
 
 func _output_to_debug_console(category: StringName, message: String, data: Dictionary) -> void:
 	var data_suffix := "" if data.is_empty() else " " + str(data)
-	# Use print_rich so the line appears as normal log output in the Output dock; category is visible without BBCode too.
+	# Rich line + plain duplicate (some hosts only show print).
 	print_rich(
 		"[color=cyan][Nexus Resonance][%s][/color] %s%s" % [String(category), message, data_suffix]
 	)
-	# Plain duplicate: some filters or remote runs only surface standard print() reliably.
 	print("[Nexus Resonance][%s] %s%s" % [String(category), message, data_suffix])
 
 
@@ -175,17 +167,15 @@ func _write_to_file(entry: Dictionary) -> void:
 	}
 	var line := JSON.stringify(dict) + "\n"
 	var f: FileAccess = null
-	# READ_WRITE appends; multiple processes (e.g. editor + game) may conflict. Recommended: single writer.
+	# Append mode; avoid multiple writers to same file.
 	if FileAccess.file_exists(path):
 		f = FileAccess.open(path, FileAccess.READ_WRITE)
 	if f == null:
 		f = FileAccess.open(path, FileAccess.WRITE)
 	if f == null:
 		push_warning(
-			(
-				"Nexus Resonance: Cannot open log file for writing: %s (error %d)"
-				% [path, FileAccess.get_open_error()]
-			)
+			"Nexus Resonance: Cannot open log file for writing: %s (error %d)"
+			% [path, FileAccess.get_open_error()]
 		)
 		return
 	f.seek_end()
@@ -193,17 +183,17 @@ func _write_to_file(entry: Dictionary) -> void:
 	f.close()
 
 
-## Enable or disable a category. Affects future log calls.
+## Toggle category (future [method log] calls).
 func set_category_enabled(category: StringName, enabled: bool) -> void:
 	_categories_enabled[category] = enabled
 
 
-## Get whether a category is enabled
+## Query category toggle
 func is_category_enabled(category: StringName) -> bool:
 	return _is_category_enabled(category)
 
 
-## Get the last N log entries (for overlay display)
+## Ring buffer tail for UI
 func get_recent_entries(count: int = 32) -> Array[Dictionary]:
 	var start := maxi(0, _buffer.size() - count)
 	var result: Array[Dictionary] = []
@@ -212,7 +202,7 @@ func get_recent_entries(count: int = 32) -> Array[Dictionary]:
 	return result
 
 
-## Clear the internal buffer
+## Empty buffer
 func clear_buffer() -> void:
 	_buffer.clear()
 
@@ -240,6 +230,6 @@ func set_file_path(path: String) -> void:
 		)
 
 
-## Returns all category StringNames for UI (e.g. filter checkboxes)
+## All [StringName] categories (settings UI)
 func get_all_categories() -> Array[StringName]:
 	return ALL_CATEGORIES.duplicate()

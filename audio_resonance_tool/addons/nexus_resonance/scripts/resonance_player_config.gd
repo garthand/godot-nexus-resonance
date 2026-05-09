@@ -2,9 +2,7 @@
 extends Resource
 class_name ResonancePlayerConfig
 
-## Per-source configuration for ResonancePlayer. Link for reusable presets.
-## Create or link in ResonancePlayer. Falls back to create_default() when null.
-## Where an option is **Use Global** (vs per-source override), that is the default unless a feature needs a different baseline (e.g. Simulation Defined for occlusion/transmission coefficients).
+## Per-source preset for ResonancePlayer (Resource). **Use Global** = follow runtime unless noted.
 
 # --- Distance / Attenuation ---
 @export_group("Distance")
@@ -13,7 +11,7 @@ class_name ResonancePlayerConfig
 ## Max distance (meters) for attenuation. Sound reaches minimum volume at this range.
 @export_range(1.0, 2000.0, 1.0) var max_distance: float = 500.0
 var _attenuation_mode: int = 0
-## Distance rolloff model. Inverse = Steam Audio inverse distance on the direct path. Disabled = inverse-style routing but **simulator distance attenuation is off** (unity LOS gain from the sim until occlusion/transmission/air apply)—not “mute the source”. Linear / Curve = min/max falloff. Legacy [code]distance_attenuation_simulation_enabled = false[/code] on older .tres with mode 0 still migrates to this value at runtime.
+## Inverse / Linear / Curve / Disabled. Disabled turns off sim distance attenuation on the direct path (not mute). Legacy tres may map old flags into this enum.
 @export_enum("Inverse:0", "Linear:1", "Curve:2", "Disabled:3") var attenuation_mode: int:
 	get:
 		return _attenuation_mode
@@ -83,8 +81,7 @@ var _directivity_input: int = 0
 # --- Output ---
 @export_group("Output")
 var _bus_override: int = -1
-## Bus for Direct + Pathing. Use Global = follow ResonanceRuntimeConfig.bus. Custom = use bus_name below.
-## On change, calls [method notify_property_list_changed] so the inspector re-runs [method _validate_property] for [member bus_name] (read-only only when Use Global).
+## Direct + pathing bus. Use Global = runtime bus; Custom = [member bus_name]. Setter refreshes inspector visibility for [member bus_name].
 @export_enum("Use Global:-1", "Custom:0") var bus_override: int = -1:
 	get:
 		return _bus_override
@@ -95,8 +92,7 @@ var _bus_override: int = -1
 ## Bus for Direct + Pathing when bus_override is Custom. Pick from existing buses in Audio Bus Layout.
 @export var bus_name: StringName = &"Master"
 var _reverb_bus_override: int = -1
-## Reverb bus override. Use Global = follow ResonanceRuntimeConfig.reverb_bus_name. Custom = use reverb_bus_name below. **Parametric/Hybrid:** split wet uses [member reverb_bus_name] when it differs from the dry bus. **Convolution/TAN:** one shared reflection mixer on the runtime [member ResonanceRuntimeConfig.reverb_bus_name] bus; its Godot send follows runtime [member ResonanceRuntimeConfig.bus] (same model as Steam Audio Unity mixer return).
-## On change, calls [method notify_property_list_changed] so the inspector re-runs [method _validate_property] for [member reverb_bus_name].
+## Reverb bus: Use Global or Custom ([member reverb_bus_name]). Parametric/Hybrid wet routing vs convolution mixer behavior follows runtime docs. Setter refreshes [member reverb_bus_name] in the inspector.
 @export_enum("Use Global:-1", "Custom:0") var reverb_bus_override: int = -1:
 	get:
 		return _reverb_bus_override
@@ -133,7 +129,7 @@ var _occlusion_input: int = 0
 ## Occlusion attenuation (0-1). 0 = fully occluded, 1 = not occluded. Only when occlusion_input is User Defined.
 @export_range(0.0, 1.0, 0.01) var occlusion_value: float = 1.0
 var _occlusion_type_override: int = 2
-## Overrides [member ResonanceRuntimeConfig.occlusion_type] for this source when using simulation occlusion. [code]2[/code] = Use Global, [code]0[/code] = Raycast, [code]1[/code] = Volumetric ([member occlusion_samples]). Values [code]0[/code]/[code]1[/code] match the native engine; [code]2[/code] avoids negative enum storage so the inspector shows **Use Global** correctly (legacy [code]-1[/code] is migrated on load). The [code]= 2[/code] on the export is required: without it, Godot defaults the property to [code]0[/code] (Raycast) for new resources.
+## Raycast / Volumetric / Use Global ([code]2[/code]). Legacy [code]-1[/code] migrates to 2. Default export [code]= 2[/code] so new resources do not silently become Raycast.
 @export_enum("Use Global:2", "Raycast:0", "Volumetric:1") var occlusion_type_override: int = 2:
 	get:
 		return _occlusion_type_override
@@ -172,7 +168,7 @@ var _transmission_input: int = 0
 @export_enum("Use Global:-1", "Frequency Independent:0", "Frequency Dependent:1")
 var transmission_type_override: int = -1
 var _max_transmission_surfaces_override: int = 0
-## Use Global = follow [member ResonanceRuntimeConfig.max_transmission_surfaces]. User Defined = use [member max_transmission_surfaces] (1–256). Default **Use Global** (same rule as other overrides with a global option). Values [code]0[/code] / [code]1[/code] keep the inspector enum reliable; legacy [code]-1[/code] maps to Use Global.
+## Use Global vs cap [member max_transmission_surfaces]. Legacy [code]-1[/code] → Use Global.
 @export_enum("Use Global:0", "User Defined:1") var max_transmission_surfaces_override: int = 0:
 	get:
 		return _max_transmission_surfaces_override
@@ -214,28 +210,17 @@ var reflections_type: int = -1:
 @export_enum("Use Global:-1", "Disabled:0", "Enabled:1") var reflections_enabled: int = -1
 ## Enable pathing for this source. Use Global = follow runtime pathing_enabled.
 @export_enum("Use Global:-1", "Disabled:0", "Enabled:1") var pathing_enabled_override: int = -1
-## Per-source override for [member ResonanceRuntimeConfig.apply_occlusion_to_baked_reflections]. Use Global = follow
-## runtime flag. Enabled = dampen this source's baked REVERB wet input by its direct-path occlusion/transmission
-## (right for outdoor thunder/rain leaking through walls). Disabled = keep wet input unattenuated regardless of the
-## global flag (right for indoor radios/ambience where around-the-corner reverb must stay audible). See
-## [code]docs/baked-reflections-and-outdoor-sources.md[/code] for when to pick which.
+## Wet occlusion on baked REVERB: Use Global / Off / On (outdoor leak vs indoor beds). See docs/baked-reflections-and-outdoor-sources.md.
 @export_enum("Use Global:-1", "Disabled:0", "Enabled:1")
 var apply_occlusion_to_baked_reflections_override: int = -1
-## Per-source override for [member ResonanceRuntimeConfig.apply_distance_curve_to_reflections]. Use Global = follow
-## runtime flag (Unity-parity default: Enabled). Disabled = wet input does not fade with source distance (useful
-## for 2D ambience beds or sources where the distance curve already lives elsewhere).
+## Distance curve on reflection wet: Use Global / Off / On (e.g. 2D beds without double distance fade).
 @export_enum("Use Global:-1", "Disabled:0", "Enabled:1")
 var apply_distance_curve_to_reflections_override: int = -1
-## Per-source override for [member ResonanceRuntimeConfig.reflections_sampling_mode]. Use Global = follow runtime.
-## [br][b]Listener-centric[/b] picks the baked REVERB probe nearest the listener (recommended for room reverb).
-## [br][b]Source-centric[/b] picks the probe nearest the source (legacy behavior).
-## [br][br]Note: currently this only affects baked REVERB probe lookup. It does not change realtime reflection ray origin.
+## Baked REVERB probe choice: listener- vs source-centric (Use Global / override). Realtime ray origin unchanged.
 @export_enum("Use Global:-1", "Listener-centric:0", "Source-centric:1")
 var reflections_sampling_mode_override: int = -1
 var _reverb_transmission_amount_input: int = 0
-## Use Global = read [member ResonanceRuntimeConfig.reverb_transmission_amount]; User Defined = use the per-source
-## [member reverb_transmission_amount] below. Only effective when the wet-path occlusion damping is on (global or
-## [member apply_occlusion_to_baked_reflections_override]).
+## Reverb transmission amount: Use Global or User Defined ([member reverb_transmission_amount]). Needs wet occlusion damping active.
 @export_enum("Use Global:0", "User Defined:1") var reverb_transmission_amount_input: int = 0:
 	get:
 		return _reverb_transmission_amount_input
@@ -243,8 +228,7 @@ var _reverb_transmission_amount_input: int = 0
 		if _reverb_transmission_amount_input != v:
 			_reverb_transmission_amount_input = v
 			notify_property_list_changed()
-## Per-source transmission damping on reverb (0-1). 0 = no damping, 1 = full damping. Only used when
-## [member reverb_transmission_amount_input] is User Defined and the wet-path occlusion damping is on.
+## 0–1 damping on reverb wet when User Defined and wet occlusion applies.
 @export_range(0.0, 1.0, 0.01) var reverb_transmission_amount: float = 1.0
 
 # --- Pathing ---
@@ -278,7 +262,7 @@ var _reverb_transmission_amount_input: int = 0
 @export_group("Spatialization")
 ## Per-source override for [member ResonanceRuntimeConfig.direct_binaural]. Use Global = runtime default; Disabled = panning on dry path; Enabled = force HRTF.
 @export_enum("Use Global:-1", "Disabled:0", "Enabled:1") var direct_binaural_override: int = -1
-## Per-source override for [member ResonanceRuntimeConfig.reverb_binaural] (HRTF on convolution / mixer Ambisonics decode — reflections wet path).
+## Per-source override for [member ResonanceRuntimeConfig.reverb_binaural] (HRTF on convolution / mixer Ambisonics decode - reflections wet path).
 @export_enum("Use Global:-1", "Disabled:0", "Enabled:1") var reverb_binaural_override: int = -1
 ## Per-source override for [member ResonanceRuntimeConfig.pathing_binaural]. Disabled saves CPU when pathing runs but stereo speaker panning is enough.
 @export_enum("Use Global:-1", "Disabled:0", "Enabled:1") var pathing_binaural_override: int = -1
@@ -331,7 +315,7 @@ func _validate_property(property: Dictionary) -> void:
 		if transmission_input != 1:
 			property["usage"] = property["usage"] | PROPERTY_USAGE_READ_ONLY
 	elif property.name == "reverb_transmission_amount":
-		if reverb_transmission_amount_input != 1:  # Use Global
+		if reverb_transmission_amount_input != 1:  # not User Defined
 			property["usage"] = property["usage"] | PROPERTY_USAGE_READ_ONLY
 	elif property.name == "occlusion_samples":
 		if occlusion_type_override != 1:
@@ -347,7 +331,7 @@ func _validate_property(property: Dictionary) -> void:
 			property["usage"] = property["usage"] | PROPERTY_USAGE_READ_ONLY
 
 
-## Returns effective bus for Direct + Pathing. When bus_override is Use Global, returns global_fallback. When Custom, returns bus_name (or global_fallback if empty).
+## Resolved direct/path bus: Use Global → [param global_fallback], else [member bus_name] if set.
 func get_bus_name_effective(global_fallback: StringName) -> StringName:
 	if bus_override == -1:  # Use Global
 		return global_fallback
@@ -355,7 +339,7 @@ func get_bus_name_effective(global_fallback: StringName) -> StringName:
 	return custom if not str(custom).is_empty() else global_fallback
 
 
-## Returns effective reverb bus name for this source. When reverb_bus_override is Use Global, returns global_fallback. When Custom, returns reverb_bus_name (or global_fallback if empty).
+## Resolved reverb bus: Use Global → [param global_fallback], else [member reverb_bus_name] if set.
 func get_reverb_bus_name_effective(global_fallback: StringName) -> StringName:
 	if reverb_bus_override == -1:  # Use Global
 		return global_fallback

@@ -1,11 +1,9 @@
 extends Object
 class_name ResonanceServerAccess
 
-## Central access to the [ResonanceServer] engine singleton (GDExtension).
-## GDScript has no static type for that class; [method get_server] and [method get_server_if_initialized]
-## return [Variant] ([code]null[/code] or the native instance).
+## Typed helpers for the [ResonanceServer] GDExtension singleton ([method get_server] / [method get_server_if_initialized] → [Variant]).
 
-## Engine singleton name for the Nexus Resonance native API.
+## Engine singleton registration name.
 const SINGLETON_NAME := &"ResonanceServer"
 
 

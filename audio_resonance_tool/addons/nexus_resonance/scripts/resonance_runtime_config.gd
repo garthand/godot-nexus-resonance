@@ -2,14 +2,9 @@
 extends Resource
 class_name ResonanceRuntimeConfig
 
-## Nexus Resonance runtime configuration resource.
-## Create or link in ResonanceRuntime node (Add Child Node → **ResonanceRuntime** global class).
-## Structure aligned with Steam Audio Settings for compatibility.
+## Runtime settings resource for [ResonanceRuntime]. Steam Audio–oriented fields; assign on the runtime node or as a project default.
 ##
-## **Godot bus routing (Steam vs Nexus):**
-## - **Convolution / TAN:** Steam feeds a shared reflection mixer; [ResonanceAudioEffect] on [member reverb_bus_name] reads it. That bus sends to the same Godot target as [member bus] (see [ResonanceRuntimeBus.ensure_reverb_bus_exists]). One global wet path — not per-source duplicate mixers.
-## - **Parametric / Hybrid:** Wet is mixed in [ResonancePlayer]; when dry and wet buses differ, a split child routes wet to [method ResonancePlayerConfig.get_reverb_bus_name_effective].
-## - **Dry path:** [member bus] plus per-source [ResonancePlayerConfig.bus_name] / override.
+## Routing sketch: Convolution/TAN use a shared wet path on [member reverb_bus_name] ([ResonanceAudioEffect]); parametric/hybrid wet is mixed in [ResonancePlayer] with optional split to [method ResonancePlayerConfig.get_reverb_bus_name_effective]. Dry uses [member bus] and per-player overrides.
 
 const Constants = preload("resonance_config_constants.gd")
 
@@ -92,7 +87,7 @@ var audio_frame_size: int:
 @export_group("Reflections & Reverb")
 ## Default reflections mode for sources that use **Use Global**.
 ## **Baked** = probe reverbs (stored per probe; not the same as ray-traced occlusion through walls).
-## **Realtime** = ray-traced simulation against the acoustic scene (requires [member realtime_rays] > 0) — use for sealed rooms / geometry-dependent indirect sound.
+## **Realtime** = ray-traced simulation against the acoustic scene (requires [member realtime_rays] > 0) - use for sealed rooms / geometry-dependent indirect sound.
 @export_enum("Baked:0", "Realtime:1") var default_reflections_mode: int = 0
 var _reflection_type: int = Constants.REFLECTION_TYPE_CONVOLUTION
 ## Reverb algorithm. Parametric (fastest). Convolution uses ReflectionMixer (bundled convolutions).
@@ -188,21 +183,10 @@ var _pathing_enabled: bool = false
 ## Only consulted for baked REVERB paths (see [member apply_occlusion_to_baked_reflections]); realtime reflections and
 ## STATICSOURCE/STATICLISTENER already encode source→listener occlusion in the IR.
 @export_range(0.0, 1.0, 0.01) var reverb_transmission_amount: float = 1.0
-## When on, baked REVERB reflections also scale their wet input by the direct-path occlusion/transmission factor.
-## Default is [code]false[/code] because direct-line occlusion cannot tell apart two acoustically different cases:
-## [br]  • Source behind a wall in the same open room → direct path blocked, but the listener room is still excited via
-##       openings/diffraction. Realtime ray tracing sees those indirect paths; direct occlusion does not.
-## [br]  • Source truly sealed away (e.g. outdoor thunder, adjacent closed room) → direct path blocked and the listener
-##       room genuinely sees almost no energy.
-## [br]Enabling this flag dampens both cases by the direct-path factor, which silences the "around the corner" case and
-## makes baked REVERB sound less plausible than realtime convolution. Use [code]reflections_type = Realtime[/code] or the
-## [code]STATICSOURCE[/code] bake workflow for accurate outdoor-to-indoor reflections (see
-## [code]docs/baked-reflections-and-outdoor-sources.md[/code]). Leave this flag [code]true[/code] only for projects with
-## exclusively sealed rooms where the listener-only REVERB IR over-estimates the wet signal.
+## Baked REVERB: multiply wet by direct-path occlusion/transmission. Default [code]false[/code] - LOS occlusion does not separate “same room, blocked sight” from “sealed source”; enabling dampens both and can kill plausible diffraction. Prefer realtime reflections or STATICSOURCE bakes for hard cases; see [code]docs/baked-reflections-and-outdoor-sources.md[/code].
 @export var apply_occlusion_to_baked_reflections: bool = false
 ## When on (default), the reflection-effect input gain is multiplied by the per-source 3D distance attenuation
-## curve so baked/realtime reverb fades with distance. Matches Steam Audio Unity's Spatialize pipeline, where the
-## AudioSource rolloff is baked into the inBuffer before [code]iplReflectionEffectApply[/code]. Turn this off only
+## curve so baked/realtime reverb fades with distance. Turn this off only
 ## for projects that want constant-gain wet feeds (e.g. 2D ambience beds or custom distance handling).
 ## Per-source override via [member ResonancePlayerConfig.apply_distance_curve_to_reflections_override] beats this
 ## global flag.
@@ -254,7 +238,7 @@ var apply_performance_schedule_preset: int = 0:
 ## Fraction of CPU cores for Steam Audio simulation threads (0–1). 0.15 ≈ 15% of logical cores; raise for heavier realtime reflections/pathing.
 @export_range(0.0, 1.0, 0.01) var simulation_cpu_cores_percent: float = 0.15
 var _direct_sim_interval: float = 0.0
-## [b]Direct Sim Interval[/b] — Minimum seconds between [code]iplSimulatorRunDirect[/code] on worker wakes when reflection/pathing heavy work is not scheduled for that wake (or after heavy work is skipped). Throttles **direct-path occlusion, transmission, air absorption** independently of [member reflections_sim_interval] / [member pathing_sim_interval].
+## [b]Direct Sim Interval[/b] - Minimum seconds between [code]iplSimulatorRunDirect[/code] on worker wakes when reflection/pathing heavy work is not scheduled for that wake (or after heavy work is skipped). Throttles **direct-path occlusion, transmission, air absorption** independently of [member reflections_sim_interval] / [member pathing_sim_interval].
 ## [code]0[/code] = run direct every eligible worker wake (default). Try [code]0.02[/code]–[code]0.05[/code] to lower CPU; occlusion may update slightly less often.
 @export_range(0.0, 1.0, 0.005) var direct_sim_interval: float:
 	get:
@@ -263,7 +247,7 @@ var _direct_sim_interval: float = 0.0
 		_direct_sim_interval = v
 		_on_performance_knob_changed()
 var _reflections_sim_interval: float = 0.1
-## [b]Reflections Sim Interval[/b] — Minimum seconds between scheduling reflection-heavy simulation ([code]iplSimulatorRunReflections[/code]). [code]0[/code] = every worker tick (highest CPU). [code]0.1[/code] ≈ 100 ms default. Does not throttle direct occlusion/transmission — see [member direct_sim_interval].
+## [b]Reflections Sim Interval[/b] - Minimum seconds between scheduling reflection-heavy simulation ([code]iplSimulatorRunReflections[/code]). [code]0[/code] = every worker tick (highest CPU). [code]0.1[/code] ≈ 100 ms default. Does not throttle direct occlusion/transmission - see [member direct_sim_interval].
 @export_range(0.0, 1.0, 0.01) var reflections_sim_interval: float:
 	get:
 		return _reflections_sim_interval
@@ -271,7 +255,7 @@ var _reflections_sim_interval: float = 0.1
 		_reflections_sim_interval = v
 		_on_performance_knob_changed()
 var _pathing_sim_interval: float = 0.1
-## [b]Pathing Sim Interval[/b] — Minimum seconds between scheduling pathing-heavy simulation ([code]iplSimulatorRunPathing[/code]). Same semantics as [member reflections_sim_interval]; set higher to stagger expensive pathing from reflections.
+## [b]Pathing Sim Interval[/b] - Minimum seconds between scheduling pathing-heavy simulation ([code]iplSimulatorRunPathing[/code]). Same semantics as [member reflections_sim_interval]; set higher to stagger expensive pathing from reflections.
 @export_range(0.0, 1.0, 0.01) var pathing_sim_interval: float:
 	get:
 		return _pathing_sim_interval
@@ -459,12 +443,7 @@ func get_config() -> Dictionary:
 	var mix_rate := int(AudioServer.get_mix_rate())
 	var rate := sample_rate_override if sample_rate_override > 0 else mix_rate
 	if sample_rate_override > 0 and sample_rate_override != mix_rate:
-		push_warning(
-			(
-				"Nexus Resonance: sample_rate_override (%d) differs from Godot mix rate (%d). No resampling; audio may be affected."
-				% [sample_rate_override, mix_rate]
-			)
-		)
+		push_warning("Nexus Resonance: sample_rate_override (%d) differs from Godot mix rate (%d). No resampling; audio may be affected." % [sample_rate_override, mix_rate])
 	var frame_size := (
 		audio_frame_size if audio_frame_size > 0 else _get_audio_frame_size_from_project()
 	)
