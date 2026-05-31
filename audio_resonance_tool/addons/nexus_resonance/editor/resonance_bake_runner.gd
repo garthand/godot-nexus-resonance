@@ -10,18 +10,10 @@ const ResonanceSceneUtils = preload("res://addons/nexus_resonance/scripts/resona
 const _BakeEstimates = preload("res://addons/nexus_resonance/editor/resonance_bake_estimates.gd")
 const _BakeHashes = preload("res://addons/nexus_resonance/editor/resonance_bake_hashes.gd")
 const _BakeDiscovery = preload("res://addons/nexus_resonance/editor/resonance_bake_discovery.gd")
-const _BakeValidation = preload("res://addons/nexus_resonance/editor/resonance_bake_validation.gd")
 const _BakeServerSetup = preload(
 	"res://addons/nexus_resonance/editor/resonance_bake_server_setup.gd"
 )
 const _BakePipeline = preload("res://addons/nexus_resonance/editor/resonance_bake_pipeline.gd")
-const ResonanceEditorDialogs = preload(
-	"res://addons/nexus_resonance/editor/resonance_editor_dialogs.gd"
-)
-const ResonanceBakeProgressUI = preload(
-	"res://addons/nexus_resonance/editor/resonance_bake_progress_ui.gd"
-)
-const ResonanceBakeBackup = preload("res://addons/nexus_resonance/editor/resonance_bake_backup.gd")
 const UIStrings = preload("res://addons/nexus_resonance/scripts/resonance_ui_strings.gd")
 
 var resonance_bake_progress_ui
@@ -64,8 +56,8 @@ func _init(p_editor_interface = null) -> void:
 
 	if p_editor_interface:
 		editor_interface = p_editor_interface
-                _progress_ui = ResonanceBakeProgressUI.new(p_editor_interface)
-		_backup = ResonanceBakeBackup.new()
+		_progress_ui = resonance_bake_progress_ui.new(p_editor_interface)
+		_backup = resonance_bake_backup.new()
 
 	_server_setup = _BakeServerSetup.new(self)
 	_pipeline = _BakePipeline.new(self)

@@ -135,8 +135,7 @@ func _run_in_thread_with_cancel_poll(bake_callable: Callable) -> Variant:
 		if tree:
 			await tree.process_frame
 		else:
-			# If the tree is somehow completely missing, force a delay
-			# so the CPU doesn't get trapped in an infinite lockup
+			# No SceneTree: yield so this cancel loop cannot spin at 100% CPU.
 			OS.delay_msec(10)
 
 		if _is_canceled() and srv:
@@ -265,12 +264,9 @@ func _bake_pathing(ctx: Variant) -> void:
 
 func _bake_static_source(ctx: Variant) -> void:
 	var srv = ResonanceServerAccess.get_server()
-	# Iterate over every outdoor emitter in ResonanceProbeVolume.bake_sources. Each bake_static_source
-	# call adds a distinct STATICSOURCE IR layer to the probe batch so the runtime can resolve the IR
-	# matching the player's current_baked_source position (fixed outdoor emitters).
+	# One STATICSOURCE pass per bake_sources entry (separate IR layer per outdoor emitter).
 	var entries: Array = ctx.static_source_entries
 	if entries.is_empty():
-		# Legacy single-source fallback when no bake_sources were resolved but the flag is on.
 		entries = [{"pos": ctx.player_pos, "radius": ctx.player_radius}]
 
 	var total: int = entries.size()
@@ -280,13 +276,7 @@ func _bake_static_source(ctx: Variant) -> void:
 		var pos: Vector3 = e.pos
 		var radius: float = e.radius
 
-		_update_status(
-			(
-				tr(UIStrings.PROGRESS_BAKING_STATIC_SOURCE)
-				+ ctx.vol_info
-				+ (" [%d/%d]" % [i + 1, total] if total > 1 else "")
-			)
-		)
+		_update_status(_multi_pass_status(UIStrings.PROGRESS_BAKING_STATIC_SOURCE, ctx, i, total))
 		var do_static_source = func() -> bool:
 			return srv.bake_static_source(ctx.probe_data, pos, radius)
 		var ok = await _run_in_thread_with_cancel_poll(do_static_source)
@@ -296,11 +286,7 @@ func _bake_static_source(ctx: Variant) -> void:
 		if _is_canceled():
 			return
 	if all_ok and ctx.probe_data and ctx.probe_data.has_method("set_static_source_params_hash"):
-		var hash_value: int = (
-			_BakeHashes.compute_position_radius_list_hash(ctx.static_source_entries)
-			if ctx.static_source_entries.size() > 1
-			else _BakeHashes.compute_position_radius_hash(ctx.player_pos, ctx.player_radius)
-		)
+		var hash_value: int = _static_source_hash(ctx)
 		ctx.probe_data.set_static_source_params_hash(hash_value)
 
 
@@ -317,13 +303,7 @@ func _bake_static_listener(ctx: Variant) -> void:
 		var pos: Vector3 = e.pos
 		var radius: float = e.radius
 
-		_update_status(
-			(
-				tr(UIStrings.PROGRESS_BAKING_STATIC_LISTENER)
-				+ ctx.vol_info
-				+ (" [%d/%d]" % [i + 1, total] if total > 1 else "")
-			)
-		)
+		_update_status(_multi_pass_status(UIStrings.PROGRESS_BAKING_STATIC_LISTENER, ctx, i, total))
 		var do_static_listener = func() -> bool:
 			return srv.bake_static_listener(ctx.probe_data, pos, radius)
 		var ok = await _run_in_thread_with_cancel_poll(do_static_listener)
@@ -333,11 +313,7 @@ func _bake_static_listener(ctx: Variant) -> void:
 		if _is_canceled():
 			return
 	if all_ok and ctx.probe_data and ctx.probe_data.has_method("set_static_listener_params_hash"):
-		var hash_value: int = (
-			_BakeHashes.compute_position_radius_list_hash(ctx.static_listener_entries)
-			if ctx.static_listener_entries.size() > 1
-			else _BakeHashes.compute_position_radius_hash(ctx.listener_pos, ctx.listener_radius)
-		)
+		var hash_value: int = _static_listener_hash(ctx)
 		ctx.probe_data.set_static_listener_params_hash(hash_value)
 
 
@@ -370,6 +346,25 @@ func _update_status(msg: String) -> void:
 func _is_canceled() -> bool:
 	var pui = _runner.get("_progress_ui") if _runner else null
 	return pui.cancel_requested if pui else false
+
+
+func _multi_pass_status(ui_key: String, ctx: Variant, index: int, total: int) -> String:
+	var s: String = tr(ui_key) + str(ctx.vol_info)
+	if total <= 1:
+		return s
+	return s + (" [%d/%d]" % [index + 1, total])
+
+
+func _static_source_hash(ctx: Variant) -> int:
+	if ctx.static_source_entries.size() > 1:
+		return _BakeHashes.compute_position_radius_list_hash(ctx.static_source_entries)
+	return _BakeHashes.compute_position_radius_hash(ctx.player_pos, ctx.player_radius)
+
+
+func _static_listener_hash(ctx: Variant) -> int:
+	if ctx.static_listener_entries.size() > 1:
+		return _BakeHashes.compute_position_radius_list_hash(ctx.static_listener_entries)
+	return _BakeHashes.compute_position_radius_hash(ctx.listener_pos, ctx.listener_radius)
 
 
 func _get_active_tree(volumes: Array[Node] = [], fallback_root: Node = null) -> SceneTree:
